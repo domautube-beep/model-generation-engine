@@ -60,11 +60,16 @@ description: Use this skill immediately whenever the user talks about creating, 
 ### Stage 4: Single-Pass From-Scratch Generation (`generation_depth == 0`)
 - Invoke `image-generator` in a **single pass from scratch**, passing ONLY the original identity reference image (`ref_person_face.jpg`). Never re-feed a generated image back into `image-generator`.
 
-### Stage 5: 4x Native Super-Resolution (`SuperResolutionEngine.upscale_4x`)
+### Stage 5: 4x Native Super-Resolution & Scale-Adaptive Anti-Smudge Focus Recovery (`SuperResolutionEngine`)
 - Upscale the single-pass raw image 4x using `realesrgan-ncnn-vulkan` (`4xNomos8kSC`).
+- **Scale-Adaptive Anti-Smudge Rescue**:
+  - For medium/close-up shots (`inter_ocular_distance >= 90px` on 5K and high per-organ edge energy), preserve the pure 4x Real-ESRGAN detail directly without down-warping through a `512x512` bottleneck.
+  - For distant/full-body wide shots (`inter_ocular_distance < 90px` on 5K or weak organ edge energy), automatically execute `restore_face_focus_5pt` with **Ultra-High-Frequency Residual Recovery (`warped_back + 0.65 * (patch - warped_orig_back)`)** so zero double-interpolation blur occurs.
+  - **3D Yaw Anti-Smudge Guard**: When head yaw is steep 3/4 or side-profile (`abs(yaw_asymmetry_ratio) > 0.28`), bypass frontal `FFHQ_TEMPLATE_512` warping (which stretches/crushes angled faces) and apply pose-invariant multi-scale anatomical crisping.
 
-### Stage 6: Adaptive Halo-Free Matte Skin & Pore Micro-Texture (`MatteSkinProcessor.process`)
-- Dynamically sample the subject's skin CIE LAB profile (`sample_adaptive_skin_profile`), build a 3D-yaw-adaptive skin mask excluding glasses/eyes/mouth/hair, apply scalar `P88` percentile soft-knee specular roll-off (preventing forehead/hairline shadow halos), recover warm chrominance, and blend scale-adaptive pore micro-texture (`iod / 110.0`).
+### Stage 6: Adaptive Halo-Free Matte Skin, Organ Exclusion & Organ Micro-Crisping (`MatteSkinProcessor.process`)
+- Dynamically sample the subject's skin CIE LAB profile (`sample_adaptive_skin_profile`), build a 3D-yaw-adaptive skin mask that **explicitly excludes eyes/eyelids/eyewear, eyebrow arches, nostrils/alar base, and lips** so 3D facial organ shading never flattens.
+- Apply scalar `P88` percentile soft-knee specular roll-off (preventing forehead/hairline shadow halos), recover warm chrominance, blend scale-adaptive pore micro-texture (`iod / 110.0`), and apply **Organ-Selective Micro-Crisping (`build_anatomical_organ_mask`)** strictly on the eyes, eyebrows, nostrils, and lip contour.
 
-### Stage 7: Auto-Balanced 5K (`5040x2160`) 21:9 Outpainting & 6 Quality Gates (`Seamless5KCompositor` & `QualityGateAuditor`)
-- Expand to `5040x2160` (`21:9`) via 240px cosine-ramp outpainting, verify all 6 automated quality gates, and visually inspect both the 5K output and 1:1 close-up face verification crop via `read_file`.
+### Stage 7: Auto-Balanced 5K (`5040x2160`) 21:9 Outpainting & 7 Anti-Smudge Quality Gates (`Seamless5KCompositor` & `QualityGateAuditor`)
+- Expand to `5040x2160` (`21:9`) (or face-centered crop for `9:16` / `1:1`), verify all 7 automated quality gates including **Per-Organ High-Frequency Edge Energy (`measure_per_organ_sharpness` on left eye, right eye, nose, and mouth)** and **Anatomical Landmark Geometry Validation (`validate_anatomical_geometry`)**, and visually inspect both the 5K output and 1:1 close-up face verification crop via `read_file`.

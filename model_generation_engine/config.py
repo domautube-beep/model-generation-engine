@@ -186,6 +186,8 @@ class EngineConfig:
     unsharp_sigma: float = 1.0
     max_seam_l1_diff: float = 6.0
     min_face_laplacian_var: float = 25.0
+    min_organ_gradient_energy: float = 1.6
+    auto_restore_distant_face_iod_px: float = 90.0
     max_specular_glare_ratio: float = 0.04
     min_skin_micro_texture_std: float = 0.85
     subject: SubjectProfile = field(default_factory=SubjectProfile)

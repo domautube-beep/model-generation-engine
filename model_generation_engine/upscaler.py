@@ -83,7 +83,7 @@ class SuperResolutionEngine:
             raise RuntimeError(f"Abnormal rotation ({rot_deg:.1f} deg) in M exceeds max ({max_tilt_deg} deg).")
 
     def restore_face_focus_5pt(self, patch_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Restore crisp eye, eyewear, hair, and skin focus using 5-point YuNet + CodeFormer."""
+        """Restore crisp eye, eyewear, hair, and skin focus using 5-point YuNet + CodeFormer with Anti-Smudge Yaw & Frequency Guards."""
         bh, bw = patch_bgr.shape[:2]
         det = self.detector.detect(patch_bgr)
         pts5 = det.landmarks_5pt
@@ -92,6 +92,29 @@ class SuperResolutionEngine:
             raise RuntimeError(
                 f"Detected abnormal eye tilt ({det.eye_tilt_degrees:.1f} deg); aborting CodeFormer to prevent distortion."
             )
+
+        # Anti-Smudge 3D Yaw Guard: if head yaw is steep 3/4 or profile (|yaw| > 0.28),
+        # never force onto frontal FFHQ_TEMPLATE_512 (which stretches/crushes angled faces).
+        if abs(det.yaw_asymmetry_ratio) > 0.28:
+            scale_factor = float(np.clip(det.inter_ocular_distance / 110.0, 0.5, 3.0))
+            blur = cv2.GaussianBlur(patch_bgr, (0, 0), max(0.8, 1.0 * scale_factor))
+            amt = max(0.25, self.config.unsharp_amount)
+            crisped = cv2.addWeighted(patch_bgr, 1.0 + amt, blur, -amt, 0)
+            fx, fy, fw, fh = [int(round(v)) for v in det.bbox]
+            mask = np.zeros((bh, bw), dtype=np.float32)
+            cv2.ellipse(
+                mask,
+                (int(round(fx + 0.5 * fw)), int(round(fy + 0.5 * fh))),
+                (max(4, int(round(0.45 * fw))), max(4, int(round(0.48 * fh)))),
+                det.eye_tilt_degrees,
+                0,
+                360,
+                1.0,
+                -1,
+            )
+            mask = cv2.GaussianBlur(mask, (45, 45), 14.0)[..., None]
+            out = (mask * crisped.astype(np.float32) + (1.0 - mask) * patch_bgr.astype(np.float32)).clip(0, 255).astype(np.uint8)
+            return out, mask
 
         M, _ = cv2.estimateAffinePartial2D(pts5, FFHQ_TEMPLATE_512, method=cv2.LMEDS)
         self.validate_similarity_transform(M)
@@ -124,11 +147,16 @@ class SuperResolutionEngine:
         cv2.ellipse(mask_512, (256, 255), (175, 215), 0, 0, 360, 1.0, -1)
         mask_512 = cv2.GaussianBlur(mask_512, (45, 45), 14.0)
 
-        warped_back = cv2.warpAffine(enhanced_512, M_inv, (bw, bh), flags=cv2.INTER_LANCZOS4)
+        warped_back = cv2.warpAffine(enhanced_512, M_inv, (bw, bh), flags=cv2.INTER_LANCZOS4).astype(np.float32)
+        # Recover Ultra-High-Frequency residual lost during 512x512 round-trip warp to prevent double-interpolation smudge
+        warped_orig_back = cv2.warpAffine(face_512, M_inv, (bw, bh), flags=cv2.INTER_LANCZOS4).astype(np.float32)
+        uhf_residual = np.clip(patch_bgr.astype(np.float32) - warped_orig_back, -18.0, 18.0)
+        warped_full_freq = np.clip(warped_back + 0.65 * uhf_residual, 0, 255)
+
         mask_back = cv2.warpAffine(mask_512, M_inv, (bw, bh), flags=cv2.INTER_LINEAR)[..., None]
 
         restored = (
-            mask_back * warped_back.astype(np.float32)
+            mask_back * warped_full_freq
             + (1.0 - mask_back) * patch_bgr.astype(np.float32)
         ).clip(0, 255).astype(np.uint8)
         return restored, mask_back

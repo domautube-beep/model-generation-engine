@@ -54,6 +54,16 @@ class ModelGenerationPipeline:
             vx2, vy2 = min(canvas_5k.shape[1], X2 + 120), min(canvas_5k.shape[0], Y2 + 160)
 
             roi = canvas_5k[vy1:vy2, vx1:vx2].copy()
+            # Scale-Adaptive Anti-Smudge Rescue: if the face in a full-body/distant shot is small (< auto_restore_distant_face_iod_px)
+            # or its per-organ gradient energy is weak, run 5-point CodeFormer + UHF residual focus recovery before MatteSkinProcessor.
+            roi_face = self.detector.detect(roi)
+            min_org_grad, _ = self.auditor.measure_per_organ_sharpness(roi, roi_face)
+            if (
+                roi_face.inter_ocular_distance < self.config.auto_restore_distant_face_iod_px
+                or min_org_grad < self.config.min_organ_gradient_energy
+            ):
+                roi, _ = self.upscaler.restore_face_focus_5pt(roi)
+
             roi_matte, skin_metrics = self.skin_processor.process(roi, seed=seed)
             canvas_5k[vy1:vy2, vx1:vx2] = roi_matte
 

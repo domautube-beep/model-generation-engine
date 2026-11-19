@@ -12,7 +12,7 @@ from .skin_processor import MatteSkinProcessor
 
 @dataclass(frozen=True)
 class QualityReport:
-    """Automated 6-Gate Quality Report for a 5K model generation output."""
+    """Automated 7-Gate Anti-Smudge & Quality Report for a 5K model generation output."""
 
     passed: bool
     width: int
@@ -24,16 +24,83 @@ class QualityReport:
     inter_ocular_px: float
     specular_glare_ratio: float = 0.0
     skin_micro_texture_std: float = 2.0
+    min_organ_gradient: float = 10.0
+    anatomical_geometry_valid: bool = True
     message: str = "ALL QUALITY GATES PASSED"
 
 
 class QualityGateAuditor:
-    """Enforces 6 mandatory automated quality gates before accepting any portrait output."""
+    """Enforces 7 mandatory automated quality gates (including Per-Organ Anti-Smudge & Anatomy Gate) before accepting any portrait output."""
 
     def __init__(self, config: EngineConfig, detector: DynamicFaceDetector) -> None:
         self.config = config
         self.detector = detector
         self.skin_processor = MatteSkinProcessor(detector)
+
+    @staticmethod
+    def measure_per_organ_sharpness(
+        patch_bgr: np.ndarray, face
+    ) -> Tuple[float, dict]:
+        """Measure scale-adaptive high-frequency anatomical edge energy independently on left eye, right eye, nose tip, and mouth.
+
+        Uses second-order / high-pass detail energy rather than first-order slope so smooth blurry ramps ('얼굴/눈코입 뭉개짐')
+        are accurately detected even when lighting gradients or glasses frames are present.
+        """
+        h, w = patch_bgr.shape[:2]
+        gray = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        eye_d = max(8.0, face.inter_ocular_distance)
+        scale_factor = float(np.clip(eye_d / 110.0, 0.5, 3.0))
+        high_freq = gray - cv2.GaussianBlur(gray, (0, 0), max(1.2, 1.8 * scale_factor))
+
+        le, re, nose, lm, rm = face.landmarks_5pt
+        mouth_mid = 0.5 * (lm + rm)
+        r = max(5, int(round(0.18 * eye_d)))
+
+        organ_pts = {
+            "left_eye": le,
+            "right_eye": re,
+            "nose": nose,
+            "mouth": mouth_mid,
+        }
+        scores = {}
+        for name, pt in organ_pts.items():
+            cx = int(round(np.clip(pt[0], 0, w - 1)))
+            cy = int(round(np.clip(pt[1], 0, h - 1)))
+            x1, x2 = max(0, cx - r), min(w, cx + r + 1)
+            y1, y2 = max(0, cy - r), min(h, cy + r + 1)
+            roi = high_freq[y1:y2, x1:x2]
+            scores[name] = float(np.std(roi)) if roi.size > 0 else 0.0
+
+        min_grad = min(scores.values()) if scores else 0.0
+        return min_grad, scores
+
+    @staticmethod
+    def validate_anatomical_geometry(face) -> Tuple[bool, str]:
+        """Verify that the 5 canonical landmarks form an anatomically valid, un-melted human facial geometry."""
+        le, re, nose, lm, rm = face.landmarks_5pt
+        eye_d = float(np.linalg.norm(re - le))
+        if eye_d < 6.0:
+            return False, f"Collapsed inter-ocular distance ({eye_d:.1f}px)"
+
+        eye_mid = 0.5 * (le + re)
+        mouth_mid = 0.5 * (lm + rm)
+        ux = (re - le) / eye_d
+        # Downward perpendicular unit vector in image coordinates
+        uy = np.array([-ux[1], ux[0]], dtype=np.float32)
+        if np.dot(mouth_mid - eye_mid, uy) < 0:
+            uy = -uy
+
+        nose_y = float(np.dot(nose - eye_mid, uy))
+        mouth_y = float(np.dot(mouth_mid - eye_mid, uy))
+        mouth_w = float(np.linalg.norm(rm - lm))
+
+        if nose_y < 0.12 * eye_d:
+            return False, f"Anatomical landmark collapse: nose tip too close to or above eye line (nose_y={nose_y:.1f}px)"
+        if mouth_y < nose_y + 0.10 * eye_d:
+            return False, f"Anatomical landmark collapse: mouth too close to or above nose tip (mouth_y={mouth_y:.1f}px)"
+        if not (0.35 * eye_d <= mouth_w <= 1.75 * eye_d):
+            return False, f"Anatomical landmark distortion: abnormal mouth-to-eye width ratio ({mouth_w / eye_d:.2f})"
+        return True, "OK"
 
     def audit(
         self,
@@ -119,6 +186,8 @@ class QualityGateAuditor:
         face_gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
         lap_var = float(cv2.Laplacian(face_gray, cv2.CV_64F).var())
         skin_metrics = self.skin_processor.measure_metrics(patch, face)
+        min_organ_grad, organ_scores = self.measure_per_organ_sharpness(patch, face)
+        anat_ok, anat_msg = self.validate_anatomical_geometry(face)
 
         failures = []
         if not np.isfinite(seam_l1_diff) or seam_l1_diff > self.config.max_seam_l1_diff:
@@ -129,6 +198,13 @@ class QualityGateAuditor:
             failures.append(
                 f"Face Laplacian sharpness ({lap_var:.2f}) below min ({self.config.min_face_laplacian_var:.2f}) — face is too blurry"
             )
+        if min_organ_grad < self.config.min_organ_gradient_energy:
+            worst_organ = min(organ_scores, key=organ_scores.get)
+            failures.append(
+                f"Facial organ smudge detected on '{worst_organ}' (gradient={min_organ_grad:.2f} < min {self.config.min_organ_gradient_energy:.2f})"
+            )
+        if not anat_ok:
+            failures.append(anat_msg)
         if abs(face.eye_tilt_degrees) > 20.0:
             failures.append(f"Abnormal eye tilt ({face.eye_tilt_degrees:.1f} deg) indicates distortion")
         if face.inter_ocular_distance < 25.0:
@@ -155,5 +231,7 @@ class QualityGateAuditor:
             inter_ocular_px=face.inter_ocular_distance,
             specular_glare_ratio=skin_metrics.specular_glare_ratio,
             skin_micro_texture_std=skin_metrics.skin_micro_texture_std,
+            min_organ_gradient=min_organ_grad,
+            anatomical_geometry_valid=anat_ok,
             message=msg,
         )

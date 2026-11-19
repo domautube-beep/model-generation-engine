@@ -37,8 +37,11 @@ class PromptFirewall:
         r"porcelain\s+doll",
         r"plastic\s+skin",
         r"soft\s+focus\s+face",
-        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?:airbrush(?:ed)?|porcelain|plastic|wax(?:y)?|doll[-\s]?like|beauty[-\s]?cam|filter(?:ed)?|over[-\s]?smooth(?:ed)?|blurr?(?:y|ed)|hazy|smudg(?:ed|y)|soft[-\s]?focus|gaussian)\s+(?:(?:\w+\s+){0,2})?(?:skin|face|complexion|texture|finish|blur)\b",
-        r"\b(?:skin|face|complexion)\s+(?:is|are|with|having)?\s*(?:airbrushed|porcelain|plastic|waxy|blurred|hazy|smudged|over[-\s]?smoothed)\b",
+        r"melted\s+face",
+        r"smudged\s+face",
+        r"distorted\s+eyes",
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?:airbrush(?:ed)?|porcelain|plastic|wax(?:y)?|doll[-\s]?like|beauty[-\s]?cam|filter(?:ed)?|over[-\s]?smooth(?:ed)?|blurr?(?:y|ed)|hazy|smudg(?:ed|y)|melt(?:ed|ing)|mush(?:y|ed)|crushed|soft[-\s]?focus|gaussian)\s+(?:(?:\w+\s+){0,2})?(?:skin|face|eyes?|nose|lips?|mouth|features?|complexion|texture|finish|blur)\b",
+        r"\b(?:skin|face|eyes?|nose|lips?|complexion)\s+(?:is|are|with|having)?\s*(?:airbrushed|porcelain|plastic|waxy|blurred|hazy|smudged|melted|mushed|over[-\s]?smoothed)\b",
     )
 
     FORBIDDEN_GLOSS_AND_WRINKLE_PATTERNS: Sequence[str] = (
@@ -82,6 +85,9 @@ class PromptFirewall:
             f"Create a photorealistic {camera.to_prompt_clause()} featuring the exact {subject.subject_identity_label} "
             f"from the reference image ({reference_filename}). "
             f"Identity Lock: preserve {subject.facial_identity_descriptor()}. "
+            "Anatomical Anti-Smudge Lock: render razor-sharp, anatomically distinct upper and lower eyelids, "
+            "clear circular iris and pupil edges, well-defined nasal bridge and nostrils, and crisp lip contour "
+            "with zero melted, smudged, asymmetrical, or collapsed facial features; lock critical camera focus directly on the subject's eyes. "
             "Skin Expression: soft, even, natural MATTE skin texture with realistic subtle pores, "
             "ZERO plastic/oily shine, ZERO dewy gloss, ZERO specular glare on the forehead, nose, or cheeks, and ZERO artificial wrinkles. "
             f"Physical Build: {subject.body_frame_descriptor()}. "

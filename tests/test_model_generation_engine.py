@@ -510,6 +510,36 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             )
         self.assertIn("contains a human face", str(ctx.exception))
 
+    def test_13_anti_smudge_per_organ_sharpness_and_anatomy_gate(self) -> None:
+        """Verify Anti-Smudge Organ Masking, Per-Organ Gradient Gate, and Anatomical Landmark Geometry Gate."""
+        auditor = QualityGateAuditor(self.config, self.detector)
+        fpath = self.outputs_dir / "21x9_studio_seated_01_terracotta_cane.jpg"
+        img_5k = cv2.imread(str(fpath), cv2.IMREAD_COLOR)
+        face = self.detector.detect(img_5k)
+        crop_box = self.detector.compute_upper_body_crop_box(img_5k.shape[:2], face)
+
+        # 1. Clean 5K hero image passes all 7 gates including per-organ anti-smudge gate
+        report_clean = auditor.audit(img_5k, crop_box, seam_l1_diff=1.0)
+        self.assertTrue(report_clean.passed, report_clean.message)
+        self.assertGreaterEqual(report_clean.min_organ_gradient, self.config.min_organ_gradient_energy)
+        self.assertTrue(report_clean.anatomical_geometry_valid)
+
+        # 2. Simulate localized smudge on the left eye ONLY (while hair, glasses rim, and rest of face remain sharp)
+        smudged_5k = img_5k.copy()
+        x1, y1, x2, y2 = crop_box
+        patch = smudged_5k[y1:y2, x1:x2]
+        face_in_patch = self.detector.detect(patch)
+        le = face_in_patch.landmarks_5pt[0]
+        r_blur = max(18, int(round(0.32 * face_in_patch.inter_ocular_distance)))
+        cx, cy = int(round(le[0])), int(round(le[1]))
+        eye_box = patch[max(0, cy - r_blur) : min(patch.shape[0], cy + r_blur), max(0, cx - r_blur) : min(patch.shape[1], cx + r_blur)]
+        patch[max(0, cy - r_blur) : min(patch.shape[0], cy + r_blur), max(0, cx - r_blur) : min(patch.shape[1], cx + r_blur)] = (
+            cv2.GaussianBlur(eye_box, (61, 61), 25.0)
+        )
+        min_grad_smudged, scores_smudged = auditor.measure_per_organ_sharpness(patch, face_in_patch)
+        self.assertLess(scores_smudged["left_eye"], self.config.min_organ_gradient_energy)
+        self.assertLess(min_grad_smudged, self.config.min_organ_gradient_energy)
+
 
 if __name__ == "__main__":
     unittest.main()
