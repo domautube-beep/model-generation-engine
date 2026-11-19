@@ -540,6 +540,38 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         self.assertLess(scores_smudged["left_eye"], self.config.min_organ_gradient_energy)
         self.assertLess(min_grad_smudged, self.config.min_organ_gradient_energy)
 
+    def test_14_sface_identity_gate_apple_vision_ratios_and_facelock(self) -> None:
+        """Verify SFace 128-D Identity Gate rejects different person & FaceLock 1c achieves >0.85 similarity + <3.5% ratio drift."""
+        from PIL import Image
+        from model_generation_engine import AppleVisionAnalyzer, FaceLockCompositor
+
+        auditor = QualityGateAuditor(self.config, self.detector)
+        ref_t2 = cv2.imread(str(self.config.vault_dir / "resources" / "ref_teacher_02_head_only.jpg"))
+        ref_t1 = cv2.imread(str(self.ref_face))
+        f_t2 = self.detector.detect(ref_t2)
+        f_t1 = self.detector.detect(ref_t1)
+
+        # Different person must score well below min_identity_cosine_sim (0.65)
+        sim_diff = auditor.measure_identity_similarity(ref_t2, ref_t1, f_t2, f_t1)
+        self.assertLess(sim_diff, 0.35)
+
+        # Teacher 02 FaceLock 5K output must pass all 9 gates including SFace >= 0.85 and Apple Vision ratio <= 3.5%
+        hero_t2 = cv2.imread(str(self.outputs_dir / "21x9_teacher02_seated_01_terracotta_cane.jpg"))
+        f_hero = self.detector.detect(hero_t2)
+        crop_box = self.detector.compute_upper_body_crop_box(hero_t2.shape[:2], f_hero)
+        rep = auditor.audit(hero_t2, crop_box, seam_l1_diff=0.0, reference_face_bgr=ref_t2)
+        self.assertTrue(rep.passed, rep.message)
+        self.assertGreaterEqual(rep.identity_cosine_sim, 0.85)
+
+        # Direct FaceLockCompositor test
+        av = AppleVisionAnalyzer(bin_dir=self.config.vault_dir / "models" / "apple_vision_bin")
+        fl = FaceLockCompositor(av)
+        roi_pil = Image.fromarray(cv2.cvtColor(hero_t2[crop_box[1]:crop_box[3], crop_box[0]:crop_box[2]], cv2.COLOR_BGR2RGB))
+        ref_pil = Image.fromarray(cv2.cvtColor(ref_t2, cv2.COLOR_BGR2RGB))
+        out_pil, meta = fl.apply_facelock(ref_pil, roi_pil)
+        self.assertEqual(out_pil.size, roi_pil.size)
+        self.assertTrue(meta["shapeComparison"]["passed"])
+
 
 if __name__ == "__main__":
     unittest.main()

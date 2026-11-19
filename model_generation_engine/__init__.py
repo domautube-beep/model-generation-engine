@@ -26,6 +26,8 @@ from .workflow import (
 )
 from .upscaler import SuperResolutionEngine
 from .compositor import Seamless5KCompositor
+from .apple_vision import AppleVisionAnalyzer, AppleVisionError
+from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
 from .quality_gate import QualityGateAuditor, QualityReport
 from .pipeline import ModelGenerationPipeline, PortraitIdentityPipeline
 

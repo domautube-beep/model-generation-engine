@@ -6,8 +6,12 @@ from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
 
+from PIL import Image
+
+from .apple_vision import AppleVisionAnalyzer
 from .config import EngineConfig
 from .detector import DynamicFaceDetector
+from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
 from .skin_processor import MatteSkinProcessor
 from .upscaler import SuperResolutionEngine
 from .compositor import Seamless5KCompositor
@@ -25,6 +29,10 @@ class ModelGenerationPipeline:
         self.upscaler = SuperResolutionEngine(self.config, self.detector)
         self.compositor = Seamless5KCompositor(self.config, self.detector)
         self.auditor = QualityGateAuditor(self.config, self.detector)
+        bin_dir = (self.config.vault_dir / "models" / "apple_vision_bin") if self.config.vault_dir else None
+        self.apple_vision = AppleVisionAnalyzer(bin_dir=bin_dir)
+        self.facelock = FaceLockCompositor(self.apple_vision)
+        self.head_redraw = HeadRedrawCompositor(self.apple_vision)
 
     def refine_matte_skin_texture(self, bgr_img: np.ndarray, seed: int = 42) -> np.ndarray:
         """Eliminate plastic/oily facial specular gloss and preserve scale-adaptive natural skin micro-texture."""
@@ -38,8 +46,11 @@ class ModelGenerationPipeline:
         output_closeup_path: Optional[Path] = None,
         seed: int = 42,
         reference_face_path: Optional[Path] = None,
+        reattach_mode: str = "none",
+        redrawn_head_path: Optional[Path] = None,
     ) -> Dict[str, object]:
-        """Execute Single-Pass Pure From-Scratch 5K Pipeline (Zero re-feeding, 4xNomos8kSC + Reference Skin Tone/Texture Lock + 7-Gate Audit)."""
+        """Execute Single-Pass Pure From-Scratch 5K Pipeline with optional Face Re-Attachment (`facelock`, `head_redraw`, `hybrid`) & 9-Gate Audit."""
+        ref_bgr: Optional[np.ndarray] = None
         ref_skin_profile = None
         if reference_face_path is not None and Path(reference_face_path).exists():
             ref_bgr = cv2.imread(str(reference_face_path))
@@ -53,6 +64,22 @@ class ModelGenerationPipeline:
             up_bgr = cv2.imread(str(up_path))
             canvas_5k, _, _ = self.compositor.build_ultrawide_canvas(up_bgr)
 
+            reattach_info: Dict[str, object] = {}
+            if reattach_mode in ("head_redraw", "hybrid") and redrawn_head_path is not None and Path(redrawn_head_path).exists():
+                up_head_path = self.upscaler.upscale_image_file(Path(redrawn_head_path), tmp / "up_head.jpg")
+                head_pil = Image.open(up_head_path).convert("RGB")
+                canvas_pil = Image.fromarray(cv2.cvtColor(canvas_5k, cv2.COLOR_BGR2RGB))
+                stitched_pil, hr_meta = self.head_redraw.blend_redrawn_head(canvas_pil, head_pil)
+                canvas_5k = cv2.cvtColor(np.asarray(stitched_pil), cv2.COLOR_RGB2BGR)
+                reattach_info["head_redraw"] = hr_meta
+
+            if reattach_mode in ("facelock", "hybrid") and ref_bgr is not None:
+                ref_pil = Image.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB))
+                canvas_pil = Image.fromarray(cv2.cvtColor(canvas_5k, cv2.COLOR_BGR2RGB))
+                locked_pil, fl_meta = self.facelock.apply_facelock(ref_pil, canvas_pil)
+                canvas_5k = cv2.cvtColor(np.asarray(locked_pil), cv2.COLOR_RGB2BGR)
+                reattach_info["facelock"] = fl_meta
+
             face_5k = self.detector.detect(canvas_5k)
             crop_box_5k = self.detector.compute_upper_body_crop_box(
                 canvas_5k.shape[:2], face_5k, aspect_ratio=self.config.canvas.crop_aspect_ratio
@@ -62,8 +89,6 @@ class ModelGenerationPipeline:
             vx2, vy2 = min(canvas_5k.shape[1], X2 + 120), min(canvas_5k.shape[0], Y2 + 160)
 
             roi = canvas_5k[vy1:vy2, vx1:vx2].copy()
-            # Scale-Adaptive Anti-Smudge Rescue: if the face in a full-body/distant shot is small (< auto_restore_distant_face_iod_px)
-            # or its per-organ gradient energy is weak, run 5-point CodeFormer + UHF residual focus recovery before MatteSkinProcessor.
             roi_face = self.detector.detect(roi)
             min_org_grad, _ = self.auditor.measure_per_organ_sharpness(roi, roi_face)
             if (
@@ -77,7 +102,9 @@ class ModelGenerationPipeline:
             )
             canvas_5k[vy1:vy2, vx1:vx2] = roi_matte
 
-            report = self.auditor.audit(canvas_5k, crop_box_5k, seam_l1_diff=0.0)
+            report = self.auditor.audit(
+                canvas_5k, crop_box_5k, seam_l1_diff=0.0, reference_face_bgr=ref_bgr
+            )
             if not report.passed:
                 raise RuntimeError(f"QualityGateAuditor rejected output: {report.message}")
 
@@ -91,6 +118,7 @@ class ModelGenerationPipeline:
                 "output_hero_path": str(output_hero_path),
                 "crop_box_5k": crop_box_5k,
                 "skin_metrics": skin_metrics,
+                "reattach_info": reattach_info,
                 "quality_report": report,
             }
 

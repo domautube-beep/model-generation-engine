@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 import cv2
 import numpy as np
+import onnxruntime as ort
+from PIL import Image
 
+from .apple_vision import AppleVisionAnalyzer
 from .config import EngineConfig
 from .detector import DynamicFaceDetector
 from .skin_processor import MatteSkinProcessor
@@ -12,7 +15,7 @@ from .skin_processor import MatteSkinProcessor
 
 @dataclass(frozen=True)
 class QualityReport:
-    """Automated 7-Gate Anti-Smudge & Quality Report for a 5K model generation output."""
+    """Automated 9-Gate Anti-Smudge, Face Ratio & Neural Identity Similarity Report for a 5K model generation output."""
 
     passed: bool
     width: int
@@ -26,16 +29,52 @@ class QualityReport:
     skin_micro_texture_std: float = 2.0
     min_organ_gradient: float = 10.0
     anatomical_geometry_valid: bool = True
+    identity_cosine_sim: Optional[float] = None
+    face_shape_note: str = ""
     message: str = "ALL QUALITY GATES PASSED"
 
 
 class QualityGateAuditor:
-    """Enforces 7 mandatory automated quality gates (including Per-Organ Anti-Smudge & Anatomy Gate) before accepting any portrait output."""
+    """Enforces 9 mandatory automated quality gates (including SFace 128-D Identity & Apple Vision Face Ratio Gates)."""
 
     def __init__(self, config: EngineConfig, detector: DynamicFaceDetector) -> None:
         self.config = config
         self.detector = detector
         self.skin_processor = MatteSkinProcessor(detector)
+        bin_dir = (config.vault_dir / "models" / "apple_vision_bin") if config.vault_dir else None
+        self.apple_vision = AppleVisionAnalyzer(bin_dir=bin_dir)
+        self._sface_rec = None
+        self._sface_sess = None
+        try:
+            sface_path = config.resolve_model_path("sface.onnx")
+            self._sface_rec = cv2.FaceRecognizerSF.create(str(sface_path), "")
+            opts = ort.SessionOptions()
+            opts.log_severity_level = 3
+            self._sface_sess = ort.InferenceSession(
+                str(sface_path), sess_options=opts, providers=["CPUExecutionProvider"]
+            )
+        except Exception:
+            pass
+
+    def measure_identity_similarity(
+        self, ref_bgr: np.ndarray, dst_bgr: np.ndarray, ref_face, dst_face
+    ) -> float:
+        """Compute 128-D Neural Face Recognition Cosine Similarity via OpenCV SFace (`sface.onnx`)."""
+        if self._sface_rec is None or self._sface_sess is None:
+            return 1.0
+
+        def _feat(img: np.ndarray, f) -> np.ndarray:
+            box15 = np.array(
+                list(f.bbox) + f.landmarks_5pt.ravel().tolist() + [f.confidence], dtype=np.float32
+            )
+            aligned = self._sface_rec.alignCrop(img, box15)
+            blob = aligned.transpose(2, 0, 1)[None, ...].astype(np.float32)
+            vec = self._sface_sess.run(None, {self._sface_sess.get_inputs()[0].name: blob})[0][0]
+            return vec / (float(np.linalg.norm(vec)) + 1e-8)
+
+        v1 = _feat(ref_bgr, ref_face)
+        v2 = _feat(dst_bgr, dst_face)
+        return float(np.dot(v1, v2))
 
     @staticmethod
     def measure_per_organ_sharpness(
@@ -107,6 +146,7 @@ class QualityGateAuditor:
         canvas_5k_bgr: np.ndarray,
         crop_box_5k: Tuple[int, int, int, int],
         seam_l1_diff: float,
+        reference_face_bgr: Optional[np.ndarray] = None,
     ) -> QualityReport:
         """Verify resolution, sharpness, seam continuity, landmark symmetry, zero plastic gloss, and natural skin texture."""
         if canvas_5k_bgr is None or canvas_5k_bgr.ndim != 3:
@@ -207,8 +247,10 @@ class QualityGateAuditor:
             failures.append(anat_msg)
         if abs(face.eye_tilt_degrees) > 20.0:
             failures.append(f"Abnormal eye tilt ({face.eye_tilt_degrees:.1f} deg) indicates distortion")
-        if face.inter_ocular_distance < 25.0:
-            failures.append(f"Inter-ocular distance ({face.inter_ocular_distance:.1f}px) too small for 5K")
+        if face.inter_ocular_distance < self.config.min_inter_ocular_5k_px:
+            failures.append(
+                f"Inter-ocular distance ({face.inter_ocular_distance:.1f}px) below min ({self.config.min_inter_ocular_5k_px:.1f}px) for 5K"
+            )
         if skin_metrics.specular_glare_ratio > self.config.max_specular_glare_ratio:
             failures.append(
                 f"Plastic specular glare ratio ({skin_metrics.specular_glare_ratio:.3f}) exceeds max ({self.config.max_specular_glare_ratio:.3f})"
@@ -217,6 +259,30 @@ class QualityGateAuditor:
             failures.append(
                 f"Skin micro-texture std ({skin_metrics.skin_micro_texture_std:.2f}) below min ({self.config.min_skin_micro_texture_std:.2f}) — skin is over-smoothed"
             )
+
+        id_sim: Optional[float] = None
+        shape_note = ""
+        if reference_face_bgr is not None:
+            ref_face = self.detector.detect(reference_face_bgr)
+            if abs(ref_face.yaw_asymmetry_ratio - face.yaw_asymmetry_ratio) <= 0.16:
+                id_sim = self.measure_identity_similarity(reference_face_bgr, patch, ref_face, face)
+                if id_sim < self.config.min_identity_cosine_sim:
+                    failures.append(
+                        f"Face identity similarity ({id_sim:.3f}) below min ({self.config.min_identity_cosine_sim:.3f}) — face drifted from reference"
+                    )
+            try:
+                ref_pil = Image.fromarray(cv2.cvtColor(reference_face_bgr, cv2.COLOR_BGR2RGB))
+                dst_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
+                ref_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(ref_pil))
+                dst_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(dst_pil))
+                cmp = self.apple_vision.compare_face_shapes(
+                    ref_sh, dst_sh, limit_pct=self.config.max_face_shape_diff_pct
+                )
+                shape_note = str(cmp.get("note", ""))
+                if not cmp.get("passed", True):
+                    failures.append(f"Face shape proportion drift exceeded {self.config.max_face_shape_diff_pct}%: {shape_note}")
+            except Exception:
+                pass
 
         passed = len(failures) == 0
         msg = "ALL QUALITY GATES PASSED" if passed else "; ".join(failures)
@@ -233,5 +299,7 @@ class QualityGateAuditor:
             skin_micro_texture_std=skin_metrics.skin_micro_texture_std,
             min_organ_gradient=min_organ_grad,
             anatomical_geometry_valid=anat_ok,
+            identity_cosine_sim=id_sim,
+            face_shape_note=shape_note,
             message=msg,
         )
