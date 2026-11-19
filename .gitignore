@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.DS_Store
+*.onnx
+*.param
+*.bin
+realesrgan-ncnn-vulkan
+outputs/
+models/
+resources/
