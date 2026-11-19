@@ -9,7 +9,8 @@
     assets: [],
     selectedItemIds: new Set(),
     selectedLocationIds: new Set(),
-    activeItemCategory: "garment",
+    activeItemCategory: "all",
+    faceDirectionMode: "auto",
     batches: [],
     pose: {
       preset_id: "standing_editorial",
@@ -122,7 +123,8 @@
   }
 
   function populateCategoryControls() {
-    const schema = CATEGORY_UI_SCHEMA[state.activeItemCategory] || CATEGORY_UI_SCHEMA.garment;
+    const effCat = state.activeItemCategory === "all" ? "garment" : state.activeItemCategory;
+    const schema = CATEGORY_UI_SCHEMA[effCat] || CATEGORY_UI_SCHEMA.garment;
     const subSel = $("selItemSubRole");
     const modeSel = $("selItemMode");
     const bagSzSel = $("selBagSize");
@@ -143,8 +145,45 @@
       modeSel.appendChild(opt);
     }
     if (bagSzSel) {
-      bagSzSel.classList.toggle("hidden", state.activeItemCategory !== "bag");
+      bagSzSel.classList.toggle("hidden", effCat !== "bag");
     }
+  }
+
+  function wireDropTarget(el, onFiles) {
+    if (!el) return;
+    ["dragenter", "dragover"].forEach((evName) => {
+      el.addEventListener(evName, (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        el.classList.add("drag-over");
+      });
+    });
+    ["dragleave", "dragend"].forEach((evName) => {
+      el.addEventListener(evName, (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        el.classList.remove("drag-over");
+      });
+    });
+    el.addEventListener("drop", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      el.classList.remove("drag-over");
+      const files = ev.dataTransfer && ev.dataTransfer.files ? Array.from(ev.dataTransfer.files) : [];
+      const imgFiles = files.filter((f) => f.type.startsWith("image/") || /\.(jpe?g|png|webp|heic)$/i.test(f.name));
+      if (imgFiles.length) {
+        await onFiles(imgFiles);
+      }
+    });
+  }
+
+  function setFaceDirectionMode(mode) {
+    state.faceDirectionMode = mode;
+    const btnAuto = $("btnAutoFaceDir");
+    if (btnAuto) {
+      btnAuto.classList.toggle("hidden", mode === "auto");
+    }
+    drawPrevizCanvas();
   }
 
   const $ = (id) => document.getElementById(id);
@@ -444,10 +483,20 @@
     }
 
     const matched = resolveClosest8Angle(state.pose.head_azimuth_deg);
-    $("matchedAngleBadge").textContent = "자동 매칭: " + matched.label;
-    document.querySelectorAll(".angle-slot").forEach((el) => {
-      el.classList.toggle("matched-active", el.dataset.view === matched.view);
-    });
+    const badge = $("matchedAngleBadge");
+    if (state.faceDirectionMode === "auto") {
+      badge.className = "pill pill-info";
+      badge.textContent = "얼굴 방향: 자동 (장소 구도·조명 맞춤)";
+      document.querySelectorAll(".angle-slot").forEach((el) => {
+        el.classList.remove("matched-active");
+      });
+    } else {
+      badge.className = "pill pill-match";
+      badge.textContent = "수동 고정: " + matched.label;
+      document.querySelectorAll(".angle-slot").forEach((el) => {
+        el.classList.toggle("matched-active", el.dataset.view === matched.view);
+      });
+    }
   }
 
   function setupCanvasInteractions() {
@@ -494,6 +543,8 @@
         const deltaDeg = Math.round(dx * 0.45 * 2) / 2;
         state.pose.torso_azimuth_deg = Math.max(-90, Math.min(90, state.drag.origTorso + deltaDeg));
         state.pose.head_azimuth_deg = Math.max(-90, Math.min(90, state.drag.origHead + deltaDeg));
+        state.faceDirectionMode = "manual";
+        if ($("btnAutoFaceDir")) $("btnAutoFaceDir").classList.remove("hidden");
         syncPoseControlsFromState();
       } else if (state.drag.joint) {
         const { fovScale, camDist } = state.projectedJoints;
@@ -630,8 +681,24 @@
       thumb.addEventListener("click", () => {
         state.pose.head_azimuth_deg = v.azimuth_deg;
         state.pose.torso_azimuth_deg = v.azimuth_deg;
+        setFaceDirectionMode("manual");
         syncPoseControlsFromState();
       });
+
+      if (subj) {
+        wireDropTarget(slot, async (imgFiles) => {
+          const fd = new FormData();
+          fd.append("photo", imgFiles[0]);
+          const updated = await apiFetch("/api/subjects/" + subj.id + "/angles/" + v.view, {
+            method: "POST",
+            body: fd,
+          });
+          const idx = state.subjects.findIndex((s) => s.id === subj.id);
+          if (idx >= 0) state.subjects[idx] = updated;
+          renderSubjects();
+          showToast(v.label + " 드래그앤드랍 교체 완료!");
+        });
+      }
 
       const meta = document.createElement("div");
       meta.className = "angle-meta";
@@ -676,23 +743,30 @@
 
   function renderAssets() {
     const counts = { garment: 0, accessory: 0, bag: 0, shoe: 0 };
+    let totalSel = 0;
     for (const a of state.assets) {
       if (counts[a.category] !== undefined && state.selectedItemIds.has(a.id)) {
         counts[a.category] += 1;
+        totalSel += 1;
       }
     }
+    if ($("cnt-all")) $("cnt-all").textContent = String(totalSel);
     for (const k of Object.keys(counts)) {
       const el = $("cnt-" + k);
       if (el) el.textContent = String(counts[k]);
     }
 
-    // Styling items for active category
+    // Styling items for active category (or all)
     const itemGrid = $("stylingAssetGrid");
     itemGrid.innerHTML = "";
-    const catItems = state.assets.filter((a) => a.category === state.activeItemCategory);
+    const catItems = state.assets.filter((a) =>
+      state.activeItemCategory === "all"
+        ? a.category !== "location"
+        : a.category === state.activeItemCategory
+    );
     if (!catItems.length) {
       itemGrid.innerHTML =
-        '<div class="mini-label" style="grid-column:1/-1;padding:18px;">현재 카테고리에 첨부된 사진이 없습니다. 필요할 때 여러 장 첨부하세요.</div>';
+        '<div class="mini-label" style="grid-column:1/-1;padding:18px;">상단 6개 드롭 칸에 옷·악세사리·가방·신발 사진을 툭 떨구면 여기에 표시됩니다.</div>';
     } else {
       for (const item of catItems) {
         itemGrid.appendChild(buildAssetCard(item, state.selectedItemIds));
@@ -788,6 +862,36 @@
         drawPrevizCanvas();
       });
       body.appendChild(carrySel);
+    } else if (asset.category === "location") {
+      const locAngleSel = document.createElement("select");
+      locAngleSel.style.fontSize = "10px";
+      locAngleSel.style.padding = "3px 4px";
+      const autoInfo = asset.auto_pose_info;
+      const autoTxt = autoInfo ? "자동 (" + autoInfo.auto_matched_label + ")" : "자동 (구도·조명 맞춤)";
+      const oAuto = document.createElement("option");
+      oAuto.value = "auto";
+      oAuto.textContent = autoTxt;
+      if (asset.override_yaw_deg === null || asset.override_yaw_deg === undefined) oAuto.selected = true;
+      locAngleSel.appendChild(oAuto);
+      for (const v of state.turnaroundViews) {
+        const o = document.createElement("option");
+        o.value = String(v.azimuth_deg);
+        o.textContent = "수동 고정: " + v.label;
+        if (asset.override_yaw_deg !== null && asset.override_yaw_deg !== undefined && Number(asset.override_yaw_deg) === v.azimuth_deg) {
+          o.selected = true;
+        }
+        locAngleSel.appendChild(o);
+      }
+      locAngleSel.addEventListener("change", async () => {
+        const val = locAngleSel.value === "auto" ? null : Number(locAngleSel.value);
+        asset.override_yaw_deg = val;
+        await apiFetch("/api/assets/" + asset.id, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ override_yaw_deg: locAngleSel.value }),
+        });
+      });
+      body.appendChild(locAngleSel);
     } else if (asset.category !== "location") {
       const metaTag = document.createElement("div");
       metaTag.className = "mini-label";
@@ -988,6 +1092,7 @@
           state.pose.torso_azimuth_deg = p.torso_azimuth_deg;
           state.pose.shot_scale = p.shot_scale;
           state.pose.joints_override = {};
+          setFaceDirectionMode("manual");
           syncPoseControlsFromState();
         });
         pRow.appendChild(b);
@@ -1017,7 +1122,69 @@
     }
   }
 
+  async function registerFaceFile(file) {
+    const fd = new FormData();
+    fd.append("photo", file);
+    const autoName = ($("subjName").value || "").trim() || file.name.replace(/\.[^.]+$/, "");
+    fd.append("name", autoName);
+    fd.append("identity_label", $("subjLabel").value || "human subject in the reference portrait");
+    if ($("subjHeight").value) fd.append("height_cm", $("subjHeight").value);
+    if ($("subjWeight").value) fd.append("weight_kg", $("subjWeight").value);
+    fd.append("eyewear", $("subjEyewear").value || "");
+    fd.append("hairstyle", $("subjHair").value || "");
+
+    $("btnRegisterSubject").disabled = true;
+    try {
+      const created = await apiFetch("/api/subjects", { method: "POST", body: fd });
+      state.subjects.push(created);
+      state.selectedSubjectId = created.id;
+      $("subjectForm").reset();
+      $("subjLabel").value = "human subject in the reference portrait";
+      renderSubjects();
+      showToast(created.name + " 드래그앤드랍 즉시 등록 완료!");
+    } catch (e) {
+      showToast("등록 실패: " + e.message);
+    } finally {
+      $("btnRegisterSubject").disabled = false;
+    }
+  }
+
+  async function uploadItemsQuick(files, category, subRole, styleOrMode, scaleMode, sizeCm, desc) {
+    if (!files.length) return;
+    const fd = new FormData();
+    fd.append("category", category);
+    fd.append("sub_role", subRole || "");
+    fd.append("description", desc || "");
+    if (category === "garment") {
+      fd.append("wearing_style", styleOrMode || "auto");
+    } else if (category === "accessory") {
+      fd.append("scale_mode", styleOrMode || "auto");
+    } else if (category === "bag") {
+      fd.append("carry_mode", styleOrMode || "hand_right");
+      fd.append("scale_mode", scaleMode || "medium_standard");
+    }
+    if (sizeCm) fd.append("size_cm", sizeCm);
+    for (const f of files) fd.append("files", f);
+
+    try {
+      const res = await apiFetch("/api/assets/upload", { method: "POST", body: fd });
+      for (const a of res.uploaded) {
+        state.assets.push(a);
+        if (category === "location") state.selectedLocationIds.add(a.id);
+        else state.selectedItemIds.add(a.id);
+      }
+      renderAssets();
+      showToast(res.count + "장 드래그앤드랍 첨부 완료!");
+    } catch (e) {
+      showToast("첨부 실패: " + e.message);
+    }
+  }
+
   function bindEvents() {
+    // 1. Face Dropzone: instant upload on drop OR file select
+    wireDropTarget($("faceDropzone"), async (files) => {
+      await registerFaceFile(files[0]);
+    });
     $("faceInput").addEventListener("change", () => {
       if ($("faceInput").files.length) {
         $("faceDropLabel").innerHTML =
@@ -1028,32 +1195,37 @@
     $("subjectForm").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       if (!$("faceInput").files.length) {
-        showToast("얼굴 원본 사진을 선택하세요.");
+        showToast("얼굴 원본 사진을 선택하거나 드롭하세요.");
         return;
       }
-      const fd = new FormData();
-      fd.append("photo", $("faceInput").files[0]);
-      fd.append("name", $("subjName").value || "신규 인물");
-      fd.append("identity_label", $("subjLabel").value || "human subject in the reference portrait");
-      if ($("subjHeight").value) fd.append("height_cm", $("subjHeight").value);
-      if ($("subjWeight").value) fd.append("weight_kg", $("subjWeight").value);
-      fd.append("eyewear", $("subjEyewear").value || "");
-      fd.append("hairstyle", $("subjHair").value || "");
+      await registerFaceFile($("faceInput").files[0]);
+    });
 
-      $("btnRegisterSubject").disabled = true;
-      try {
-        const created = await apiFetch("/api/subjects", { method: "POST", body: fd });
-        state.subjects.push(created);
-        state.selectedSubjectId = created.id;
-        $("subjectForm").reset();
-        $("subjLabel").value = "human subject in the reference portrait";
-        renderSubjects();
-        showToast(created.name + " 정면 광학 앵커 등록 완료!");
-      } catch (e) {
-        showToast("등록 실패: " + e.message);
-      } finally {
-        $("btnRegisterSubject").disabled = false;
+    // 2. 6-Slot Quick Drag & Drop Pads in STEP 02
+    document.querySelectorAll(".quick-drop-pad").forEach((pad) => {
+      const qcat = pad.dataset.qcat;
+      const qrole = pad.dataset.qrole;
+      const qstyle = pad.dataset.qstyle;
+      const inp = pad.querySelector("input[type='file']");
+      wireDropTarget(pad, async (files) => {
+        await uploadItemsQuick(files, qcat, qrole, qstyle, "medium_standard", "", "");
+      });
+      if (inp) {
+        inp.addEventListener("change", async () => {
+          if (inp.files.length) {
+            await uploadItemsQuick(Array.from(inp.files), qcat, qrole, qstyle, "medium_standard", "", "");
+            inp.value = "";
+          }
+        });
       }
+    });
+
+    // 3. Location Multi-File Dropzone in STEP 04
+    wireDropTarget($("locationDropzone"), async (files) => {
+      await uploadItemsQuick(files, "location", "", "auto", "", "", "");
+    });
+    wireDropTarget($("locationAssetGrid"), async (files) => {
+      await uploadItemsQuick(files, "location", "", "auto", "", "", "");
     });
 
     $("btnGenerate8Angles").addEventListener("click", async () => {
@@ -1067,12 +1239,12 @@
         });
         showToast(
           res.mode === "manifest"
-            ? "8각도 3-Hop 프롬프트 설계도가 저장되었습니다."
-            : "3-Hop 8각도 자동 생성을 시작했습니다!"
+            ? "8방향 프롬프트 설계도가 저장되었습니다."
+            : "좌·우 디테일 8방향 자동 생성을 시작했습니다!"
         );
         await loadStatus();
       } catch (e) {
-        showToast("8각도 생성 오류: " + e.message);
+        showToast("8방향 생성 오류: " + e.message);
       }
     });
 
@@ -1087,69 +1259,46 @@
     });
 
     $("itemFilesInput").addEventListener("change", async () => {
-      const files = $("itemFilesInput").files;
+      const files = Array.from($("itemFilesInput").files || []);
       if (!files.length) return;
-      const fd = new FormData();
-      fd.append("category", state.activeItemCategory);
-      fd.append("sub_role", $("selItemSubRole").value || "");
-      fd.append("description", $("itemDesc").value || "");
-      const modeVal = $("selItemMode").value || "auto";
-      if (state.activeItemCategory === "garment") {
-        fd.append("wearing_style", modeVal);
-      } else if (state.activeItemCategory === "accessory") {
-        fd.append("scale_mode", modeVal);
-      } else if (state.activeItemCategory === "bag") {
-        fd.append("carry_mode", modeVal);
-        fd.append("scale_mode", $("selBagSize").value || "medium_standard");
-      }
-      if ($("itemSizeCm").value) {
-        fd.append("size_cm", $("itemSizeCm").value);
-      }
-      for (const f of files) fd.append("files", f);
-      try {
-        const res = await apiFetch("/api/assets/upload", { method: "POST", body: fd });
-        for (const a of res.uploaded) {
-          state.assets.push(a);
-          state.selectedItemIds.add(a.id);
-        }
-        $("itemFilesInput").value = "";
-        renderAssets();
-        drawPrevizCanvas();
-        showToast(res.count + "개 아이템 첨부 완료 (레이어링·스케일·포즈 연동 적용)");
-      } catch (e) {
-        showToast("아이템 업로드 실패: " + e.message);
-      }
+      const effCat = state.activeItemCategory === "all" ? "garment" : state.activeItemCategory;
+      await uploadItemsQuick(
+        files,
+        effCat,
+        $("selItemSubRole").value || "",
+        $("selItemMode").value || "auto",
+        $("selBagSize").value || "medium_standard",
+        $("itemSizeCm").value || "",
+        $("itemDesc").value || ""
+      );
+      $("itemFilesInput").value = "";
     });
 
     $("locationFilesInput").addEventListener("change", async () => {
-      const files = $("locationFilesInput").files;
+      const files = Array.from($("locationFilesInput").files || []);
       if (!files.length) return;
-      const fd = new FormData();
-      fd.append("category", "location");
-      for (const f of files) fd.append("files", f);
-      try {
-        const res = await apiFetch("/api/assets/upload", { method: "POST", body: fd });
-        for (const a of res.uploaded) {
-          state.assets.push(a);
-          state.selectedLocationIds.add(a.id);
-        }
-        $("locationFilesInput").value = "";
-        renderAssets();
-        showToast("장소/레퍼런스 " + res.count + "장 추가됨 → 동시 생성 수량 반영!");
-      } catch (e) {
-        showToast("장소 업로드 실패: " + e.message);
-      }
+      await uploadItemsQuick(files, "location", "", "auto", "", "", "");
+      $("locationFilesInput").value = "";
     });
 
     $("textLocationsInput").addEventListener("input", updateBatchCountLabel);
 
-    // Pose Sliders
+    if ($("btnAutoFaceDir")) {
+      $("btnAutoFaceDir").addEventListener("click", () => {
+        setFaceDirectionMode("auto");
+        showToast("얼굴 방향이 자동(장소·구도 맞춤) 모드로 전환되었습니다.");
+      });
+    }
+
+    // Pose Sliders (moving head/torso switches to manual direction override)
     $("rngHeadAz").addEventListener("input", (e) => {
       state.pose.head_azimuth_deg = Number(e.target.value);
+      setFaceDirectionMode("manual");
       syncPoseControlsFromState();
     });
     $("rngTorsoAz").addEventListener("input", (e) => {
       state.pose.torso_azimuth_deg = Number(e.target.value);
+      setFaceDirectionMode("manual");
       syncPoseControlsFromState();
     });
     $("rngHeadPitch").addEventListener("input", (e) => {
@@ -1180,7 +1329,7 @@
 
     $("btnLaunchBatch").addEventListener("click", async () => {
       if (!state.selectedSubjectId) {
-        showToast("먼저 STEP 01에서 인물을 선택하거나 등록하세요.");
+        showToast("먼저 STEP 01에서 인물을 선택하거나 얼굴 사진을 드롭하세요.");
         return;
       }
       const textItems = [];
@@ -1202,7 +1351,8 @@
         location_scope: $("selLocationScope").value,
         canvas_preset: $("selCanvasPreset").value,
         provider: $("selProvider").value,
-        attach_previz_image: $("chkAttachPreviz").checked,
+        face_direction_mode: state.faceDirectionMode,
+        attach_previz_image: false,
         pose: Object.assign({}, state.pose, {
           custom_pose_note: $("customPoseNote").value.trim(),
         }),
@@ -1215,7 +1365,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        showToast("총 " + batch.total_jobs + "장 배치 작업이 등록되었습니다!");
+        showToast("총 " + batch.total_jobs + "장 1원본들→1생성 배치가 시작되었습니다!");
         await loadStatus();
       } catch (e) {
         showToast("배치 실행 오류: " + e.message);

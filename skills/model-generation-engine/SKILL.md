@@ -24,9 +24,11 @@ description: Use this skill immediately whenever the user talks about creating, 
 
 ## 2. 100% Universal Zero-Hardcoding Rules (Mandatory Across ALL Projects)
 1. **Zero Hardcoded Attributes**: Never hardcode gender (`Korean male`, `his`), eyewear (`browline glasses`), height/weight (`175cm, 80kg`), fixed outfits, fixed locations, pixel coordinates `(x1, y1, x2, y2)`, or fixed CIE LAB skin thresholds (`L>125, A>131, B>133`) anywhere in code or prompts. Static regex audit `test_12` enforces this across `model_generation_engine/**/*.py`.
-2. **Untouched `Gen-0` Primary Authority (Zero Re-Feeding Degradation)**:
-   - Always pass the **untouched real photograph (`Gen-0` pure optical canonical front)** as **Image 1** in every turnaround hop and every scene generation job.
-   - Never pass an AI-generated image (`Gen-1`) alone without `Gen-0` Image 1—otherwise faint AR lens coatings amplify into green irises and shadow noise turns into purple eyelid bruises on small wide-shot faces.
+2. **Ironclad `1원본들 → 1생성` (One-Originals-Set to One-Generation — Enforced by Global Hook `원본1생성게이트.py` & `OriginOnlyOneShotGuard`)**:
+   - **HARD BAN ON RE-FEEDING (`Depth >= 2` PROHIBITED)**: Never feed a generated scene output (`live_test_`, `hero_`, `5k_21x9_`, `raw_batch_`, etc.) back into any image generator (`v1 -> v2` refinement is strictly blocked by `OriginOnlyOneShotGuard` SHA-256 blacklist AND `~/.gemini/config/hooks.json` `PreToolUse` hook).
+   - **8-Direction Face Anchors ALWAYS Attached**: Every scene generation call MUST attach `[Image 1: Exact Angle-Matched 8-Direction Face, Image 2: Untouched 0° Original Face, Image 3: Complete -90°..+90° 8-Direction Master Turnaround Sheet]` alongside the **raw user-uploaded original assets** (`원본 옷`, `원본 악세사리`, `원본 가방`, `원본 신발`, `원본 장소`).
+   - **ZERO Synthetic Boards / Wireframes in `--image`**: Never pass `composite_styling_board.jpg` or synthetic `previz_*.jpg` wireframes into `--image`; 3D Previz is strictly for UI pose/angle control (auto face direction by default, manual override when changed).
+   - Use direct native `4K` (`3840x2160`) multi-image `gti` (`StudioImageRuntime`) rather than 3-image-capped subagent tools whenever attaching >3 originals.
 3. **Pure Optical `Lanczos-4` Super-Resolution (`Real-ESRGAN` Disabled by Default)**:
    - `EngineConfig.upscale_mode = "optical_lanczos"` is the mandatory default. `Real-ESRGAN (4xNomos8kSC)` corrodes `2px` glasses rims and drops `Tenengrad` sharpness by `63~88%`.
 4. **Zero Synthetic Skin Noise & Zero Highlight Chrominance Shift (`MatteSkinProcessor`)**:

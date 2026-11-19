@@ -786,7 +786,9 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                 self.assertIn("item_accessory", roles)
                 self.assertIn("item_bag", roles)
                 self.assertIn("item_shoe", roles)
-                self.assertIn("pose_previz_guide", roles)
+                # Strict `1원본들 → 1생성`: NEVER pass synthetic previz wireframes or collage boards in ordered_reference_images!
+                self.assertNotIn("pose_previz_guide", roles)
+                self.assertNotIn("composite_styling_board", roles)
 
             # Test Studio Web App FastAPI Server end-to-end
             ws_dir = tmp / "studio_ws"
@@ -916,10 +918,108 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertIn("NEVER enlarge into a tote", j0.prompt)
             self.assertIn("diagonally from the LEFT shoulder across the chest", j0.prompt)
             # 4. Attaching shoes automatically upgrades shot_scale to full-body so shoes are visible!
-            self.assertIn("full-body editorial head-to-toe shot showing complete footwear", j0.prompt)
-            # 5. Proportional Styling Board generated and attached
-            self.assertIsNotNone(j0.styling_board_path)
-            self.assertTrue(Path(j0.styling_board_path).exists())
+            self.assertIn("full-body editorial head-to-toe shot", j0.prompt)
+            # 5. Strict `1원본들 → 1생성`: UI preview rendered for dashboard, NEVER passed into ordered_reference_images
+            self.assertIsNotNone(j0.previz_ui_preview_path)
+            self.assertTrue(Path(j0.previz_ui_preview_path).exists())
+            roles0 = [r["role"] for r in j0.ordered_reference_images]
+            self.assertNotIn("pose_previz_guide", roles0)
+            self.assertNotIn("composite_styling_board", roles0)
+
+    def test_19_ironclad_1origin_1gen_guard_auto_direction_and_pretool_hook(self) -> None:
+        """Verify OriginOnlyOneShotGuard (SHA-256 blacklist, 1-job lock, 8-dir sheet attach), auto face yaw, and PreToolUse hook."""
+        import json
+        import subprocess
+        import tempfile
+        from model_generation_engine import (
+            ModelGenerationPipeline,
+            OriginLineageViolationError,
+            OriginOnlyOneShotGuard,
+            PosePrevizSpec,
+            SceneLocationInput,
+            TURNAROUND_8_VIEWS,
+        )
+
+        pipe = ModelGenerationPipeline(self.config)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            guard = OriginOnlyOneShotGuard(ledger_path=tmp / "ledger.json")
+            canon_path, _ = pipe.turnaround.prepare_canonical_identity_anchor(
+                self.ref_face, tmp / "front.jpg", target_size=(600, 750)
+            )
+            bank = {"front": canon_path}
+            for v in TURNAROUND_8_VIEWS:
+                p = tmp / f"angle_{v}.jpg"
+                p.write_bytes(canon_path.read_bytes())
+                bank[v] = p
+
+            # 1. Verify all 8-direction face anchors + 8-direction Master Sheet are attached automatically!
+            pipe.batch_composer.origin_guard = guard
+            jobs = pipe.batch_composer.compose_batch(
+                canonical_front_path=canon_path,
+                subject=SubjectProfile(subject_identity_label="Subject"),
+                locations=[SceneLocationInput(name="ref_pose_loc", image_path=self.ref_face, raw_unmasked_path=self.ref_face)],
+                poses=[PosePrevizSpec()],
+                angle_bank=bank,
+                face_direction_mode="auto",
+                work_dir=tmp / "auto_dir_stage",
+            )
+            self.assertEqual(len(jobs), 1)
+            self.assertTrue(jobs[0].direction_source.startswith("auto_"))
+            roles = [r["role"] for r in jobs[0].ordered_reference_images]
+            self.assertIn("identity_8dir_master_sheet", roles)
+
+            # 2. Verify 1-Job-1-Generation single-shot lock
+            guard.verify_one_shot_and_inputs([canon_path], job_id="job_alpha_001")
+            with self.assertRaises(OriginLineageViolationError):
+                guard.verify_one_shot_and_inputs([canon_path], job_id="job_alpha_001")
+
+            # 3. Verify SHA-256 generated output re-feeding block
+            gen_out = tmp / "some_scene_result.png"
+            cv2.imwrite(str(gen_out), np.full((128, 128, 3), (42, 99, 177), dtype=np.uint8))
+            guard.register_generated_scene_output(gen_out, job_id="job_alpha_001")
+            # Even if renamed to disguise filename, SHA-256 catches it!
+            disguised = tmp / "innocent_input.png"
+            disguised.write_bytes(gen_out.read_bytes())
+            with self.assertRaises(OriginLineageViolationError):
+                guard.verify_one_shot_and_inputs([disguised])
+
+            # 4. Verify PreToolUse Lifecycle Hook script (`enforce_1origin_1gen_hook.py`) returns "deny" on forbidden inputs!
+            hook_script = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+            bad_payload = json.dumps(
+                {
+                    "toolCall": {
+                        "name": "generate_image",
+                        "args": {"ImagePaths": ["/tmp/live_test_a_walking.jpg"]},
+                    }
+                }
+            )
+            proc_bad = subprocess.run(
+                ["python3", str(hook_script)],
+                input=bad_payload,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            res_bad = json.loads(proc_bad.stdout)
+            self.assertEqual(res_bad["decision"], "deny")
+
+            good_payload = json.dumps(
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"/opt/homebrew/bin/gti --prompt test --image {canon_path} --output /tmp/out.png"},
+                    }
+                }
+            )
+            proc_good = subprocess.run(
+                ["python3", str(hook_script)],
+                input=good_payload,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(proc_good.stdout)["decision"], "allow")
 
 
 if __name__ == "__main__":

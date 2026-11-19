@@ -228,9 +228,49 @@ input:focus, select:focus, textarea:focus {
   transition: border-color 0.15s, background 0.15s;
 }
 
-.dropzone:hover {
-  border-color: var(--accent);
-  background: rgba(76, 141, 255, 0.07);
+.dropzone:hover,
+.dropzone.drag-over,
+.quick-drop-pad:hover,
+.quick-drop-pad.drag-over,
+.angle-slot.drag-over {
+  border-color: var(--mint) !important;
+  background: rgba(47, 214, 162, 0.12) !important;
+  box-shadow: 0 0 0 2px rgba(47, 214, 162, 0.25);
+}
+
+.quick-drop-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+
+.quick-drop-pad {
+  border: 1.5px dashed #3b4760;
+  border-radius: 10px;
+  padding: 12px 6px;
+  text-align: center;
+  cursor: pointer;
+  background: rgba(17, 21, 29, 0.72);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  transition: all 0.14s ease;
+}
+
+.quick-drop-pad strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.quick-drop-pad span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.loc-dropzone {
+  padding: 18px 14px;
 }
 
 .dropzone input[type="file"] {

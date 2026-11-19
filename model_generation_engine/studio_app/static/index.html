@@ -91,15 +91,50 @@
       <div class="panel-header">
         <div>
           <span class="step-tag">STEP 02</span>
-          <h2>의상 레이어링 · 인체비례 악세사리 · 가방 위치/스케일 · 신발 첨부</h2>
-          <p class="panel-desc">속옷(이너)·미들·아우터·하의 레이어 순서, 시계·주얼리 인체 대비 실측 비율, 가방 크기·드는 방식(3D 프리비즈 연동)을 정밀 제어합니다.</p>
+          <h2>툭툭 드래그앤드랍 멀티 첨부 보드 <small>(필요한 칸에만 파일을 바로 떨구세요)</small></h2>
+          <p class="panel-desc">파인더에서 옷(겉옷/속옷/하의)·악세사리·가방·신발 원본 사진을 각 칸에 툭 떨구면 레이어링·실측 비율 잠금이 자동 적용됩니다.</p>
         </div>
       </div>
 
+      <!-- 6 Always-Visible Quick Drag & Drop Buckets -->
+      <div class="quick-drop-grid" id="quickDropGrid">
+        <label class="quick-drop-pad" data-qcat="garment" data-qrole="outerwear" data-qstyle="auto">
+          <input type="file" accept="image/*" multiple hidden />
+          <strong>겉옷 / 아우터</strong>
+          <span>자켓·코트 드롭</span>
+        </label>
+        <label class="quick-drop-pad" data-qcat="garment" data-qrole="inner_top" data-qstyle="tucked_in">
+          <input type="file" accept="image/*" multiple hidden />
+          <strong>속옷 / 상의</strong>
+          <span>티셔츠·셔츠 드롭</span>
+        </label>
+        <label class="quick-drop-pad" data-qcat="garment" data-qrole="bottom" data-qstyle="auto">
+          <input type="file" accept="image/*" multiple hidden />
+          <strong>하의 / 한벌</strong>
+          <span>바지·스커트 드롭</span>
+        </label>
+        <label class="quick-drop-pad" data-qcat="accessory" data-qrole="watch_left" data-qstyle="auto">
+          <input type="file" accept="image/*" multiple hidden />
+          <strong>악세사리</strong>
+          <span>시계·안경·소품 드롭</span>
+        </label>
+        <label class="quick-drop-pad" data-qcat="bag" data-qrole="briefcase_tote" data-qstyle="hand_right">
+          <input type="file" accept="image/*" multiple hidden />
+          <strong>가방</strong>
+          <span>토트·크로스·서류가방 드롭</span>
+        </label>
+        <label class="quick-drop-pad" data-qcat="shoe" data-qrole="sneakers" data-qstyle="auto">
+          <input type="file" accept="image/*" multiple hidden />
+          <strong>신발</strong>
+          <span>구두·로퍼·스니커즈 드롭</span>
+        </label>
+      </div>
+
       <div class="category-tabs">
-        <button type="button" class="cat-tab active" data-cat="garment">옷 / 레이어링 <span class="badge-cnt" id="cnt-garment">0</span></button>
-        <button type="button" class="cat-tab" data-cat="accessory">악세사리 (비례잠금) <span class="badge-cnt" id="cnt-accessory">0</span></button>
-        <button type="button" class="cat-tab" data-cat="bag">가방 (위치·크기) <span class="badge-cnt" id="cnt-bag">0</span></button>
+        <button type="button" class="cat-tab active" data-cat="all">전체 첨부됨 <span class="badge-cnt" id="cnt-all">0</span></button>
+        <button type="button" class="cat-tab" data-cat="garment">옷 <span class="badge-cnt" id="cnt-garment">0</span></button>
+        <button type="button" class="cat-tab" data-cat="accessory">악세사리 <span class="badge-cnt" id="cnt-accessory">0</span></button>
+        <button type="button" class="cat-tab" data-cat="bag">가방 <span class="badge-cnt" id="cnt-bag">0</span></button>
         <button type="button" class="cat-tab" data-cat="shoe">신발 <span class="badge-cnt" id="cnt-shoe">0</span></button>
       </div>
 
@@ -112,10 +147,10 @@
           <option value="medium_standard" selected>미디엄/서류가방 (~36cm)</option>
           <option value="large_tote_weekender">라지 토트/보스턴 (~48cm)</option>
         </select>
-        <input type="number" id="itemSizeCm" placeholder="실측 cm(선택)" step="0.5" style="max-width:110px;" />
-        <input type="text" id="itemDesc" placeholder="재질·컬러·핏 메모 (선택)" />
+        <input type="number" id="itemSizeCm" placeholder="실측 cm(선택)" step="0.5" style="max-width:105px;" />
+        <input type="text" id="itemDesc" placeholder="세부 메모(선택)" />
         <label class="btn btn-secondary file-btn">
-          + 사진 첨부
+          + 상세 조건 첨부
           <input type="file" id="itemFilesInput" accept="image/*" multiple hidden />
         </label>
       </div>
@@ -136,10 +171,13 @@
       <div class="panel-header">
         <div>
           <span class="step-tag">STEP 03</span>
-          <h2>인터랙티브 3D 프리비즈 포즈 디렉터</h2>
-          <p class="panel-desc">마우스로 관절(손·팔꿈치·어깨·무릎·머리)을 직접 드래그하거나 각도를 돌리면, 가장 가까운 8각도 얼굴 앵커가 자동 매칭됩니다.</p>
+          <h2>얼굴 방향 (기본 자동 · 원할 때만 수동) &amp; 3D 프리비즈 포즈</h2>
+          <p class="panel-desc">처음엔 장소·레퍼런스 구도에 맞춰 8방향 얼굴을 알아서 매칭하며, 슬라이더나 프리비즈를 건드리면 내가 원하는 방향으로 고정됩니다.</p>
         </div>
-        <div id="matchedAngleBadge" class="pill pill-match">자동 매칭: ① 정면 (0°)</div>
+        <div class="header-actions">
+          <div id="matchedAngleBadge" class="pill pill-info">얼굴 방향: 자동 (장소 구도 맞춤)</div>
+          <button type="button" id="btnAutoFaceDir" class="btn btn-ghost hidden">자동 방향으로 복귀</button>
+        </div>
       </div>
 
       <div class="previz-stage-wrap">
@@ -186,11 +224,8 @@
       </div>
 
       <div class="previz-footer">
-        <input type="text" id="customPoseNote" placeholder="세부 손동작/시선 추가 지시 (예: 오른손으로 안경테를 가볍게 잡은 자세)" />
-        <label class="chk-inline">
-          <input type="checkbox" id="chkAttachPreviz" checked />
-          3D 프리비즈 골격 가이드를 생성 엔진에 함께 전달
-        </label>
+        <input type="text" id="customPoseNote" placeholder="세부 손동작/시선 추가 지시 (선택)" />
+        <span class="pill pill-outline">1원본들→1생성 훅 잠금 (8방향 얼굴 + 순수 원본 에셋 직결)</span>
         <button type="button" id="btnResetJoints" class="btn btn-ghost">관절 초기화</button>
       </div>
     </section>
@@ -205,8 +240,8 @@
         </div>
         <div class="batch-controls">
           <select id="selCanvasPreset">
+            <option value="4k_16x9" selected>4K 시네마 16:9 (3840×2160 · 무왜곡 풀프레임)</option>
             <option value="5k_21x9">5K 울트라와이드 21:9 (5040×2160)</option>
-            <option value="4k_16x9">4K 시네마 16:9 (3840×2160)</option>
             <option value="4k_9x16">4K 버티컬 9:16 (2160×3840)</option>
             <option value="3x4_editorial">에디토리얼 3:4 (2400×3200)</option>
             <option value="1x1_square">스퀘어 1:1 (2048×2048)</option>
@@ -228,11 +263,14 @@
               <option value="scene_and_mood">공간 구조 + 16항목 톤앤매너 모두 대입</option>
               <option value="style_mood_only">레퍼런스 색감·조명·분위기 무드만 추출 대입</option>
             </select>
-            <label class="btn btn-secondary file-btn">
-              + 장소 / 레퍼런스 스타일 사진 여러 장 추가
-              <input type="file" id="locationFilesInput" accept="image/*" multiple hidden />
-            </label>
           </div>
+          <label class="dropzone loc-dropzone" id="locationDropzone">
+            <input type="file" id="locationFilesInput" accept="image/*" multiple />
+            <div class="drop-label">
+              <strong>장소 / 레퍼런스 스타일 사진 여러 장을 여기에 툭 드래그앤드랍 (또는 클릭)</strong>
+              <span>여러 장을 한 번에 떨구면 장수만큼 병렬 생성되며, 인물 각도·조명 방향도 자동 감지됩니다</span>
+            </div>
+          </label>
           <div id="locationAssetGrid" class="asset-grid loc-grid"></div>
         </div>
 

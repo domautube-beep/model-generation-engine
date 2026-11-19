@@ -42,11 +42,11 @@ STUDIO_PORT = 18830
 STATIC_DIR = Path(__file__).with_name("static")
 
 CANVAS_PRESETS: Dict[str, Tuple[int, int, str, str]] = {
-    "5k_21x9": (5040, 2160, "21:9", "1536x1024"),
-    "4k_16x9": (3840, 2160, "16:9", "1536x1024"),
-    "4k_9x16": (2160, 3840, "9:16", "1024x1536"),
+    "5k_21x9": (5040, 2160, "21:9", "3840x2160"),
+    "4k_16x9": (3840, 2160, "16:9", "3840x2160"),
+    "4k_9x16": (2160, 3840, "9:16", "2160x3840"),
     "3x4_editorial": (2400, 3200, "3:4", "1024x1536"),
-    "1x1_square": (2048, 2048, "1:1", "1024x1024"),
+    "1x1_square": (2048, 2048, "1:1", "2048x2048"),
 }
 
 
@@ -355,11 +355,18 @@ def create_studio_app(
             if bgr is None:
                 raw_p.unlink(missing_ok=True)
                 continue
+
+            auto_pose_info = None
+            if category == "location":
+                auto_pose_info = pipe.turnaround.analyze_reference_pose_before_masking(bgr)
+
             masked_p = adir / f"{aid}_masked.jpg"
             _, masked_faces = pipe.turnaround.mask_foreign_faces_in_reference(bgr, output_masked_path=masked_p)
             active_p = masked_p if masked_faces > 0 else raw_p
             if masked_faces == 0:
                 masked_p.unlink(missing_ok=True)
+
+            pipe.batch_composer.origin_guard.register_approved_origin(active_p, kind="raw_asset")
 
             item_rec = {
                 "id": aid,
@@ -371,6 +378,8 @@ def create_studio_app(
                 "scale_mode": scale_mode.strip() or "medium_standard",
                 "size_cm": size_cm,
                 "carry_mode": carry_mode.strip() or "hand_right",
+                "override_yaw_deg": None,
+                "auto_pose_info": auto_pose_info,
                 "raw_path": str(raw_p),
                 "active_path": str(active_p),
                 "preview_url": rel_url(raw_p),
@@ -393,6 +402,10 @@ def create_studio_app(
                 rec[field_k] = str(data[field_k]).strip()
         if "size_cm" in data:
             rec["size_cm"] = float(data["size_cm"]) if data["size_cm"] not in (None, "") else None
+        if "override_yaw_deg" in data:
+            rec["override_yaw_deg"] = (
+                float(data["override_yaw_deg"]) if data["override_yaw_deg"] not in (None, "", "auto") else None
+            )
         save_state()
         return rec
 
@@ -503,9 +516,11 @@ def create_studio_app(
                     SceneLocationInput(
                         name=lrec.get("filename") or f"장소_{idx:02d}",
                         image_path=Path(lrec["active_path"]),
+                        raw_unmasked_path=Path(lrec["raw_path"]) if lrec.get("raw_path") else None,
                         mood_or_place_prompt=per_note,
                         lighting_note=shared_light,
                         scope=loc_scope,
+                        override_yaw_deg=lrec.get("override_yaw_deg"),
                     )
                 )
 
@@ -555,16 +570,22 @@ def create_studio_app(
         bdir = base_dir / "batches" / bid
         bdir.mkdir(parents=True, exist_ok=True)
 
+        sdir_subj = base_dir / "subjects" / sid
+        sheet_cand = sdir_subj / "master_8angle_sheet.jpg"
+        face_dir_mode = str(data.get("face_direction_mode") or "auto")
+
         composed_jobs = pipe.batch_composer.compose_batch(
             canonical_front_path=Path(subj_rec["canonical_front_path"]),
             subject=subj_prof,
             locations=loc_inputs,
             poses=[pose_spec],
             angle_bank=angle_bank,
+            master_8dir_sheet_path=sheet_cand if sheet_cand.exists() else None,
             items=items,
             work_dir=bdir / "staging",
             aspect_ratio_label=aspect_lbl,
-            attach_previz_image=bool(data.get("attach_previz_image", True)),
+            face_direction_mode=face_dir_mode,
+            attach_previz_image=False,  # Strict `1원본들 → 1생성`: ONLY 8-dir faces + raw original assets!
         )
 
         caps = rt.capabilities()
@@ -626,12 +647,15 @@ def create_studio_app(
                             output_path=raw_out,
                             size=gen_size,
                             provider=eff_provider,
+                            job_id=f"{bid}_{j_obj.job_tag}",
                         )
                         res = await asyncio.to_thread(
                             custom_pipe.run_single_pass_5k,
                             raw_out,
                             hero_out,
                             cu_out,
+                            42,
+                            Path(subj_rec["canonical_front_path"]),
                         )
                         if pipe.config.vault_dir:
                             v_out = pipe.config.vault_dir / "outputs"

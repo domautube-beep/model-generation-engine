@@ -249,6 +249,50 @@ class RealPersonTurnaroundEngine:
             cv2.imwrite(str(output_masked_path), out, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
         return out, count
 
+    def analyze_reference_pose_before_masking(self, bgr_img: np.ndarray) -> Dict[str, object]:
+        """Automatically infer ideal head yaw (-90..+90 deg) and horizontal placement from a location/style photo BEFORE grey-masking."""
+        h, w = bgr_img.shape[:2]
+        try:
+            face = self.detector.detect(bgr_img)
+            le, re, nose, _, _ = face.landmarks_5pt
+            d_left = float(np.linalg.norm(nose - le))
+            d_right = float(np.linalg.norm(nose - re))
+            signed_asym = (d_left - d_right) / max(1.0, d_left + d_right)
+            est_yaw = float(np.clip(signed_asym * 145.0, -90.0, 90.0))
+            matched = resolve_8angle_view_from_azimuth(est_yaw)
+            snap_yaw = VIEW_AZIMUTH_DEG[matched]
+            x_norm = float(np.clip(face.center[0] / max(1.0, float(w)), 0.25, 0.75))
+            return {
+                "auto_yaw_deg": snap_yaw,
+                "auto_matched_view": matched,
+                "auto_matched_label": VIEW_LABELS_KO[matched],
+                "auto_subject_x_norm": round(x_norm, 3),
+                "auto_source": "reference_face_yaw",
+            }
+        except Exception:
+            # Empty room / architectural background: orient face gently toward the brighter key-light half
+            gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
+            mid_x = max(1, w // 2)
+            left_luma = float(np.mean(gray[:, :mid_x]))
+            right_luma = float(np.mean(gray[:, mid_x:]))
+            if left_luma > right_luma + 10.0:
+                est_yaw = -22.5
+                x_norm = 0.58
+            elif right_luma > left_luma + 10.0:
+                est_yaw = 22.5
+                x_norm = 0.42
+            else:
+                est_yaw = 0.0
+                x_norm = 0.56
+            matched = resolve_8angle_view_from_azimuth(est_yaw)
+            return {
+                "auto_yaw_deg": est_yaw,
+                "auto_matched_view": matched,
+                "auto_matched_label": VIEW_LABELS_KO[matched],
+                "auto_subject_x_norm": x_norm,
+                "auto_source": "scene_lighting_flow",
+            }
+
     def extract_anatomical_blueprint(self, bgr_img: np.ndarray) -> AnatomicalBlueprint:
         """Measure canonical facial ratios via YuNet + Apple Vision without hardcoded assumptions."""
         h, w = bgr_img.shape[:2]

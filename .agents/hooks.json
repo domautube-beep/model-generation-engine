@@ -1,0 +1,17 @@
+{
+  "enforce-1origin-1gen": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": ".*generate_image.*|run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Volumes/DOMA/Project/모델생성/hooks/enforce_1origin_1gen_hook.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

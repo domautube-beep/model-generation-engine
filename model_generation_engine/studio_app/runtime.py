@@ -1,4 +1,4 @@
-"""Multi-Backend Image Generation Runtime (`gti` God-Tibo-Imagen CLI, `gemini` REST API, and `manifest` bundle mode)."""
+"""Multi-Backend `1원본들 → 1생성` Image Generation Runtime (`gti` 4K Native CLI, `gemini` REST API, and `manifest` mode)."""
 
 from __future__ import annotations
 
@@ -11,15 +11,22 @@ from typing import Dict, List, Optional
 
 import httpx
 
+from ..origin_guard import OriginOnlyOneShotGuard
+
 
 class StudioImageRuntime:
-    """Executes multi-reference image generation jobs in parallel across local GTI or Gemini backends."""
+    """Executes single-pass (`1원본들 → 1생성`) multi-reference image generation with cryptographic lineage enforcement."""
 
-    def __init__(self, gti_bin: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        gti_bin: Optional[str] = None,
+        origin_guard: Optional[OriginOnlyOneShotGuard] = None,
+    ) -> None:
         self.gti_bin = gti_bin or shutil.which("gti") or (
             "/opt/homebrew/bin/gti" if Path("/opt/homebrew/bin/gti").exists() else None
         )
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        self.origin_guard = origin_guard or OriginOnlyOneShotGuard()
 
     def capabilities(self) -> Dict[str, object]:
         gti_ready = bool(self.gti_bin and Path(self.gti_bin).exists())
@@ -31,6 +38,7 @@ class StudioImageRuntime:
             "gemini_configured": gemini_ready,
             "default_provider": default_provider,
             "supported_providers": ["gti", "gemini", "manifest"],
+            "one_origin_one_gen_guard": True,
         }
 
     async def generate_image(
@@ -38,9 +46,13 @@ class StudioImageRuntime:
         prompt: str,
         reference_image_paths: List[Path],
         output_path: Path,
-        size: str = "1536x1024",
+        size: str = "3840x2160",
         provider: str = "auto",
+        job_id: Optional[str] = None,
     ) -> Path:
+        # HARD GATE 1: Verify `1원본들 → 1생성` BEFORE calling any image backend!
+        self.origin_guard.verify_one_shot_and_inputs(reference_image_paths, job_id=job_id)
+
         chosen = provider
         if chosen == "auto":
             caps = self.capabilities()
@@ -48,19 +60,24 @@ class StudioImageRuntime:
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if chosen == "gti":
-            return await self._run_gti(prompt, reference_image_paths, output_path, size=size)
-        if chosen == "gemini":
-            return await self._run_gemini(prompt, reference_image_paths, output_path)
-        raise RuntimeError(
-            "No live image backend selected ('manifest' mode prepares validated prompts, masked assets, and 3D previz guides)."
-        )
+            out = await self._run_gti(prompt, reference_image_paths, output_path, size=size)
+        elif chosen == "gemini":
+            out = await self._run_gemini(prompt, reference_image_paths, output_path)
+        else:
+            raise RuntimeError(
+                "No live image backend selected ('manifest' mode prepares validated prompts and original reference lists)."
+            )
+
+        # HARD GATE 2: Permanently blacklist generated scene output SHA-256 so it can NEVER be re-fed!
+        self.origin_guard.register_generated_scene_output(out, job_id=job_id or "")
+        return out
 
     async def _run_gti(
         self,
         prompt: str,
         reference_image_paths: List[Path],
         output_path: Path,
-        size: str = "1536x1024",
+        size: str = "3840x2160",
     ) -> Path:
         if not self.gti_bin or not Path(self.gti_bin).exists():
             raise RuntimeError("GTI CLI ('gti') is not installed on this machine.")

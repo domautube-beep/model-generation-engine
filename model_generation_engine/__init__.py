@@ -38,6 +38,7 @@ from .identity_turnaround import (
     normalize_frontal_yaw_deg,
     resolve_8angle_view_from_azimuth,
 )
+from .origin_guard import OriginLineageViolationError, OriginOnlyOneShotGuard
 from .previz_pose import POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
 from .multi_asset_composer import (
     AttachmentItem,
@@ -84,6 +85,8 @@ __all__ = [
     "RealPersonTurnaroundEngine",
     "normalize_frontal_yaw_deg",
     "resolve_8angle_view_from_azimuth",
+    "OriginOnlyOneShotGuard",
+    "OriginLineageViolationError",
     "POSE_PRESETS",
     "PosePrevizSpec",
     "Previz3DRenderer",

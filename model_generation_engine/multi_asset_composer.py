@@ -1,17 +1,17 @@
-"""Universal Multi-Asset, Hierarchical Layering, Anthropometric Scale Lock & Multi-Location Batch Composer (`multi_asset_composer.py` v3.2).
+"""Universal `1원본들 → 1생성` Multi-Asset, 8-Direction Face Bank & Multi-Location Batch Composer (`multi_asset_composer.py` v3.3).
 
-Solves the 3 real-world styling challenges universally (0% hardcoding):
-1. Multi-Piece Garment Layering (`inner_top` -> `mid_layer` -> `outerwear` + `bottom` / `one_piece`):
-   - Explicit Z-order layering rules so inner shirts/t-shirts are never swallowed by buttoned outerwear unless explicitly closed.
-2. Anthropometric Scale & Proportion Lock (`scale_mode`, `size_cm`, and slot-to-body ratio anchors):
-   - Anchors every accessory (`watch ~40mm / 70% of wrist width`, `eyewear 1:1 temple span`, `belt 3.2cm buckle`, `fine jewelry 1-2.5cm`)
-     and every bag (`micro_mini ~20cm`, `small_compact ~26cm`, `medium_standard ~36cm`, `large_tote_weekender ~48cm`) against human body
-     landmarks (`palm ~8.5cm`, `head height ~22cm`, `torso width ~38cm`) so standalone product photos never blow up or shrink.
-   - Builds a proportional **Composite Styling Board (`composite_styling_sheet.jpg`)** with anatomically weighted cell sizes so
-     small accessories do not visually overpower full garments in multi-image attention.
-3. Bag Carry & Placement Kinematics (`carry_mode` coupled with 3D Previz Pose):
-   - Supports hand-held (`hand_right`, `hand_left`), crook-of-arm (`crook_right`, `crook_left`), shoulder (`shoulder_right`, `shoulder_left`),
-     crossbody (`crossbody_l2r`, `crossbody_r2l`), underarm clutch (`underarm_clutch`), backpack (`backpack`), and floor/table placement (`placed_beside`).
+Enforces the ironclad **`1원본들 → 1생성` (One-Originals-Set to One-Generation)** contract:
+1. **8-Direction Face Bank ALWAYS Attached**:
+   - Attaches the subject's approved **8-Direction Face Anchors** (`Exact Angle-Matched 8-Direction Face` + `Untouched 0° Original Face`
+     + `Complete 8-Direction Master Turnaround Sheet` / available 8-direction bank views) directly into the single generation call!
+2. **100% Raw Original Assets ONLY (ZERO Derived Collages, ZERO Previz Wireframe JPEGs, ZERO Re-Feeding)**:
+   - Every garment (`inner_top`, `mid_layer`, `outerwear`, `bottom`, `one_piece`), accessory (`watch`, `eyewear`, `jewelry`, `belt`, `hat`),
+     bag (`micro_mini .. large_tote_weekender` × 11 `carry_mode`s), shoe, and location is attached as its **original asset file**
+     (with foreign human faces grey-masked only if a foreign model's face was detected inside a lookbook/mood photo).
+   - Validated by `OriginOnlyOneShotGuard` before execution (`Depth == 1` atomic single shot).
+3. **Auto Face-Direction Inference by Default (`face_direction_mode = "auto"`), Manual Override on Demand**:
+   - Automatically detects the ideal head direction (`-90°..+90°`) per location from reference pose or key-light direction unless
+     the user explicitly overrides the direction.
 """
 
 from __future__ import annotations
@@ -21,10 +21,18 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
-from PIL import Image, ImageDraw, ImageFont
 
 from .config import SubjectProfile
-from .identity_turnaround import AnatomicalBlueprint, RealPersonTurnaroundEngine
+from .identity_turnaround import (
+    LEGACY_VIEW_ALIASES,
+    TURNAROUND_FULL_SWEEP,
+    VIEW_AZIMUTH_DEG,
+    VIEW_LABELS_KO,
+    AnatomicalBlueprint,
+    RealPersonTurnaroundEngine,
+    resolve_8angle_view_from_azimuth,
+)
+from .origin_guard import OriginOnlyOneShotGuard
 from .previz_pose import PosePrevizSpec, Previz3DRenderer
 from .prompt_builder import PromptFirewall
 
@@ -127,16 +135,16 @@ SHOE_SLOTS: Dict[str, str] = {
 
 @dataclass
 class AttachmentItem:
-    """Single user-attached styling item with explicit layering slot, anthropometric scale, and carry/wear mode."""
+    """Single user-attached original styling item."""
 
     category: str  # "garment" | "accessory" | "bag" | "shoe"
     image_path: Optional[Path] = None
     description: str = ""
-    sub_role: str = ""  # e.g. "inner_top", "outerwear", "bottom", "watch_left", "loafers"
-    wearing_style: str = "auto"  # for garments: "auto", "open_layered", "closed_buttoned", "tucked_in", etc.
-    scale_mode: str = "medium_standard"  # for bags: BAG_SIZES key; for accessories: "auto" | "delicate" | "bold"
-    size_cm: Optional[float] = None  # optional explicit width/diameter in cm
-    carry_mode: str = "hand_right"  # for bags: BAG_CARRY_MODES key
+    sub_role: str = ""
+    wearing_style: str = "auto"
+    scale_mode: str = "medium_standard"
+    size_cm: Optional[float] = None
+    carry_mode: str = "hand_right"
 
     def __post_init__(self) -> None:
         if self.category not in ITEM_CATEGORIES:
@@ -145,35 +153,46 @@ class AttachmentItem:
 
 @dataclass
 class SceneLocationInput:
-    """Single target location or mood/style reference (uploading N creates N generation jobs)."""
+    """Single target location or mood/style reference (uploading N creates N parallel jobs)."""
 
     name: str = "scene"
     image_path: Optional[Path] = None
+    raw_unmasked_path: Optional[Path] = None
     mood_or_place_prompt: str = ""
     lighting_note: str = ""
     scope: str = "scene_and_mood"
+    override_yaw_deg: Optional[float] = None
 
 
 @dataclass
 class ComposedSceneJob:
-    """Fully resolved, firewall-validated single generation job ready for execution."""
+    """Fully resolved, firewall- & origin-guard-validated single generation job (`1원본들 → 1생성`)."""
 
     job_index: int
     job_tag: str
     matched_8angle_view: str
     head_azimuth_deg: float
+    direction_source: str  # "auto_reference_pose" | "auto_scene_light" | "manual_override"
     prompt: str
     ordered_reference_images: List[Dict[str, str]] = field(default_factory=list)
-    previz_guide_path: Optional[str] = None
-    styling_board_path: Optional[str] = None
+    previz_ui_preview_path: Optional[str] = None  # For UI display ONLY — NEVER passed into image generator!
     location_name: str = ""
+
+    @property
+    def previz_guide_path(self) -> Optional[str]:
+        return self.previz_ui_preview_path
 
 
 class MultiSceneBatchComposer:
-    """Expands (Subject 8-Direction Bank × Layered/Scale-Locked Items × N Locations × M Previz Poses) into parallel jobs."""
+    """Expands (Subject 8-Direction Face Bank × Original Styling Assets × N Locations × Pose) under `1원본들 → 1생성`."""
 
-    def __init__(self, turnaround_engine: RealPersonTurnaroundEngine) -> None:
+    def __init__(
+        self,
+        turnaround_engine: RealPersonTurnaroundEngine,
+        origin_guard: Optional[OriginOnlyOneShotGuard] = None,
+    ) -> None:
         self.turnaround = turnaround_engine
+        self.origin_guard = origin_guard or OriginOnlyOneShotGuard()
 
     def _prepare_masked_copy(self, src_path: Path, work_dir: Path, prefix: str) -> Tuple[Path, int]:
         bgr = cv2.imread(str(src_path))
@@ -181,81 +200,16 @@ class MultiSceneBatchComposer:
             raise FileNotFoundError(f"Cannot read attachment image: {src_path}")
         out_path = work_dir / f"{prefix}_{src_path.stem}_masked.jpg"
         _, masked_count = self.turnaround.mask_foreign_faces_in_reference(bgr, output_masked_path=out_path)
-        return (out_path if masked_count > 0 else src_path), masked_count
-
-    @staticmethod
-    def _build_proportional_styling_board(
-        prepared_items: Sequence[Tuple[AttachmentItem, Optional[Path], int]],
-        output_board_path: Path,
-    ) -> Optional[Path]:
-        """Assemble multiple attached item photos into a single anatomically proportioned, labeled Styling Board."""
-        visual_items = [(it, p) for it, p, _ in prepared_items if p is not None and p.exists()]
-        if len(visual_items) < 2:
-            return None
-
-        # Anatomically proportional cell heights so watches/accessories don't look as huge as coats!
-        cols = min(4, len(visual_items))
-        rows = (len(visual_items) + cols - 1) // cols
-        cell_w, cell_h, header_h, pad = 380, 420, 54, 18
-        board_w = pad + cols * (cell_w + pad)
-        board_h = pad + rows * (cell_h + header_h + pad)
-        board = Image.new("RGB", (board_w, board_h), (246, 246, 244))
-        draw = ImageDraw.Draw(board)
-        font = ImageFont.load_default()
-        for fp in ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc"):
-            if Path(fp).exists():
-                try:
-                    font = ImageFont.truetype(fp, 17)
-                    break
-                except Exception:
-                    pass
-
-        for idx, (it, p) in enumerate(visual_items):
-            r, c = divmod(idx, cols)
-            x0 = pad + c * (cell_w + pad)
-            y0 = pad + r * (cell_h + header_h + pad)
-            draw.rectangle([x0, y0, x0 + cell_w, y0 + cell_h + header_h], fill=(255, 255, 255), outline=(215, 218, 224), width=2)
-
-            # Relative visual occupancy inside the cell (accessories/mini-bags occupy smaller visual area!)
-            occ = 0.90
-            if it.category == "accessory":
-                occ = 0.52
-            elif it.category == "shoe":
-                occ = 0.68
-            elif it.category == "bag":
-                occ = {"micro_mini": 0.48, "small_compact": 0.62, "medium_standard": 0.76, "large_tote_weekender": 0.92}.get(
-                    it.scale_mode, 0.74
-                )
-
-            max_iw = int(round(cell_w * occ))
-            max_ih = int(round(cell_h * occ))
-            im = Image.open(p).convert("RGB")
-            im.thumbnail((max_iw, max_ih), Image.Resampling.LANCZOS)
-            ix = x0 + (cell_w - im.width) // 2
-            iy = y0 + (cell_h - im.height) // 2
-            board.paste(im, (ix, iy))
-
-            tag_role = (it.sub_role or it.category).upper()[:24]
-            extra = ""
-            if it.category == "bag":
-                extra = f" [{it.scale_mode.split('_')[0].upper()}]"
-            elif it.category == "garment" and it.wearing_style != "auto":
-                extra = f" [{it.wearing_style.split('_')[0].upper()}]"
-            lbl = f"#{idx + 1} {tag_role}{extra}"
-            draw.text((x0 + 10, y0 + cell_h + 14), lbl, fill=(32, 36, 44), font=font)
-
-        output_board_path.parent.mkdir(parents=True, exist_ok=True)
-        board.save(str(output_board_path), format="JPEG", quality=95)
-        return output_board_path
+        if masked_count == 0:
+            out_path.unlink(missing_ok=True)
+            return src_path, 0
+        return out_path, masked_count
 
     @staticmethod
     def compile_styling_architecture(
         prepared_items: Sequence[Tuple[AttachmentItem, Optional[Path], int]],
     ) -> Tuple[str, Optional[str], str]:
-        """Compile structured Z-order garment layering + anthropometric scale lock + bag carry kinematics.
-
-        Returns `(full_styling_directive, active_bag_carry_mode, active_bag_size)`.
-        """
+        """Compile structured Z-order garment layering + anthropometric scale lock + bag carry kinematics."""
         if not prepared_items:
             return (
                 "contemporary tailored editorial attire harmonizing naturally with the environment",
@@ -274,7 +228,6 @@ class MultiSceneBatchComposer:
 
         clauses: List[str] = []
 
-        # 1. Hierarchical Garment Layering (Inner -> Mid -> Outer + Bottom)
         if garments:
             layer_order = {"inner_top": 1, "mid_layer": 2, "outerwear": 3, "one_piece": 4, "bottom": 5}
             sorted_g = sorted(garments, key=lambda x: layer_order.get(x.sub_role, 3))
@@ -293,7 +246,6 @@ class MultiSceneBatchComposer:
                 g_parts.append(part)
             clauses.append("Garment Layering Z-Order (inside-out): " + " -> ".join(g_parts))
 
-        # 2. Anthropometric Scale-Locked Accessories
         if accessories:
             a_parts: List[str] = []
             for a in accessories:
@@ -315,7 +267,6 @@ class MultiSceneBatchComposer:
                 a_parts.append("ensure right sleeve cuff sits ~1.5cm above the wrist bone so the right wristwatch is cleanly visible")
             clauses.append("Accessories & Anthropometric Scale Lock: " + "; ".join(a_parts))
 
-        # 3. Bag Size Ratio & Carry/Placement Kinematics
         active_bag_carry: Optional[str] = None
         active_bag_size = "medium_standard"
         if bags:
@@ -333,7 +284,6 @@ class MultiSceneBatchComposer:
                 b_parts.append(f"{sz_title}: {desc} [Scale Lock: {sz_rule}; Carry & Position: {cm_rule}]")
             clauses.append("Bag Proportion & Carry Kinematics: " + "; ".join(b_parts))
 
-        # 4. Footwear
         if shoes:
             s_parts: List[str] = []
             for s in shoes:
@@ -353,12 +303,14 @@ class MultiSceneBatchComposer:
         locations: Sequence[SceneLocationInput],
         poses: Sequence[PosePrevizSpec],
         angle_bank: Optional[Dict[str, Path]] = None,
+        master_8dir_sheet_path: Optional[Path] = None,
         items: Sequence[AttachmentItem] = (),
         work_dir: Optional[Path] = None,
         aspect_ratio_label: str = "16:9",
-        attach_previz_image: bool = True,
+        face_direction_mode: str = "manual",  # Studio UI passes "auto" by default or "manual" when user chooses an angle
+        attach_previz_image: bool = False,  # HARD DEFAULT FALSE (`1원본들 → 1생성`: never pollute `--image` with synthetic wireframes)
     ) -> List[ComposedSceneJob]:
-        """Compose `len(locations) * len(poses)` independent, firewall-validated scene generation jobs."""
+        """Compose `len(locations) * len(poses)` pure `1원본들 → 1생성` scene jobs attaching 8-Direction Face + Raw Original Assets."""
         if not locations:
             raise ValueError("At least one location or mood specification is required.")
         if not poses:
@@ -371,12 +323,34 @@ class MultiSceneBatchComposer:
 
         stage_dir = Path(work_dir) if work_dir is not None else Path(canonical_front_path).parent / ".batch_staging"
         stage_dir.mkdir(parents=True, exist_ok=True)
-        bank = angle_bank or {}
+        raw_bank = angle_bank or {}
 
+        # Normalize & whitelist all approved 8-Direction Face Anchors + Canonical 0° Front
+        self.origin_guard.register_approved_origin(canonical_front_path, kind="8dir_face")
+        norm_bank: Dict[str, Path] = {"front": Path(canonical_front_path)}
+        for k, p in raw_bank.items():
+            if p is not None and Path(p).exists():
+                canon_k = LEGACY_VIEW_ALIASES.get(k, k)
+                norm_bank[canon_k] = Path(p)
+                self.origin_guard.register_approved_origin(Path(p), kind="8dir_face")
+
+        # Ensure Master 8-Direction Turnaround Sheet exists when >= 3 angles are in the bank so ALL 8 directions are visually attached!
+        resolved_sheet_path: Optional[Path] = None
+        if master_8dir_sheet_path is not None and Path(master_8dir_sheet_path).exists():
+            resolved_sheet_path = Path(master_8dir_sheet_path)
+        elif len(norm_bank) >= 3:
+            auto_sheet = stage_dir / "subject_8dir_master_sheet.jpg"
+            self.turnaround.assemble_master_turnaround_sheet(norm_bank, auto_sheet, include_labels=True)
+            resolved_sheet_path = auto_sheet
+        if resolved_sheet_path is not None:
+            self.origin_guard.register_approved_origin(resolved_sheet_path, kind="8dir_face")
+
+        # Prepare raw original styling items (byte-for-byte original unless a foreign model's face required grey masking)
         prepared_items: List[Tuple[AttachmentItem, Optional[Path], int]] = []
         for idx, it in enumerate(items):
             if it.image_path is not None and Path(it.image_path).exists():
                 m_path, cnt = self._prepare_masked_copy(Path(it.image_path), stage_dir, f"item{idx:02d}_{it.category}")
+                self.origin_guard.register_approved_origin(m_path, kind="raw_asset")
                 prepared_items.append((it, m_path, cnt))
             else:
                 prepared_items.append((it, None, 0))
@@ -384,35 +358,63 @@ class MultiSceneBatchComposer:
         styling_directive, active_bag_carry, active_bag_size = self.compile_styling_architecture(prepared_items)
         has_shoes = any(it.category == "shoe" for it, _, _ in prepared_items)
 
-        # Build composite proportional styling board when >=2 item images are attached
-        board_path = self._build_proportional_styling_board(prepared_items, stage_dir / "composite_styling_board.jpg")
-
         jobs: List[ComposedSceneJob] = []
         job_counter = 0
 
         for loc_idx, loc in enumerate(locations):
             loc_img_prepared: Optional[Path] = None
             loc_masked_cnt = 0
+            loc_auto_info: Optional[Dict[str, object]] = None
+
+            src_for_analysis = loc.raw_unmasked_path or loc.image_path
+            if src_for_analysis is not None and Path(src_for_analysis).exists():
+                raw_loc_bgr = cv2.imread(str(src_for_analysis))
+                if raw_loc_bgr is not None:
+                    loc_auto_info = self.turnaround.analyze_reference_pose_before_masking(raw_loc_bgr)
+
             if loc.image_path is not None and Path(loc.image_path).exists():
                 loc_img_prepared, loc_masked_cnt = self._prepare_masked_copy(
                     Path(loc.image_path), stage_dir, f"loc{loc_idx:02d}"
                 )
+                self.origin_guard.register_approved_origin(loc_img_prepared, kind="raw_asset")
 
             for pose_idx, orig_pose in enumerate(poses):
                 job_counter += 1
                 job_tag = f"scene_{loc_idx + 1:02d}_pose_{pose_idx + 1:02d}"
 
-                # Synchronize pose with bag prop & full-body shoe visibility if needed
+                # Resolve Head & Torso Direction: Auto (from location reference pose / light) vs Manual Override
+                if loc.override_yaw_deg is not None:
+                    eff_head_yaw = float(loc.override_yaw_deg)
+                    eff_torso_yaw = eff_head_yaw * 0.85
+                    eff_x_norm = orig_pose.subject_x_norm
+                    dir_source = "manual_location_override"
+                elif face_direction_mode == "auto":
+                    if loc_auto_info is not None:
+                        eff_head_yaw = float(loc_auto_info["auto_yaw_deg"])  # type: ignore[arg-type]
+                        eff_torso_yaw = eff_head_yaw * 0.80
+                        eff_x_norm = float(loc_auto_info["auto_subject_x_norm"])  # type: ignore[arg-type]
+                        dir_source = f"auto_{loc_auto_info['auto_source']}"
+                    else:
+                        eff_head_yaw = 0.0
+                        eff_torso_yaw = 0.0
+                        eff_x_norm = orig_pose.subject_x_norm
+                        dir_source = "auto_default_front"
+                else:
+                    eff_head_yaw = orig_pose.head_azimuth_deg
+                    eff_torso_yaw = orig_pose.torso_azimuth_deg
+                    eff_x_norm = orig_pose.subject_x_norm
+                    dir_source = "manual_override"
+
                 pose = PosePrevizSpec(
                     preset_id=orig_pose.preset_id,
-                    head_azimuth_deg=orig_pose.head_azimuth_deg,
+                    head_azimuth_deg=eff_head_yaw,
                     head_pitch_deg=orig_pose.head_pitch_deg,
-                    torso_azimuth_deg=orig_pose.torso_azimuth_deg,
+                    torso_azimuth_deg=eff_torso_yaw,
                     camera_elevation_deg=orig_pose.camera_elevation_deg,
                     focal_length_mm=orig_pose.focal_length_mm,
-                    subject_x_norm=orig_pose.subject_x_norm,
+                    subject_x_norm=eff_x_norm,
                     shot_scale=(
-                        "full-body editorial head-to-toe shot showing complete footwear"
+                        "full-body editorial head-to-toe shot (framed closely from shoes near bottom edge to crown near top edge)"
                         if (has_shoes and "full-body" not in orig_pose.shot_scale)
                         else orig_pose.shot_scale
                     ),
@@ -424,61 +426,75 @@ class MultiSceneBatchComposer:
 
                 id_refs, matched_view = self.turnaround.select_angle_matched_references(
                     canonical_front_path=canonical_front_path,
-                    angle_bank=bank,
+                    angle_bank=raw_bank,
                     target_azimuth_deg=pose.head_azimuth_deg,
                 )
 
                 ordered_imgs: List[Dict[str, str]] = []
                 role_clauses: List[str] = []
 
-                ordered_imgs.append(
-                    {
-                        "path": str(id_refs[0]),
-                        "role": "identity_primary_front",
-                        "label": "Primary untouched 0-deg front identity anchor",
-                    }
-                )
-                role_clauses.append(
-                    "Image 1 (IDENTITY-PRIMARY-FRONT): untouched original photograph of the target subject—sole authority "
-                    "for true facial identity, authentic iris color, skin texture, eyewear frame material, and hair color"
-                )
-
+                # ── FACE ANCHORS (8-Direction Angle-Matched Primary + 0° Origin + Full 8-Direction Master Sheet) ──
                 if len(id_refs) > 1:
+                    # Put the exact angle-matched 8-direction portrait FIRST for 1:1 angle lock, paired with untouched 0° front!
                     ordered_imgs.append(
                         {
                             "path": str(id_refs[1]),
                             "role": f"identity_angle_{matched_view}",
-                            "label": f"Approved {matched_view} frontal-arc anchor ({pose.head_azimuth_deg:+.1f} deg)",
+                            "label": f"Primary target-angle 8-direction portrait ({VIEW_LABELS_KO.get(matched_view, matched_view)})",
                         }
                     )
                     role_clauses.append(
-                        f"Image {len(ordered_imgs)} (IDENTITY-8DIR-{matched_view.upper()}): approved {matched_view} angle view "
-                        "of the exact same subject—use strictly for 3D facial/nasal/cheek/ear/eyewear-temple foreshortening at this yaw "
-                        "(do NOT copy its grey studio background or studio suit)"
+                        f"Image 1 (TARGET-ANGLE-8DIR-FACE — {matched_view.upper()}, {pose.head_azimuth_deg:+.1f} deg): "
+                        "approved target-angle portrait of the subject from the 8-Direction Turnaround Bank—copy this EXACT facial "
+                        "structure, eye/nose/mouth/jawline geometry, hair parting, and eyewear temple silhouette at this head angle "
+                        "(ignore its studio background and dark studio suit)"
                     )
-
-                if board_path is not None:
                     ordered_imgs.append(
                         {
-                            "path": str(board_path),
-                            "role": "composite_styling_board",
-                            "label": "Proportional Multi-Item Styling Board (all garments, accessories, bag, footwear)",
+                            "path": str(id_refs[0]),
+                            "role": "identity_primary_front",
+                            "label": "Untouched 0-deg original front photograph (true iris color & skin texture ground-truth)",
                         }
                     )
                     role_clauses.append(
-                        f"Image {len(ordered_imgs)} (PROPORTIONAL-STYLING-BOARD): composite multi-slot product sheet showing the exact "
-                        "layered garments, accessories, bag, and footwear in anatomically weighted visual scale—reproduce every product's "
-                        "design, fabric texture, color, stitching, and hardware while obeying the Anthropometric Scale Lock (never draw the "
-                        "white grid card itself in the scene)"
+                        "Image 2 (IDENTITY-ORIGIN-0DEG): untouched 0-degree original photograph of the exact same person—"
+                        "ground-truth authority for authentic iris color, real skin pore texture, and exact facial likeness"
+                    )
+                else:
+                    ordered_imgs.append(
+                        {
+                            "path": str(id_refs[0]),
+                            "role": "identity_primary_front",
+                            "label": "Untouched 0-deg original front photograph",
+                        }
+                    )
+                    role_clauses.append(
+                        "Image 1 (IDENTITY-ORIGIN-0DEG): untouched 0-degree original photograph of the target subject—"
+                        "sole authority for exact 1:1 facial likeness, authentic iris color, real skin texture, and eyewear"
                     )
 
+                if resolved_sheet_path is not None:
+                    ordered_imgs.append(
+                        {
+                            "path": str(resolved_sheet_path),
+                            "role": "identity_8dir_master_sheet",
+                            "label": "Complete -90°..+90° 8-Direction Facial Turnaround Sheet",
+                        }
+                    )
+                    role_clauses.append(
+                        f"Image {len(ordered_imgs)} (8-DIRECTION-MASTER-TURNAROUND-SHEET): full -90 deg to +90 deg 8-direction "
+                        "reference sheet of this exact person confirming 3D craniofacial consistency across all angles "
+                        "(render ONE single person in the scene, never a multi-panel grid)"
+                    )
+
+                # ── RAW ORIGINAL STYLING ASSETS (`1원본들 → 1생성`: pass every raw item original directly!) ──
                 for it, m_path, m_cnt in prepared_items:
                     if m_path is not None:
                         cat_title = {
-                            "garment": f"GARMENT-{it.sub_role.upper() if it.sub_role else 'ITEM'}",
-                            "accessory": f"ACCESSORY-{it.sub_role.upper() if it.sub_role else 'ITEM'}",
-                            "bag": f"BAG-{it.scale_mode.upper()}",
-                            "shoe": f"FOOTWEAR-{it.sub_role.upper() if it.sub_role else 'SHOES'}",
+                            "garment": f"ORIGINAL-GARMENT-{it.sub_role.upper() if it.sub_role else 'ITEM'}",
+                            "accessory": f"ORIGINAL-ACCESSORY-{it.sub_role.upper() if it.sub_role else 'ITEM'}",
+                            "bag": f"ORIGINAL-BAG-{it.scale_mode.upper()}",
+                            "shoe": f"ORIGINAL-FOOTWEAR-{it.sub_role.upper() if it.sub_role else 'SHOES'}",
                         }[it.category]
                         ordered_imgs.append(
                             {
@@ -487,38 +503,32 @@ class MultiSceneBatchComposer:
                                 "label": f"{cat_title}: {it.description}".strip(": "),
                             }
                         )
-                        mask_hint = (
-                            " (ignore grey face-mask box covering original model)"
-                            if m_cnt > 0
-                            else ""
-                        )
+                        mask_hint = " (ignore grey box masking original model's face)" if m_cnt > 0 else ""
                         role_clauses.append(
-                            f"Image {len(ordered_imgs)} ({cat_title}): exact product reference for {it.category}{mask_hint}"
+                            f"Image {len(ordered_imgs)} ({cat_title}): raw original product photo—reproduce its exact material, "
+                            f"color, weave, stitching, and hardware{mask_hint}"
                         )
 
+                # ── RAW ORIGINAL LOCATION / STYLE ASSET ──
                 loc_clause = ""
                 if loc_img_prepared is not None:
                     ordered_imgs.append(
                         {
                             "path": str(loc_img_prepared),
                             "role": "location_or_mood_reference",
-                            "label": f"Location / Style Reference ({loc.name})",
+                            "label": f"Original Location / Style Reference ({loc.name})",
                         }
                     )
-                    mask_hint = (
-                        " (ignore grey face-mask box covering any foreign person)"
-                        if loc_masked_cnt > 0
-                        else ""
-                    )
+                    mask_hint = " (ignore grey box masking any foreign person's face)" if loc_masked_cnt > 0 else ""
                     if loc.scope == "style_mood_only":
                         role_clauses.append(
-                            f"Image {len(ordered_imgs)} (STYLE-MOOD-REFERENCE): extract its exact 16-point tone & manner—brightness, "
+                            f"Image {len(ordered_imgs)} (STYLE-MOOD-ORIGIN): extract its exact 16-point tone & manner—brightness, "
                             "key-light direction, shadow softness, color temperature, color grading, and editorial mood—into a fresh spatial composition"
                             + mask_hint
                         )
                     else:
                         role_clauses.append(
-                            f"Image {len(ordered_imgs)} (LOCATION-AND-TONE-REFERENCE): place the subject naturally inside this environment's "
+                            f"Image {len(ordered_imgs)} (LOCATION-AND-TONE-ORIGIN): place the subject naturally inside this environment's "
                             "architecture, spatial depth, directional lighting, shadow falloff, color temperature, and overall tone & manner"
                             + mask_hint
                         )
@@ -530,32 +540,23 @@ class MultiSceneBatchComposer:
                 if not loc_clause and loc_img_prepared is None:
                     loc_clause = " Environment & Mood Direction: clean contemporary architectural editorial setting with natural directional key light."
 
-                previz_path: Optional[Path] = None
-                if attach_previz_image:
-                    previz_path = stage_dir / f"previz_{job_tag}.jpg"
-                    Previz3DRenderer.render_pose_guide(pose, canvas_size=(1280, 720), output_path=previz_path)
-                    ordered_imgs.append(
-                        {
-                            "path": str(previz_path),
-                            "role": "pose_previz_guide",
-                            "label": f"3D Previz Pose & Bag Rig ({pose.head_azimuth_deg:+.1f} deg)",
-                        }
-                    )
-                    role_clauses.append(
-                        f"Image {len(ordered_imgs)} (3D-PREVIZ-POSE-GUIDE): structural 3D mannequin pose & prop-placement blueprint ONLY—"
-                        "match its camera framing, torso/head angle, limb posture, and bag position on the real human subject; "
-                        "NEVER draw stick-figure lines, mannequin spheres, wireframe bag boxes, or dark grid backgrounds in the final photograph"
-                    )
+                # Render UI-only 3D Previz thumbnail (saved under `ui_preview_*` and NEVER added to `ordered_imgs`!)
+                ui_previz_p = stage_dir / f"ui_preview_{job_tag}.jpg"
+                Previz3DRenderer.render_pose_guide(pose, canvas_size=(960, 540), output_path=ui_previz_p)
+
+                # Hard `1원본들 → 1생성` verification on all input image paths!
+                self.origin_guard.verify_one_shot_and_inputs([Path(r["path"]) for r in ordered_imgs])
 
                 prompt = (
                     "Editorial portrait. Shot on a medium-format 100MP camera with prime optics, tack-sharp optical micro-contrast, "
                     "deep true blacks, and zero atmospheric haze or milky veil. "
-                    "CRITICAL MANDATORY RULE — REAL IDENTITY LOCK + HIERARCHICAL LAYERING + ANTHROPOMETRIC SCALE LOCK + 16-POINT TONE HARMONY: "
-                    f"Create ONE photorealistic {aspect_ratio_label} photograph of the {subject.subject_identity_label} from Image 1. "
-                    "Attached Reference Roles: " + "; ".join(role_clauses) + ". "
+                    "CRITICAL MANDATORY RULE — 1-ORIGINALS-TO-1-GENERATION REAL IDENTITY LOCK + HIERARCHICAL LAYERING + SCALE LOCK: "
+                    f"Create ONE single photorealistic {aspect_ratio_label} photograph of the {subject.subject_identity_label} "
+                    "whose exact face at this angle is shown in Image 1 (and confirmed by the 0-degree original & 8-Direction Turnaround Sheet). "
+                    "Attached Original Reference Roles: " + "; ".join(role_clauses) + ". "
                     f"Identity & Eyewear Continuity: Preserve {subject.facial_identity_descriptor()}. "
-                    "Keep exact 1:1 facial anatomy, authentic iris color from Image 1 (zero green or purple lens-coating tint), "
-                    "and if eyewear is worn, render both temple arms continuously from the outer front hinges over the ears. "
+                    "Do NOT invent a generic model face—lock 100% onto the exact person in Image 1 & Image 2 with authentic iris color "
+                    "(zero green or purple lens-coating tint), and if eyewear is worn, render both temple arms continuously over the ears. "
                     f"{blueprint.to_3d_invariance_clause()} "
                     f"Physical Build: {subject.body_frame_descriptor()}, maintaining balanced adult 7.5-to-8-head head-to-shoulder proportions. "
                     f"Pose & Camera Rig: {pose.to_prompt_clause()}. "
@@ -574,10 +575,10 @@ class MultiSceneBatchComposer:
                         job_tag=job_tag,
                         matched_8angle_view=matched_view,
                         head_azimuth_deg=pose.head_azimuth_deg,
+                        direction_source=dir_source,
                         prompt=prompt,
                         ordered_reference_images=ordered_imgs,
-                        previz_guide_path=str(previz_path) if previz_path else None,
-                        styling_board_path=str(board_path) if board_path else None,
+                        previz_ui_preview_path=str(ui_previz_p),
                         location_name=loc.name,
                     )
                 )
