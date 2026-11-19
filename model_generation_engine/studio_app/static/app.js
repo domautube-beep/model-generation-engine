@@ -712,6 +712,7 @@
       }
     }
     updateBatchCountLabel();
+    drawPrevizCanvas();
   }
 
   function buildAssetCard(asset, selectionSet) {
