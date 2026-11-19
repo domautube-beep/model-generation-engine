@@ -135,8 +135,8 @@ class StudioImageRuntime:
         if bgr is not None:
             h, w = bgr.shape[:2]
             max_dim = max(h, w)
-            if max_dim > 1600:
-                s = 1600.0 / float(max_dim)
+            if max_dim > 3840:
+                s = 3840.0 / float(max_dim)
                 bgr = cv2.resize(bgr, (int(round(w * s)), int(round(h * s))), interpolation=cv2.INTER_AREA)
             ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
             if ok:

@@ -687,8 +687,13 @@ def create_studio_app(
         save_state()
 
         if eff_provider != "manifest":
+            upscale_mode_req = str(data.get("upscale_mode") or "upscayl_auto")
+            reattach_mode_req = str(data.get("reattach_mode") or "none")
             custom_pipe = ModelGenerationPipeline(
-                EngineConfig(canvas=CanvasSpec(target_width=tw, target_height=th))
+                EngineConfig(
+                    upscale_mode=upscale_mode_req,
+                    canvas=CanvasSpec(target_width=tw, target_height=th),
+                )
             )
 
             async def _execute_parallel_batch() -> None:
@@ -716,7 +721,7 @@ def create_studio_app(
                             cu_out,
                             42,
                             Path(subj_rec["canonical_front_path"]),
-                            "none",
+                            reattach_mode_req,
                             None,
                             j_obj.cohesion_mode,
                             Path(j_obj.reference_scene_path) if j_obj.reference_scene_path else None,

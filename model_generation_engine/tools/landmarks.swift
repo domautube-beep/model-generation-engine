@@ -35,6 +35,8 @@ if let face = (request.results ?? []).max(by: { $0.boundingBox.width < $1.boundi
         return result
     }
     out = ["contour": points(marks.faceContour), "leftPupil": points(marks.leftPupil), "rightPupil": points(marks.rightPupil),
-           "leftEye": points(marks.leftEye), "rightEye": points(marks.rightEye), "nose": points(marks.nose)]
+           "leftEye": points(marks.leftEye), "rightEye": points(marks.rightEye), "nose": points(marks.nose),
+           "noseCrest": points(marks.noseCrest), "leftEyebrow": points(marks.leftEyebrow), "rightEyebrow": points(marks.rightEyebrow),
+           "outerLips": points(marks.outerLips), "innerLips": points(marks.innerLips)]
 }
 print(String(data: try JSONSerialization.data(withJSONObject: out, options: []), encoding: .utf8)!)

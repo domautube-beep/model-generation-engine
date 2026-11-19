@@ -1360,6 +1360,49 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             # Slot #1 (`Image 1`) MUST be Pure Gen-0 (`identity_primary_front`), NOT synthetic Gen-1!
             self.assertEqual(jobs_ok[0].ordered_reference_images[0]["role"], "identity_primary_front")
 
+    def test_23_upscayl_4x_person_erasure_and_relit_optical_integrator(self) -> None:
+        """Verify Method 1 (Upscayl Photo vs Illustration 4x + native 4K preservation), Method 2 (100% foreign person erasure), and Method 3 (RelitOpticalFaceIntegrator)."""
+        import tempfile
+        from model_generation_engine import ModelGenerationPipeline, RelitOpticalFaceIntegrator
+
+        pipe = ModelGenerationPipeline(self.config)
+        self.assertIsInstance(pipe.relit_integrator, RelitOpticalFaceIntegrator)
+
+        # 1. Method 1A: Upscayl content classifier routes real faces -> 'photo' and flat striped art -> 'illustration'
+        face_bgr = cv2.imread(str(self.ref_face))
+        self.assertEqual(pipe.upscaler.classify_upscayl_content_style(face_bgr), "photo")
+
+        striped_art = np.full((256, 256, 3), 245, dtype=np.uint8)
+        for y in range(12, 244, 18):
+            cv2.line(striped_art, (10, y), (246, y), (20, 20, 20), 2)
+        self.assertEqual(pipe.upscaler.classify_upscayl_content_style(striped_art), "illustration")
+
+        if pipe.upscaler.upscayl_bin is not None:
+            up_ill, m_name = pipe.upscaler.upscale_with_upscayl(striped_art[:64, :64], style="auto", scale=4)
+            self.assertEqual(m_name, "digital-art-4x")
+            self.assertEqual(up_ill.shape[:2], (256, 256))
+
+        # 2. Method 1B: Native 4K anchor preservation (never downscale >1500px crops when preserve_native_4k=True)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            big_4k = cv2.resize(face_bgr, (2400, 3200), interpolation=cv2.INTER_CUBIC)
+            p_4k = tmp / "in_4k.jpg"
+            cv2.imwrite(str(p_4k), big_4k)
+            out_anc, _ = pipe.turnaround.prepare_canonical_identity_anchor(p_4k, tmp / "anc_4k.jpg")
+            anc_im = cv2.imread(str(out_anc))
+            self.assertGreater(anc_im.shape[0], 1500)
+
+            # 3. Method 2: Complete foreign person silhouette + limb erasure
+            cleaned, cov = pipe.turnaround.erase_foreign_person_completely(face_bgr, output_clean_path=tmp / "clean.jpg")
+            self.assertEqual(cleaned.shape, face_bgr.shape)
+            self.assertGreater(cov, 5.0)
+
+            # 4. Method 3: RelitOpticalFaceIntegrator seamlessly transfers real face under altered illumination
+            darker_warm_scene = np.clip(face_bgr.astype(np.float32) * np.array([0.65, 0.72, 0.85], dtype=np.float32), 0, 255).astype(np.uint8)
+            relit_out, r_meta = pipe.relit_integrator.integrate_relit_face(face_bgr, darker_warm_scene)
+            self.assertEqual(relit_out.shape, face_bgr.shape)
+            self.assertLess(float(r_meta["seamL1Diff"]), 3.5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -702,8 +702,10 @@ class SceneRadiometryAnalyzer:
             kelvin_measured = 5500
             regime = "sculpted_chromatic_studio"
             key_vec = (
-                f"sculpted overhead-{side_desc} medium-format studio softbox illumination casting smooth 3D tonal roll-off across "
-                "facial planes and fluid garment folds with a soft-edged diagonal floor shadow across the seamless colored cyclorama"
+                f"sculpted overhead-{side_desc} medium-format studio softbox illumination paired with a gentle eye-level "
+                "soft silver bounce reflector fill (~1.5 stops below key light)—preserving open luminous eye sockets, "
+                "soft under-eye fullness, and authentic light eyebrow shade without harsh overhead socket shadows, while "
+                "casting smooth 3D tonal roll-off across fluid garment folds and a soft diagonal floor shadow across the colored cyclorama"
             )
 
         dop = AutonomousDoPDirector.curate_rig(

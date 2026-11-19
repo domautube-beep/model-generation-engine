@@ -228,12 +228,19 @@ class RealPersonTurnaroundEngine:
         return abs(float(target_yaw_deg) - float(source_yaw_deg)) > float(max_direct_delta_deg)
 
     def prepare_pure_gen0_face_macro_crop(
-        self, raw_face_path: Path, output_crop_path: Path, target_size: Tuple[int, int] = (1024, 1024)
+        self,
+        raw_face_path: Path,
+        output_crop_path: Path,
+        target_size: Tuple[int, int] = (1024, 1024),
+        preserve_native_4k: bool = True,
+        restore_4k_via_upscayl: bool = False,
     ) -> Path:
-        """Pure optical tight head-and-hair crop from untouched Gen-0 photo (0% AI drift, strips original outfit, 2.5x vision detail)."""
+        """Pure optical tight head-and-hair crop from untouched Gen-0 photo (preserves native 4K or restores 4K via Upscayl Photo mode)."""
         bgr = cv2.imread(str(raw_face_path))
         if bgr is None:
             raise FileNotFoundError(f"Cannot read raw portrait: {raw_face_path}")
+        if restore_4k_via_upscayl and max(bgr.shape[:2]) < 2000 and self.upscaler is not None and self.upscaler.upscayl_bin is not None:
+            bgr, _ = self.upscaler.upscale_with_upscayl(bgr, style="photo", scale=4)
         h, w = bgr.shape[:2]
         face = self.detector.detect(bgr)
         fx, fy, fw, fh = face.bbox
@@ -245,10 +252,148 @@ class RealPersonTurnaroundEngine:
         y1 = int(round(np.clip(cy - 0.48 * side, 0.0, max(0.0, float(h) - side))))
         iside = max(32, int(round(side)))
         crop = bgr[y1 : min(h, y1 + iside), x1 : min(w, x1 + iside)]
-        out = cv2.resize(crop, target_size, interpolation=cv2.INTER_LANCZOS4)
+        if preserve_native_4k and target_size == (1024, 1024) and crop.shape[1] > target_size[0]:
+            cap = min(3840, crop.shape[1])
+            out = crop if crop.shape[1] <= 3840 else cv2.resize(crop, (cap, cap), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            out = cv2.resize(crop, target_size, interpolation=cv2.INTER_LANCZOS4)
         output_crop_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_crop_path), out, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
         return output_crop_path
+
+    def erase_foreign_person_completely(
+        self,
+        bgr_img: np.ndarray,
+        output_clean_path: Optional[Path] = None,
+        remove_overlay_text: bool = True,
+    ) -> Tuple[np.ndarray, float]:
+        """Erase 100% of any foreign human silhouette (head, neck, torso, limbs, hands, shoes) via Apple Vision Segmentation + Pose + Hand Joints."""
+        h, w = bgr_img.shape[:2]
+        out = bgr_img.copy()
+
+        # 1. Seamlessly remove campaign/magazine overlay typography first
+        if remove_overlay_text:
+            try:
+                pil_rgb = Image.fromarray(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
+                tboxes = self.apple_vision.text_boxes(pil_rgb)
+                if tboxes:
+                    txt_mask = np.zeros((h, w), dtype=np.uint8)
+                    for tb in tboxes:
+                        tx1 = max(0, int(round(float(tb["x"]) * w)) - 8)
+                        ty1 = max(0, int(round(float(tb["y"]) * h)) - 8)
+                        tx2 = min(w, int(round((float(tb["x"]) + float(tb["w"])) * w)) + 8)
+                        ty2 = min(h, int(round((float(tb["y"]) + float(tb["h"])) * h)) + 8)
+                        if tx2 > tx1 and ty2 > ty1:
+                            cv2.rectangle(txt_mask, (tx1, ty1), (tx2, ty2), 255, -1)
+                    if np.any(txt_mask > 0):
+                        out = cv2.inpaint(out, txt_mask, 9.0, cv2.INPAINT_TELEA)
+            except Exception:
+                pass
+
+        # 2. Build unified full-body + limb + hand + face mask
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        pil_clean = Image.fromarray(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
+        try:
+            pm = self.apple_vision.person_mask(pil_clean)
+            if pm is not None:
+                pm_arr = np.array(pm.resize((w, h), Image.Resampling.BILINEAR))
+                full_mask[pm_arr > 100] = 255
+        except Exception:
+            pass
+
+        # Connect shoulder->elbow->wrist & hip->knee->ankle capsules + 21-pt hand convex hulls so outstretched hands NEVER remain!
+        try:
+            bh = self.apple_vision.body_and_hand_points(pil_clean)
+            limb_r = max(14, int(round(max(h, w) * 0.026)))
+            limb_pairs = (
+                ("left_shoulder_1_joint", "left_elbow_1_joint"),
+                ("left_elbow_1_joint", "left_wrist_2_joint"),
+                ("right_shoulder_1_joint", "right_elbow_1_joint"),
+                ("right_elbow_1_joint", "right_wrist_2_joint"),
+                ("left_upLeg_joint", "left_leg_joint"),
+                ("left_leg_joint", "left_foot_joint"),
+                ("right_upLeg_joint", "right_leg_joint"),
+                ("right_leg_joint", "right_foot_joint"),
+            )
+            for body in bh.get("bodies") or []:
+                jmap = {str(j["name"]): (int(round(float(j["x"]))), int(round(float(j["y"])))) for j in body}
+                for ja, jb in limb_pairs:
+                    if ja in jmap and jb in jmap:
+                        pa, pb = jmap[ja], jmap[jb]
+                        # Extend 30% past distal joint so fingers/toes beyond wrist/ankle are 100% covered
+                        ex = int(round(pb[0] + 0.32 * (pb[0] - pa[0])))
+                        ey = int(round(pb[1] + 0.32 * (pb[1] - pa[1])))
+                        cv2.line(full_mask, pa, (ex, ey), 255, thickness=limb_r * 2)
+                        cv2.circle(full_mask, (ex, ey), int(round(limb_r * 1.4)), 255, -1)
+                for wk in ("left_wrist_2_joint", "right_wrist_2_joint", "left_foot_joint", "right_foot_joint"):
+                    if wk in jmap:
+                        cv2.circle(full_mask, jmap[wk], int(round(limb_r * 1.45)), 255, -1)
+            for hand_pts in bh.get("hands") or []:
+                if len(hand_pts) >= 3:
+                    pts_np = np.array([[int(round(p[0])), int(round(p[1]))] for p in hand_pts], dtype=np.int32)
+                    hull = cv2.convexHull(pts_np)
+                    cv2.fillConvexPoly(full_mask, hull, 255)
+                    for pt in pts_np:
+                        cv2.circle(full_mask, (int(pt[0]), int(pt[1])), max(10, limb_r // 2), 255, -1)
+        except Exception:
+            pass
+
+        # Also include YuNet face detection fallback
+        try:
+            scale = min(1.0, 1280.0 / float(max(w, h)))
+            sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
+            work = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_AREA) if scale < 1.0 else out
+            det = cv2.FaceDetectorYN.create(self.detector.yunet_path, "", (sw, sh), 0.42, 0.3, 5000)
+            _, faces = det.detect(work)
+            if faces is not None:
+                inv_s = 1.0 / scale
+                for f in faces:
+                    fx, fy, fw, fh = [float(v) * inv_s for v in f[:4]]
+                    cv2.ellipse(
+                        full_mask,
+                        (int(round(fx + 0.5 * fw)), int(round(fy + 0.55 * fh))),
+                        (int(round(0.85 * fw)), int(round(1.15 * fh))),
+                        0,
+                        0,
+                        360,
+                        255,
+                        -1,
+                    )
+        except Exception:
+            pass
+
+        coverage_pct = float(np.mean(full_mask > 0) * 100.0)
+        if coverage_pct > 0.05:
+            dil = max(17, int(round(max(h, w) * 0.022)) | 1)
+            mask_dil = cv2.dilate(full_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil, dil)), iterations=1)
+
+            # Multi-scale coarse harmonic diffusion + fine rim TELEA inpainting (zero starburst streaks, crisp chair edges!)
+            ch_s, cw_s = max(32, h // 8), max(32, w // 8)
+            small_bgr = cv2.resize(out, (cw_s, ch_s), interpolation=cv2.INTER_AREA)
+            small_m = cv2.dilate(
+                (cv2.resize(mask_dil, (cw_s, ch_s), interpolation=cv2.INTER_NEAREST) > 40).astype(np.uint8) * 255,
+                np.ones((3, 3), np.uint8),
+                iterations=1,
+            )
+            coarse_inp = cv2.inpaint(small_bgr, small_m, 9.0, cv2.INPAINT_TELEA)
+            work_f = coarse_inp.astype(np.float32)
+            m_bool = small_m > 0
+            for _ in range(35):
+                b_step = cv2.GaussianBlur(work_f, (0, 0), 2.2)
+                work_f[m_bool] = b_step[m_bool]
+            smooth_fill = cv2.resize(np.clip(work_f, 0, 255).astype(np.uint8), (w, h), interpolation=cv2.INTER_CUBIC)
+
+            fine_inp = cv2.inpaint(out, mask_dil, 11.0, cv2.INPAINT_TELEA)
+            dist = cv2.distanceTransform((mask_dil > 0).astype(np.uint8), cv2.DIST_L2, 5)
+            alpha_deep = np.clip((dist - 4.0) / 20.0, 0.0, 1.0)[..., None]
+            blended_hole = fine_inp.astype(np.float32) * (1.0 - alpha_deep) + smooth_fill.astype(np.float32) * alpha_deep
+            soft_edge = cv2.GaussianBlur((mask_dil > 0).astype(np.float32), (0, 0), 3.0)[..., None]
+            out = np.clip(out.astype(np.float32) * (1.0 - soft_edge) + blended_hole * soft_edge, 0, 255).astype(np.uint8)
+
+        if output_clean_path is not None:
+            output_clean_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(output_clean_path), out, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+        return out, round(coverage_pct, 2)
 
     def mask_foreign_faces_in_reference(
         self,
@@ -455,11 +600,15 @@ class RealPersonTurnaroundEngine:
         raw_photo_path: Path,
         output_anchor_path: Path,
         target_size: Tuple[int, int] = (1200, 1500),
+        preserve_native_4k: bool = True,
+        restore_4k_via_upscayl: bool = False,
     ) -> Tuple[Path, AnatomicalBlueprint]:
-        """Normalize an arbitrary real photo into a pure optical 85mm head-and-shoulders canonical anchor (ZERO GAN pre-smoothing)."""
+        """Normalize an arbitrary real photo into a pure optical 85mm head-and-shoulders canonical anchor (preserves native 4K or Upscayl 4x)."""
         bgr = cv2.imread(str(raw_photo_path))
         if bgr is None:
             raise FileNotFoundError(f"Cannot read raw reference photo: {raw_photo_path}")
+        if restore_4k_via_upscayl and max(bgr.shape[:2]) < 2000 and self.upscaler is not None and self.upscaler.upscayl_bin is not None:
+            bgr, _ = self.upscaler.upscale_with_upscayl(bgr, style="photo", scale=4)
 
         h, w = bgr.shape[:2]
         face = self.detector.detect(bgr)
@@ -482,7 +631,13 @@ class RealPersonTurnaroundEngine:
         y2 = min(h, int(round(y1 + crop_h)))
 
         crop = bgr[y1:y2, x1:x2].copy()
-        if crop.shape[1] < tw or crop.shape[0] < th:
+        if preserve_native_4k and target_size == (1200, 1500) and (crop.shape[1] > tw or crop.shape[0] > th):
+            if crop.shape[0] > 4800:
+                sc = 4800.0 / float(crop.shape[0])
+                canonical = cv2.resize(crop, (int(round(crop.shape[1] * sc)), 4800), interpolation=cv2.INTER_LANCZOS4)
+            else:
+                canonical = crop
+        elif crop.shape[1] < tw or crop.shape[0] < th:
             canonical = crop if crop.shape[1] >= 480 else cv2.resize(crop, (tw, th), interpolation=cv2.INTER_LANCZOS4)
         else:
             canonical = cv2.resize(crop, (tw, th), interpolation=cv2.INTER_LANCZOS4)

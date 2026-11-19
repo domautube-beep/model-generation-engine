@@ -11,7 +11,7 @@ from PIL import Image
 from .apple_vision import AppleVisionAnalyzer
 from .config import EngineConfig
 from .detector import DynamicFaceDetector
-from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
+from .face_reattach import FaceLockCompositor, HeadRedrawCompositor, RelitOpticalFaceIntegrator
 from .identity_turnaround import RealPersonTurnaroundEngine
 from .multi_asset_composer import MultiSceneBatchComposer
 from .scene_radiometry import PostGenCohesionMasterer, SingleLensRadiometricSpec
@@ -36,6 +36,7 @@ class ModelGenerationPipeline:
         self.apple_vision = AppleVisionAnalyzer(bin_dir=bin_dir)
         self.facelock = FaceLockCompositor(self.apple_vision)
         self.head_redraw = HeadRedrawCompositor(self.apple_vision)
+        self.relit_integrator = RelitOpticalFaceIntegrator(self.apple_vision)
         self.turnaround = RealPersonTurnaroundEngine(
             self.config, self.detector, self.apple_vision, self.upscaler
         )
@@ -58,6 +59,7 @@ class ModelGenerationPipeline:
         cohesion_mode: str = "auto",
         reference_scene_path: Optional[Path] = None,
         radiometric_spec: Optional[SingleLensRadiometricSpec] = None,
+        angle_bank: Optional[Dict[str, Path]] = None,
     ) -> Dict[str, object]:
         """Execute Single-Pass Pure From-Scratch 5K Pipeline with Post-Gen Optical Cohesion Mastering & 9-Gate Audit."""
         ref_bgr: Optional[np.ndarray] = None
@@ -98,6 +100,23 @@ class ModelGenerationPipeline:
                 canvas_5k = cv2.cvtColor(np.asarray(locked_pil), cv2.COLOR_RGB2BGR)
                 reattach_info["facelock"] = fl_meta
 
+            if reattach_mode == "relit_optical" and reference_face_path is not None and Path(reference_face_path).exists():
+                src_face_p = Path(reference_face_path)
+                chosen_lbl = "gen0_origin"
+                turn_meta: Dict[str, float] = {}
+                if angle_bank:
+                    src_face_p, chosen_lbl, turn_meta = self.relit_integrator.select_angle_matched_highres_source(
+                        canvas_5k, Path(reference_face_path), angle_bank
+                    )
+                chosen_bgr = cv2.imread(str(src_face_p))
+                if chosen_bgr is not None:
+                    if max(chosen_bgr.shape[:2]) < 1800 and self.upscaler.upscayl_bin is not None:
+                        chosen_bgr, _ = self.upscaler.upscale_with_upscayl(chosen_bgr, style="photo", scale=4)
+                    canvas_5k, ro_meta = self.relit_integrator.integrate_relit_face(chosen_bgr, canvas_5k)
+                    ro_meta["chosenSourceLabel"] = chosen_lbl
+                    ro_meta.update(turn_meta)
+                    reattach_info["relit_optical"] = ro_meta
+
             face_5k = self.detector.detect(canvas_5k)
             crop_box_5k = self.detector.compute_upper_body_crop_box(
                 canvas_5k.shape[:2], face_5k, aspect_ratio=self.config.canvas.crop_aspect_ratio
@@ -109,10 +128,13 @@ class ModelGenerationPipeline:
             roi = canvas_5k[vy1:vy2, vx1:vx2].copy()
             roi_face = self.detector.detect(roi)
             min_org_grad, _ = self.auditor.measure_per_organ_sharpness(roi, roi_face)
-            if (
-                self.config.auto_restore_distant_face_iod_px > 0.0
-                and roi_face.inter_ocular_distance < self.config.auto_restore_distant_face_iod_px
-            ) or min_org_grad < self.config.min_organ_gradient_energy:
+            if reattach_mode == "none" and (
+                (
+                    self.config.auto_restore_distant_face_iod_px > 0.0
+                    and roi_face.inter_ocular_distance < self.config.auto_restore_distant_face_iod_px
+                )
+                or min_org_grad < self.config.min_organ_gradient_energy
+            ):
                 roi, _ = self.upscaler.restore_face_focus_5pt(roi)
 
             # CRITICAL: NEVER pass studio `reference_skin_profile` here — keep scene lighting 100% intact!

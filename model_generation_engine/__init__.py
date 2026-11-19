@@ -27,7 +27,7 @@ from .workflow import (
 from .upscaler import SuperResolutionEngine
 from .compositor import Seamless5KCompositor
 from .apple_vision import AppleVisionAnalyzer, AppleVisionError
-from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
+from .face_reattach import FaceLockCompositor, HeadRedrawCompositor, RelitOpticalFaceIntegrator
 from .identity_turnaround import (
     TURNAROUND_5_VIEWS,
     TURNAROUND_8_VIEWS,
@@ -95,6 +95,7 @@ __all__ = [
     "AppleVisionError",
     "FaceLockCompositor",
     "HeadRedrawCompositor",
+    "RelitOpticalFaceIntegrator",
     "TURNAROUND_5_VIEWS",
     "TURNAROUND_8_VIEWS",
     "TURNAROUND_FULL_SWEEP",

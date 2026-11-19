@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 import cv2
 import numpy as np
 import onnxruntime as ort
 
 from .config import EngineConfig
 from .detector import DynamicFaceDetector
+
+UPSCAYL_PHOTO_MODEL = "high-fidelity-4x"       # Upscayl official "사진 느낌 방식" (preserves natural pores, zero wax smoothing)
+UPSCAYL_ILLUSTRATION_MODEL = "digital-art-4x"  # Upscayl official "일러스트 방식" (crisp striped/line-art graphics)
 
 FFHQ_TEMPLATE_512 = np.array(
     [
@@ -30,6 +34,10 @@ class SuperResolutionEngine:
         self.detector = detector
         self.esrgan_bin = config.resolve_model_path("realesrgan-ncnn-vulkan")
         self.models_dir = self.esrgan_bin.parent
+        try:
+            self.upscayl_bin: Optional[Path] = config.resolve_model_path("upscayl-bin")
+        except FileNotFoundError:
+            self.upscayl_bin = None
         config.resolve_model_path(f"{config.upscale_model_name}.param")
         config.resolve_model_path(f"{config.upscale_model_name}.bin")
         self.codeformer_path = config.resolve_model_path("codeformer.onnx")
@@ -43,8 +51,92 @@ class SuperResolutionEngine:
             )
         return self._cf_session_lazy
 
+    def classify_upscayl_content_style(self, src_bgr: np.ndarray) -> str:
+        """Automatically select Upscayl 'photo' ('사진 느낌 방식') vs 'illustration' ('일러스트 방식' for striped/line graphics)."""
+        try:
+            self.detector.detect(src_bgr)
+            return "photo"  # Real human face detected -> always use natural Photo mode ('high-fidelity-4x')
+        except Exception:
+            pass
+        h, w = src_bgr.shape[:2]
+        work = cv2.resize(src_bgr, (min(w, 512), min(h, 512)), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad_mag = np.hypot(gx, gy)
+        flat_frac = float(np.mean(grad_mag < 3.5))
+        sharp_line_frac = float(np.mean(grad_mag > 65.0))
+        if flat_frac > 0.58 and sharp_line_frac > 0.045:
+            return "illustration"
+        return "photo"
+
+    def upscale_with_upscayl(
+        self,
+        src_bgr: np.ndarray,
+        style: str = "auto",
+        scale: int = 4,
+        target_min_height: int = 0,
+    ) -> Tuple[np.ndarray, str]:
+        """Run official GitHub Upscayl ('upscayl-bin') 4x super-resolution: Photo ('high-fidelity-4x') vs Illustration ('digital-art-4x')."""
+        if self.upscayl_bin is None or not self.upscayl_bin.exists():
+            raise FileNotFoundError("Official 'upscayl-bin' binary not installed in Heavy Asset Vault models directory.")
+
+        resolved_style = self.classify_upscayl_content_style(src_bgr) if style == "auto" else style
+        model_name = (
+            UPSCAYL_ILLUSTRATION_MODEL
+            if resolved_style in ("illustration", "digital_art", "upscayl_illustration")
+            else UPSCAYL_PHOTO_MODEL
+        )
+        eff_scale = scale if scale in (2, 3, 4) else 4
+
+        with tempfile.TemporaryDirectory(prefix="upscayl_gpu_") as td:
+            in_p = Path(td) / "in.jpg"
+            out_p = Path(td) / "out.jpg"
+            cv2.imwrite(str(in_p), src_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 99])
+            cmd = [
+                str(self.upscayl_bin),
+                "-i",
+                str(in_p),
+                "-o",
+                str(out_p),
+                "-m",
+                str(self.models_dir),
+                "-n",
+                model_name,
+                "-s",
+                str(eff_scale),
+                "-f",
+                "jpg",
+                "-c",
+                "2",
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            up_bgr = cv2.imread(str(out_p))
+            if up_bgr is None:
+                raise RuntimeError(f"Upscayl ({model_name}) failed to produce output.")
+
+        if target_min_height > 0 and up_bgr.shape[0] != target_min_height:
+            s_adj = float(target_min_height) / float(max(1, up_bgr.shape[0]))
+            if s_adj < 0.98 or s_adj > 1.02:
+                nw = max(16, int(round(up_bgr.shape[1] * s_adj)))
+                up_bgr = cv2.resize(up_bgr, (nw, target_min_height), interpolation=cv2.INTER_LANCZOS4)
+
+        return up_bgr, model_name
+
     def upscale_bgr_in_memory(self, src_bgr: np.ndarray, target_min_height: int = 0) -> np.ndarray:
-        """Zero-disk-IO in-memory Pure Optical Lanczos-4 upscale sized directly to target canvas height (zero 25MP JPEG round-trip!)."""
+        """Upscale in memory via Official Upscayl 4x (when upscale_mode='upscayl_*') or Pure Optical Lanczos-4."""
+        mode = getattr(self.config, "upscale_mode", "optical_lanczos")
+        if mode in ("upscayl_auto", "upscayl_photo", "upscayl_illustration") and self.upscayl_bin is not None:
+            st = (
+                "illustration"
+                if mode == "upscayl_illustration"
+                else ("photo" if mode == "upscayl_photo" else "auto")
+            )
+            up_bgr, _ = self.upscale_with_upscayl(
+                src_bgr, style=st, scale=self.config.upscale_factor, target_min_height=target_min_height
+            )
+            return up_bgr
+
         sh, sw = src_bgr.shape[:2]
         if target_min_height > 0:
             scale = max(1.0, float(target_min_height) / float(max(1, sh)))

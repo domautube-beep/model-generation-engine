@@ -136,6 +136,17 @@ class AppleVisionAnalyzer:
             data = json.loads(done.stdout)
             return list(data.get("boxes") or [])
 
+    def body_and_hand_points(self, raw_or_pil: bytes | Image.Image) -> Dict[str, object]:
+        """Extract full human skeletal joints + 21-point hand joints in pixel coordinates via macOS Vision."""
+        exe = self._binary_for("body_joints")
+        with tempfile.TemporaryDirectory() as tmp:
+            img_path = Path(tmp) / "img.jpg"
+            self._write_rgb_fast(raw_or_pil, img_path)
+            done = subprocess.run([str(exe), str(img_path)], capture_output=True, text=True, timeout=60)
+            if done.returncode != 0:
+                return {"bodies": [], "hands": []}
+            return json.loads(done.stdout)
+
     @staticmethod
     def compute_face_shape(marks: Optional[Dict[str, List[List[float]]]]) -> Optional[Dict[str, object]]:
         """Compute normalized eye-to-chin length and width-to-length facial proportions (`vision.face_shape`)."""
