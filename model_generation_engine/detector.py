@@ -87,7 +87,10 @@ class DynamicFaceDetector:
         h, w = bgr_img.shape[:2]
         faces = None
         used_scale = 1.0
-        for max_dim in (0, 960, 640):
+        # YuNet's anchor strides [8, 16, 32] are calibrated for ~640..1280px images; running raw 5K (5040px)
+        # first causes large close-up/angled faces (>450px) to exceed anchor stride and false-trigger on background slats.
+        scales_to_try = (1280, 800, 0) if max(w, h) > 1280 else (0, 640)
+        for max_dim in scales_to_try:
             if max_dim == 0:
                 work_img = bgr_img
                 sw, sh = w, h
