@@ -38,7 +38,9 @@ from ..pipeline import ModelGenerationPipeline
 from ..previz_pose import GAZE_MODES, POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
 from ..scene_radiometry import (
     APERTURE_MODES,
+    CAMERA_PROFILES,
     COHESION_MASTERING_MODES,
+    FILM_PROFILES,
     LIGHTING_MODES,
     SceneRadiometryAnalyzer,
 )
@@ -151,6 +153,12 @@ def create_studio_app(
                     "joints": v["joints"],
                 }
                 for k, v in POSE_PRESETS.items()
+            ],
+            "camera_profiles": [
+                {"id": k, "label": str(v["label_ko"])} for k, v in CAMERA_PROFILES.items()
+            ],
+            "film_profiles": [
+                {"id": k, "label": str(v["label_ko"])} for k, v in FILM_PROFILES.items()
             ],
             "lighting_modes": [
                 {"id": k, "label": str(v["label_ko"])} for k, v in LIGHTING_MODES.items()
@@ -593,7 +601,9 @@ def create_studio_app(
         provider = str(data.get("provider") or "auto")
         lighting_mode = str(data.get("lighting_mode") or "auto")
         aperture_mode = str(data.get("aperture_mode") or "auto")
-        cohesion_mode = str(data.get("cohesion_mode") or "auto")
+        camera_id = str(data.get("camera_id") or "hasselblad_x2d")
+        film_id = str(data.get("film_id") or "digital_neutral_raw")
+        cohesion_mode = str(data.get("cohesion_mode") or film_id)
 
         bid = f"batch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         bdir = base_dir / "batches" / bid
@@ -616,6 +626,8 @@ def create_studio_app(
             face_direction_mode=face_dir_mode,
             lighting_mode=lighting_mode,
             aperture_mode=aperture_mode,
+            camera_id=camera_id,
+            film_id=film_id,
             cohesion_mode=cohesion_mode,
             attach_previz_image=False,  # Strict `1원본들 → 1생성`: ONLY 8-dir faces + raw original assets!
         )
@@ -630,6 +642,8 @@ def create_studio_app(
             "canvas_preset": canvas_key,
             "target_size": [tw, th],
             "provider": eff_provider,
+            "camera_id": camera_id,
+            "film_id": film_id,
             "lighting_mode": lighting_mode,
             "aperture_mode": aperture_mode,
             "cohesion_mode": cohesion_mode,

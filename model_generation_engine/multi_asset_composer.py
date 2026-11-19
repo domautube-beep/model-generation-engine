@@ -246,7 +246,7 @@ class MultiSceneBatchComposer:
                     style_txt = WEARING_STYLES["open_layered"]
                 else:
                     style_txt = WEARING_STYLES.get(w_style, "")
-                desc = g.description.strip() or "exact attached garment design, fabric weave, color, and seam construction"
+                desc = g.description.strip() or "exact attached garment silhouette, color, and seam construction"
                 part = f"{slot_title}: {desc}"
                 if style_txt:
                     part += f" ({style_txt})"
@@ -287,7 +287,7 @@ class MultiSceneBatchComposer:
                 cm_key = b.carry_mode if b.carry_mode in BAG_CARRY_MODES else "hand_right"
                 active_bag_carry = cm_key
                 cm_rule = BAG_CARRY_MODES[cm_key]
-                desc = b.description.strip() or "exact attached bag structure, leather/fabric grain, stitching, and hardware"
+                desc = b.description.strip() or "exact attached bag shape, calm surface finish, proportions, and hardware"
                 b_parts.append(f"{sz_title}: {desc} [Scale Lock: {sz_rule}; Carry & Position: {cm_rule}]")
             clauses.append("Bag Proportion & Carry Kinematics: " + "; ".join(b_parts))
 
@@ -317,6 +317,8 @@ class MultiSceneBatchComposer:
         face_direction_mode: str = "manual",  # Studio UI passes "auto" by default or "manual" when user chooses an angle
         lighting_mode: str = "auto",
         aperture_mode: str = "auto",
+        camera_id: str = "hasselblad_x2d",
+        film_id: str = "digital_neutral_raw",
         cohesion_mode: str = "auto",
         attach_previz_image: bool = False,  # HARD DEFAULT FALSE (`1원본들 → 1생성`: never pollute `--image` with synthetic wireframes)
     ) -> List[ComposedSceneJob]:
@@ -383,12 +385,15 @@ class MultiSceneBatchComposer:
                 if raw_loc_bgr is not None:
                     loc_auto_info = self.turnaround.analyze_reference_pose_before_masking(raw_loc_bgr)
 
+            eff_film = film_id if film_id != "auto" else (cohesion_mode if cohesion_mode not in {"auto", ""} else "digital_neutral_raw")
             rad_spec = SceneRadiometryAnalyzer.analyze(
                 scene_bgr=raw_loc_bgr,
                 mood_prompt=loc.mood_or_place_prompt,
                 lighting_note=loc.lighting_note,
                 lighting_mode=lighting_mode,
                 aperture_mode=aperture_mode,
+                camera_id=camera_id,
+                film_id=eff_film,
             )
 
             if loc.image_path is not None and Path(loc.image_path).exists():
@@ -495,9 +500,9 @@ class MultiSceneBatchComposer:
                         }
                     )
                     role_clauses.append(
-                        "Image 2 (IDENTITY-ORIGIN-0DEG): untouched 0-degree original photograph of the exact same person—"
-                        "ground-truth authority for authentic iris color, real skin pore structure, and exact facial likeness "
-                        "(discard its studio flash illumination)"
+                        "Image 2 (IDENTITY-ORIGIN-0DEG & REAL-CAMERA-OPTICAL-ANCHOR): untouched 0-degree real camera photograph of the "
+                        "exact same person—ground-truth authority for authentic iris color, exact facial likeness, AND unretouched real-camera "
+                        "optical smoothness (match its non-CGI, non-procedural photographic realism; discard its studio flash)"
                     )
                 else:
                     ordered_imgs.append(
@@ -508,9 +513,9 @@ class MultiSceneBatchComposer:
                         }
                     )
                     role_clauses.append(
-                        "Image 1 (IDENTITY-ORIGIN-0DEG): untouched 0-degree original photograph of the target subject—"
-                        "sole authority for exact 1:1 facial likeness, authentic iris color, real skin pore structure, and eyewear "
-                        "(discard its studio flash illumination)"
+                        "Image 1 (IDENTITY-ORIGIN-0DEG & REAL-CAMERA-OPTICAL-ANCHOR): untouched 0-degree real camera photograph of the "
+                        "target subject—sole authority for exact 1:1 facial likeness, authentic iris color, eyewear, AND unretouched "
+                        "real-camera optical realism (discard its studio flash)"
                     )
 
                 if resolved_sheet_path is not None:
@@ -547,9 +552,9 @@ class MultiSceneBatchComposer:
                         )
                         mask_hint = " (ignore solid privacy block masking original wearer's face)" if m_cnt > 0 else ""
                         role_clauses.append(
-                            f"Image {len(ordered_imgs)} ({cat_title}): raw original product reference—preserve its exact weave, "
-                            "seam construction, pattern, and hardware, while relighting its brightness, shadows, and white balance "
-                            f"100% into the target scene's camera light (do NOT copy its white studio table exposure){mask_hint}"
+                            f"Image {len(ordered_imgs)} ({cat_title}): raw original product reference—preserve its exact cut, "
+                            "seam lines, pattern layout, and hardware at natural camera-distance resolution (do NOT stamp macro "
+                            f"pebble/suede grit and do NOT copy its white studio table exposure){mask_hint}"
                         )
 
                 # ── RAW ORIGINAL LOCATION / STYLE ASSET ──
@@ -587,8 +592,8 @@ class MultiSceneBatchComposer:
                     loc_clause += f" Lighting & Atmosphere: {loc.lighting_note.strip()}."
                 if not loc_clause and loc_img_prepared is None:
                     loc_clause = (
-                        " Environment & Mood Direction: deep, multi-layered architectural editorial interior/exterior with "
-                        "subtle foreground framing depth, warm directional window sunlight, and dimensional background bokeh."
+                        " Environment & Mood Direction: calm, uncluttered real-world architectural space with natural daylight "
+                        "from a side window, clean neutral surfaces, and soft optical background depth."
                     )
 
                 # Render UI-only 3D Previz thumbnail (saved under `ui_preview_*` and NEVER added to `ordered_imgs`!)
@@ -604,6 +609,7 @@ class MultiSceneBatchComposer:
                     has_catalog_items=has_catalog_items,
                     has_placed_bag=has_placed_bag,
                 )
+                post_master_key = eff_film if cohesion_mode == "auto" else cohesion_mode
 
                 prompt = (
                     f"{optical_header} "
@@ -621,9 +627,9 @@ class MultiSceneBatchComposer:
                     f"Layered Wardrobe, Scale-Locked Accessories, Bag Kinematics & Footwear: {styling_directive}. "
                     f"Scene Architecture & Mood:{loc_clause} "
                     f"{cohesion_law} "
-                    "Skin Expression: authentic tactile real skin micro-texture with natural pores illuminated by the scene's directional light "
-                    "and dimensional shadow side, zero plastic/oily shine, zero dewy gloss, zero specular glare, zero artificial wrinkles, "
-                    "zero text, and zero watermarks."
+                    "Skin & Hair Realism: natural unretouched real human skin appropriate to camera distance (preserve subtle organic skin "
+                    "variation without repeated pore patterns, etched micro-contrast, plastic/oily shine, dewy gloss, or specular glare), "
+                    "natural hair mass without wire-sharp individual strands, zero artificial wrinkles, zero text, and zero watermarks."
                 )
                 PromptFirewall.validate_prompt(prompt)
 
@@ -642,7 +648,7 @@ class MultiSceneBatchComposer:
                         head_roll_deg=pose.head_roll_deg,
                         gaze_mode=pose.resolved_gaze_mode(),
                         radiometric_spec=rad_spec,
-                        cohesion_mode=cohesion_mode,
+                        cohesion_mode=post_master_key,
                         reference_scene_path=str(src_for_analysis) if (src_for_analysis and Path(src_for_analysis).exists()) else None,
                     )
                 )

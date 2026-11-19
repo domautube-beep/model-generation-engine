@@ -1050,17 +1050,20 @@
           remSel.style.fontSize = "11px";
           remSel.style.flex = "1";
           const modes = [
-            ["auto", "후처리: 자동 광학 일체화"],
-            ["warm_cinema_amber", "후처리: 웜 시네마 앰버"],
-            ["deep_chiaroscuro", "후처리: 시네마틱 딥 명암"],
-            ["soft_editorial_natural", "후처리: 소프트 내추럴 필름"],
-            ["off", "후처리: 생성 원본 그대로"],
+            ["digital_neutral_raw", "필름/컬러: 무보정 클린 디지털 RAW (노란끼 제거)"],
+            ["kodak_portra_400", "필름: Kodak Portra 400 (맑은 스킨톤·크리미 뉴트럴)"],
+            ["fujifilm_pro_400h", "필름: Fujifilm Pro 400H (청량한 쿨-에어리 데이라이트)"],
+            ["cinestill_50d", "필름: CineStill 50D (투명한 시네마 데이라이트)"],
+            ["kodak_gold_200", "필름: Kodak Gold 200 (담백한 오후 내추럴 웜)"],
+            ["ilford_hp5_bw", "필름: Ilford HP5 Plus 400 (클래식 흑백)"],
+            ["off", "후처리 끄기 (생성 원본 그대로)"],
           ];
+          const curMode = j.cohesion_mode === "auto" ? "digital_neutral_raw" : j.cohesion_mode || "digital_neutral_raw";
           for (const [mv, ml] of modes) {
             const opt = document.createElement("option");
             opt.value = mv;
             opt.textContent = ml;
-            if ((j.cohesion_mode || "auto") === mv) opt.selected = true;
+            if (curMode === mv) opt.selected = true;
             remSel.appendChild(opt);
           }
           remSel.addEventListener("change", async () => {
@@ -1417,9 +1420,11 @@
         location_scope: $("selLocationScope").value,
         canvas_preset: $("selCanvasPreset").value,
         provider: $("selProvider").value,
+        camera_id: $("selCameraBody") ? $("selCameraBody").value : "hasselblad_x2d",
+        film_id: $("selFilmStock") ? $("selFilmStock").value : "digital_neutral_raw",
         lighting_mode: $("selLightingMode") ? $("selLightingMode").value : "auto",
         aperture_mode: $("selApertureMode") ? $("selApertureMode").value : "auto",
-        cohesion_mode: $("selCohesionMode") ? $("selCohesionMode").value : "auto",
+        cohesion_mode: $("selFilmStock") ? $("selFilmStock").value : "digital_neutral_raw",
         face_direction_mode: state.faceDirectionMode,
         attach_previz_image: false,
         pose: Object.assign({}, state.pose, {

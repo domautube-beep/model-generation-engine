@@ -41,8 +41,11 @@ from .identity_turnaround import (
 from .origin_guard import OriginLineageViolationError, OriginOnlyOneShotGuard
 from .previz_pose import GAZE_MODES, POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
 from .scene_radiometry import (
+    APERTURE_DOF_DESCRIPTIONS,
     APERTURE_MODES,
+    CAMERA_PROFILES,
     COHESION_MASTERING_MODES,
+    FILM_PROFILES,
     LIGHTING_MODES,
     PostGenCohesionMasterer,
     SceneRadiometryAnalyzer,
@@ -101,6 +104,9 @@ __all__ = [
     "Previz3DRenderer",
     "LIGHTING_MODES",
     "APERTURE_MODES",
+    "APERTURE_DOF_DESCRIPTIONS",
+    "CAMERA_PROFILES",
+    "FILM_PROFILES",
     "COHESION_MASTERING_MODES",
     "SingleLensRadiometricSpec",
     "SceneRadiometryAnalyzer",

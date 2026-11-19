@@ -1077,25 +1077,23 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         right_dx = float(np.mean(np.abs(np.diff(out_4k[:, -30:, :].astype(np.float32), axis=1))))
         self.assertGreater(right_dx, 2.0)
 
-        # 4. Verify PostGenCohesionMasterer shifts sterile #F5F5F5 catalog whites toward warm scene chromaticity
+        # 4. Verify PostGenCohesionMasterer removes muddy AI yellow cast (+22 b*) in digital_neutral_raw & fujifilm_pro_400h
         synth_frame = cv2.imread(str(self.outputs_dir / "21x9_studio_seated_01_terracotta_cane.jpg"))
         synth_small = cv2.resize(synth_frame, (1280, 720), interpolation=cv2.INTER_AREA)
-        # Inject a sterile neutral-white catalog patch in the chest area
-        synth_small[480:580, 600:720] = (244, 244, 244)
-        f_det = self.detector.detect(synth_small)
-        mastered, meta = PostGenCohesionMasterer.master(
-            synth_small,
-            face_det=f_det,
-            reference_scene_bgr=warm_scene,
-            mode="warm_cinema_amber",
-        )
-        self.assertTrue(meta["applied"])
-        lab_before = cv2.cvtColor(synth_small[490:570, 610:710], cv2.COLOR_BGR2LAB).astype(np.float32)
-        lab_after = cv2.cvtColor(mastered[490:570, 610:710], cv2.COLOR_BGR2LAB).astype(np.float32)
-        # Warm b* channel must increase significantly on the neutral catalog patch!
-        self.assertGreater(float(np.median(lab_after[:, :, 2])), float(np.median(lab_before[:, :, 2])) + 4.0)
+        lab_yellow = cv2.cvtColor(synth_small, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab_yellow[:, :, 2] = np.clip(lab_yellow[:, :, 2] + 22.0, 0.0, 255.0)
+        yellow_bgr = cv2.cvtColor(lab_yellow.astype(np.uint8), cv2.COLOR_LAB2BGR)
+        f_det = self.detector.detect(yellow_bgr)
 
-        # 5. Verify full compose_batch + Studio API exposes lighting_modes & cohesion_modes
+        mastered_raw, meta_raw = PostGenCohesionMasterer.master(
+            yellow_bgr, face_det=f_det, mode="digital_neutral_raw"
+        )
+        self.assertTrue(meta_raw["applied"])
+        b_before = float(np.median(cv2.cvtColor(yellow_bgr, cv2.COLOR_BGR2LAB)[:, :, 2]) - 128.0)
+        b_after = float(np.median(cv2.cvtColor(mastered_raw, cv2.COLOR_BGR2LAB)[:, :, 2]) - 128.0)
+        self.assertLess(b_after, b_before - 8.0)
+
+        # 5. Verify Camera x Film x Lens DOF compose_batch + Studio API exposes camera_profiles & film_profiles
         pipe = ModelGenerationPipeline(cfg_4k)
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -1103,23 +1101,27 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             jobs = pipe.batch_composer.compose_batch(
                 canonical_front_path=canon_p,
                 subject=SubjectProfile(),
-                locations=[SceneLocationInput(name="warm_room", mood_or_place_prompt="sunlit walnut louver interior")],
+                locations=[SceneLocationInput(name="clean_room", mood_or_place_prompt="quiet daylight room")],
                 poses=[pose_desk],
-                lighting_mode="natural_window_backlight",
-                aperture_mode="f1_8",
-                cohesion_mode="warm_cinema_amber",
+                lighting_mode="soft_diffused_daylight",
+                aperture_mode="f1_4",
+                camera_id="leica_sl3",
+                film_id="fujifilm_pro_400h",
                 work_dir=tmp / "stg",
             )
             self.assertEqual(len(jobs), 1)
             PromptFirewall.validate_prompt(jobs[0].prompt)
-            self.assertIn("f/1.8", jobs[0].prompt)
+            self.assertIn("Leica SL3", jobs[0].prompt)
+            self.assertIn("Fujifilm Pro 400H", jobs[0].prompt)
+            self.assertIn("f/1.4", jobs[0].prompt)
             self.assertIn("THREE-PLANE SPATIAL DEPTH", jobs[0].prompt)
 
             app = create_studio_app(workspace_dir=tmp / "ws", runtime=StudioImageRuntime())
             client = TestClient(app)
             st = client.get("/api/status").json()
+            self.assertGreaterEqual(len(st["camera_profiles"]), 5)
+            self.assertGreaterEqual(len(st["film_profiles"]), 6)
             self.assertGreaterEqual(len(st["lighting_modes"]), 5)
-            self.assertGreaterEqual(len(st["cohesion_modes"]), 4)
 
 
 if __name__ == "__main__":

@@ -51,11 +51,12 @@ class SuperResolutionEngine:
         uw, uh = sw * self.config.upscale_factor, sh * self.config.upscale_factor
 
         if getattr(self.config, "upscale_mode", "optical_lanczos") != "esrgan":
+            # Pure optical Lanczos-4 + ultra-gentle 0.10 resampling MTF compensation (zero crunch, zero halo)
             lanczos_bgr = cv2.resize(src_bgr, (uw, uh), interpolation=cv2.INTER_LANCZOS4)
             lab = cv2.cvtColor(lanczos_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
             L = lab[:, :, 0]
-            fine = L - cv2.GaussianBlur(L, (0, 0), 1.1)
-            lab[:, :, 0] = np.clip(L + 0.28 * np.clip(fine, -7.0, 7.0), 0.0, 255.0)
+            fine = L - cv2.GaussianBlur(L, (0, 0), 1.0)
+            lab[:, :, 0] = np.clip(L + 0.11 * np.clip(fine, -5.0, 5.0), 0.0, 255.0)
             out_bgr = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
             cv2.imwrite(str(output_path), out_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
             return output_path

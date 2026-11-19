@@ -272,31 +272,42 @@
       <div class="location-layout">
         <div class="loc-upload-col">
           <div class="upload-bar">
+            <select id="selCameraBody" title="카메라 바디 & 센서 특성">
+              <option value="hasselblad_x2d" selected>카메라: Hasselblad X2D 100C (HNCS 중립 리얼 컬러)</option>
+              <option value="leica_sl3">카메라: Leica SL3 (맑고 깊은 라이카 입체 계조)</option>
+              <option value="sony_a7rv">카메라: Sony α7R V (정밀 화이트밸런스 커머셜)</option>
+              <option value="contax_645">카메라: Contax 645 (중형 필름 바디 입체감)</option>
+              <option value="canon_r5">카메라: Canon EOS R5 (맑고 자연스러운 스킨톤)</option>
+            </select>
+            <select id="selFilmStock" title="필름 종류 / 컬러 사이언스 (AI 노란끼 자동 교정)">
+              <option value="digital_neutral_raw" selected>필름/컬러: 무보정 클린 디지털 RAW (노란끼 제로)</option>
+              <option value="kodak_portra_400">필름: Kodak Portra 400 (맑은 스킨톤·크리미 뉴트럴)</option>
+              <option value="fujifilm_pro_400h">필름: Fujifilm Pro 400H (청량한 쿨-에어리 데이라이트)</option>
+              <option value="cinestill_50d">필름: CineStill 50D (투명한 시네마 데이라이트)</option>
+              <option value="kodak_gold_200">필름: Kodak Gold 200 (담백한 오후 내추럴 웜)</option>
+              <option value="ilford_hp5_bw">필름: Ilford HP5 Plus 400 (클래식 흑백)</option>
+              <option value="off">후처리 끄기 (생성 원본 그대로)</option>
+            </select>
+            <select id="selApertureMode" title="렌즈 조리개 심도 (DOF)">
+              <option value="f1_4">렌즈 심도: f/1.4 (극얕은 대구경 개방·강한 배경분리)</option>
+              <option value="f1_8">렌즈 심도: f/1.8 (얕은 아웃포커싱 심도)</option>
+              <option value="f2_0" selected>렌즈 심도: f/2.0 (리얼 에디토리얼 표준 심도)</option>
+              <option value="f2_8">렌즈 심도: f/2.8 (착장 디테일·공간 밸런스)</option>
+              <option value="f5_6">렌즈 심도: f/5.6 (공간·건축 깊은 심도)</option>
+            </select>
+          </div>
+          <div class="upload-bar" style="margin-top:6px;">
             <select id="selLocationScope">
-              <option value="scene_and_mood">공간 구조 + 리얼 에디토리얼 광원·톤앤매너 대입</option>
-              <option value="style_mood_only">레퍼런스 빛·명암·색감·심도 무드만 추출 대입</option>
+              <option value="scene_and_mood">공간 구조 + 자연광·화이트밸런스 대입</option>
+              <option value="style_mood_only">레퍼런스 빛·색감·심도 무드만 추출 대입</option>
             </select>
-            <select id="selLightingMode" title="단일 카메라·광원 재조명 모드">
-              <option value="auto" selected>광원: 자동 광학 계측 (레퍼런스 빛 추출)</option>
-              <option value="natural_window_backlight">광원: 창가 역광·측후방광 (림라이트+깊은음영)</option>
-              <option value="warm_golden_sunbeam">광원: 오후 골든아워 직사광·그림자</option>
-              <option value="soft_diffused_daylight">광원: 부드러운 자연 확산광</option>
-              <option value="moody_chiaroscuro_interior">광원: 무디 로우키 실내광 (강한 명암비)</option>
-              <option value="cool_overcast_architectural">광원: 차분한 모던 건축 주광</option>
-            </select>
-            <select id="selApertureMode" title="대구경 단렌즈 심도 (DOF)">
-              <option value="auto" selected>심도: 자동 대구경 아웃포커싱</option>
-              <option value="f1_8">심도: f/1.8 (깊은 공간감·크리미 보케)</option>
-              <option value="f2_0">심도: f/2.0 (리얼 에디토리얼 표준)</option>
-              <option value="f2_8">심도: f/2.8 (인물·배경 밸런스)</option>
-              <option value="f4_0">심도: f/4.0 (건축 디테일 보존)</option>
-            </select>
-            <select id="selCohesionMode" title="생성 후 무드·톤·명암·색감 광학 마스터링">
-              <option value="auto" selected>후처리: 자동 광학 일체화 (무드·명암·색감 통합)</option>
-              <option value="warm_cinema_amber">후처리: 웜 시네마 앰버 (따뜻한 필름 톤)</option>
-              <option value="deep_chiaroscuro">후처리: 시네마틱 딥 명암 (들뜬 암부 밀착)</option>
-              <option value="soft_editorial_natural">후처리: 소프트 내추럴 필름</option>
-              <option value="off">후처리: 끄기 (생성 원본 그대로)</option>
+            <select id="selLightingMode" title="자연광·광원 방향">
+              <option value="auto" selected>광원: 자동 광학 계측 (장소 자연광 맞춤)</option>
+              <option value="soft_diffused_daylight">광원: 부드러운 확산 창가광 (가장 담백한 실사)</option>
+              <option value="natural_window_backlight">광원: 창가 측후방 역광 (은은한 림라이트+음영)</option>
+              <option value="warm_golden_sunbeam">광원: 오후 자연 채광·그림자 (노란끼 배제)</option>
+              <option value="moody_chiaroscuro_interior">광원: 로우키 실내 자연광 (차분한 깊은 암부)</option>
+              <option value="cool_overcast_architectural">광원: 청량한 흐린 날 건축 주광</option>
             </select>
           </div>
           <label class="dropzone loc-dropzone" id="locationDropzone">

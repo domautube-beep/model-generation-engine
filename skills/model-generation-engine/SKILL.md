@@ -69,16 +69,14 @@ description: Use this skill immediately whenever the user talks about creating, 
 - `analyze_reference_pose_before_masking`: Automatically extracts 3-axis head orientation (`auto_yaw_deg`, `auto_pitch_deg` downward/upward bow, `auto_roll_deg` candid head tilt) and `auto_gaze_mode` (`downward_task_focus`, `off_camera_natural`, `camera_eye_contact`, `side_window_contemplative`) from any reference photo BEFORE privacy masking.
 - Never pre-bake dozens of gaze angles beyond the 8 horizontal frontal-arc anchors, and NEVER generate a face separately to stitch/composite onto a generated body afterward (`사후 얼굴 합성 금지`). All 3-axis neck/chin/eyelid kinematics + scene relighting happen in ONE atomic `1원본들 → 1생성` pass.
 
-### Step 4: Dual-Stage Real-Photo Editorial Depth, Chiaroscuro Light & Post-Gen Cohesion (`scene_radiometry.py` v3.4)
-- **Stage A — Pre-Generation Single-Lens Relighting & 3-Plane Spatial Depth (`SceneRadiometryAnalyzer` + `SingleLensRadiometricSpec`)**:
-  - Measures scene Kelvin temperature, CIE LAB shadow/highlight cast, key-to-fill contrast stops, window backlight/rim regime, and `f/1.8 ~ f/2.8` prime-lens Depth-of-Field.
-  - Explicitly strips flat `5600K` studio flash from Face Anchors (`Images 1–3`) and `#FFFFFF` catalog RGB locks from clothing/watch/bag photos—enforcing 3-plane spatial depth (soft foreground framing + razor-sharp subject focal plane + creamy receding background bokeh), living 3-stop chiaroscuro shadow sculpting, contact ambient occlusion, and environmental color spill.
-- **Stage B — Post-Generation Deterministic Optical Mastering (`PostGenCohesionMasterer`)**:
-  - Runs automatically inside `run_single_pass_5k` (and on-demand in `<0.3s` via `/api/batches/{id}/jobs/{idx}/remaster` with ZERO AI re-generation and ZERO `SFace` identity drift):
-    1. Neutral-white catalog spike suppression & room white-point tinting on shirts/watches/props
-    2. Foreground lifted-shadow grounding to match the environment's true shadow floor
-    3. 2D ambient irradiance coupling + optical light-wrap across sunlit/backlit silhouettes
-    4. Filmic S-curve contrast, 3-zone split-toning (`Shadows / Midtones / Highlights` with physiological skin guard), `cos⁴` peripheral lens falloff, subtle highlight bloom (masked off facial organs), and unified full-frame 35mm sensor grain.
+### Step 4: Camera Body × Film Stock × Lens DOF & Anti-AI-Yellow/Crunch Optical Engine (`scene_radiometry.py` v3.5)
+- **Explicit 3-Axis Photographic Controls (`카메라 바디 × 필름 컬러 사이언스 × 렌즈 심도`)**:
+  - `CAMERA_PROFILES`: `hasselblad_x2d` (HNCS 16-bit neutral color), `leica_sl3` (APO/Summilux clarity), `sony_a7rv` (5500K commercial precision), `contax_645` (medium-format planar roll-off), `canon_r5` (translucent skin tone).
+  - `FILM_PROFILES`: `digital_neutral_raw` (default, 5500K Capture One neutral, zero grain, zero yellow cast), `kodak_portra_400`, `fujifilm_pro_400h`, `cinestill_50d`, `kodak_gold_200`, `ilford_hp5_bw`.
+  - `APERTURE_MODES`: `f1_4` (ultra-shallow planar bokeh), `f1_8`, `f2_0` (editorial standard 3-plane depth), `f2_8` (outfit-balanced DOF), `f5_6` (architectural depth).
+- **Anti-AI-Yellow & Anti-AI-Crunch Laws**:
+  - **Pre-Gen**: Enforces grey-card calibrated `5400K–5600K` daylight white balance (banning sepia/amber triggers), anchors pixel smoothness to `Image 2` (`0°` real camera portrait), and enforces **Distance-Appropriate Lens Resolution** (preventing 30cm macro product pebble-leather/suede grit from stamping repetitive patterns onto 2.5–3.5m shots).
+  - **Post-Gen (`PostGenCohesionMasterer`)**: Quantitatively neutralizes GPT-Image's excess `CIE b*` yellow/orange cast across highlights/midtones/shadows, applies subtle Optical MTF De-Crunch outside the face oval, and supports `<0.3s` zero-regeneration Film Stock switching in Studio UI.
 
 ### Step 5: Pure Optical 4K/5K Composition & 9 Automated Quality Gates (`quality_gate.py`)
 - Outputs `3840x2160` (`16:9` default, pure Lanczos-4 cover-scale with zero side-strip smear), `5040x2160` (`21:9`), `2160x3840` (`9:16`), `2400x3200` (`3:4`), or `2048x2048` (`1:1`), verified against all 9 Quality Gates (`Resolution`, `YuNet Face Detection`, `Global Sharpness`, `Seam L1 <= 6.0`, `Natural Skin Texture`, `Zero Specular Glare <= 0.04`, `Per-Organ Anti-Smudge`, `Min Face Scale`, and `SFace >= 0.65 + Apple Vision 3D Proportion Lock`).
