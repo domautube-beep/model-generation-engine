@@ -317,8 +317,8 @@ class MultiSceneBatchComposer:
         face_direction_mode: str = "manual",  # Studio UI passes "auto" by default or "manual" when user chooses an angle
         lighting_mode: str = "auto",
         aperture_mode: str = "auto",
-        camera_id: str = "hasselblad_x2d",
-        film_id: str = "digital_neutral_raw",
+        camera_id: str = "auto",
+        film_id: str = "auto",
         cohesion_mode: str = "auto",
         attach_previz_image: bool = False,  # HARD DEFAULT FALSE (`1원본들 → 1생성`: never pollute `--image` with synthetic wireframes)
     ) -> List[ComposedSceneJob]:
@@ -385,7 +385,11 @@ class MultiSceneBatchComposer:
                 if raw_loc_bgr is not None:
                     loc_auto_info = self.turnaround.analyze_reference_pose_before_masking(raw_loc_bgr)
 
-            eff_film = film_id if film_id != "auto" else (cohesion_mode if cohesion_mode not in {"auto", ""} else "digital_neutral_raw")
+            requested_film = (
+                film_id
+                if film_id not in {"auto", ""}
+                else (cohesion_mode if cohesion_mode not in {"auto", ""} else "auto")
+            )
             rad_spec = SceneRadiometryAnalyzer.analyze(
                 scene_bgr=raw_loc_bgr,
                 mood_prompt=loc.mood_or_place_prompt,
@@ -393,7 +397,7 @@ class MultiSceneBatchComposer:
                 lighting_mode=lighting_mode,
                 aperture_mode=aperture_mode,
                 camera_id=camera_id,
-                film_id=eff_film,
+                film_id=requested_film,
             )
 
             if loc.image_path is not None and Path(loc.image_path).exists():
@@ -447,6 +451,11 @@ class MultiSceneBatchComposer:
                     eff_x_norm = orig_pose.subject_x_norm
                     dir_source = "manual_override"
 
+                eff_focal_mm = (
+                    rad_spec.recommended_focal_mm
+                    if (face_direction_mode == "auto" and orig_pose.focal_length_mm == 85)
+                    else orig_pose.focal_length_mm
+                )
                 pose = PosePrevizSpec(
                     preset_id=eff_preset_id,
                     head_azimuth_deg=eff_head_yaw,
@@ -455,7 +464,7 @@ class MultiSceneBatchComposer:
                     gaze_mode=eff_gaze,
                     torso_azimuth_deg=eff_torso_yaw,
                     camera_elevation_deg=orig_pose.camera_elevation_deg,
-                    focal_length_mm=orig_pose.focal_length_mm,
+                    focal_length_mm=eff_focal_mm,
                     subject_x_norm=eff_x_norm,
                     shot_scale=(
                         "full-body editorial head-to-toe shot (framed closely from shoes near bottom edge to crown near top edge)"
@@ -609,7 +618,7 @@ class MultiSceneBatchComposer:
                     has_catalog_items=has_catalog_items,
                     has_placed_bag=has_placed_bag,
                 )
-                post_master_key = eff_film if cohesion_mode == "auto" else cohesion_mode
+                post_master_key = rad_spec.film_id if cohesion_mode in {"auto", ""} else cohesion_mode
 
                 prompt = (
                     f"{optical_header} "

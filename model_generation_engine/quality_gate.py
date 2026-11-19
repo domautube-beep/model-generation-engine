@@ -264,23 +264,31 @@ class QualityGateAuditor:
         shape_note = ""
         if reference_face_bgr is not None:
             ref_face = self.detector.detect(reference_face_bgr)
+            tilt_diff = abs(float(face.eye_tilt_degrees) - float(ref_face.eye_tilt_degrees))
             if abs(ref_face.yaw_asymmetry_ratio - face.yaw_asymmetry_ratio) <= 0.16:
                 id_sim = self.measure_identity_similarity(reference_face_bgr, patch, ref_face, face)
-                if id_sim < self.config.min_identity_cosine_sim:
+                # Allow 0.06 cosine foreshortening margin when head has >= 8 deg 3-axis roll/bow downward gaze
+                eff_min_sim = (
+                    max(0.58, self.config.min_identity_cosine_sim - 0.06)
+                    if tilt_diff >= 8.0
+                    else self.config.min_identity_cosine_sim
+                )
+                if id_sim < eff_min_sim:
                     failures.append(
-                        f"Face identity similarity ({id_sim:.3f}) below min ({self.config.min_identity_cosine_sim:.3f}) — face drifted from reference"
+                        f"Face identity similarity ({id_sim:.3f}) below min ({eff_min_sim:.3f}) — face drifted from reference"
                     )
             try:
                 ref_pil = Image.fromarray(cv2.cvtColor(reference_face_bgr, cv2.COLOR_BGR2RGB))
                 dst_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
                 ref_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(ref_pil))
                 dst_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(dst_pil))
+                eff_shape_lim = self.config.max_face_shape_diff_pct + (8.0 if tilt_diff >= 8.0 else 0.0)
                 cmp = self.apple_vision.compare_face_shapes(
-                    ref_sh, dst_sh, limit_pct=self.config.max_face_shape_diff_pct
+                    ref_sh, dst_sh, limit_pct=eff_shape_lim
                 )
                 shape_note = str(cmp.get("note", ""))
                 if not cmp.get("passed", True):
-                    failures.append(f"Face shape proportion drift exceeded {self.config.max_face_shape_diff_pct}%: {shape_note}")
+                    failures.append(f"Face shape proportion drift exceeded {eff_shape_lim}%: {shape_note}")
             except Exception:
                 pass
 

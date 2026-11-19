@@ -984,6 +984,18 @@
         else if (j.status === "manifest_saved") stClass = "st-manifest";
         else if (j.status === "failed") stClass = "st-err";
 
+        const rad = j.radiometry || {};
+        const dopLine = rad.camera_id
+          ? '<div class="mini-label" style="color:#8fd3ff;">자동 촬영감독: ' +
+            escapeHtml(rad.camera_id) +
+            " · " +
+            escapeHtml(rad.film_id) +
+            " · " +
+            escapeHtml(rad.recommended_aperture || "") +
+            (rad.illuminance_lux ? " · 조도 ~" + rad.illuminance_lux + " lux" : "") +
+            "</div>"
+          : "";
+
         card.innerHTML =
           '<div class="asset-top-row"><strong>#' +
           j.job_index +
@@ -999,7 +1011,8 @@
           Math.round(j.head_azimuth_deg) +
           "°) · 참조 이미지 " +
           (j.reference_images ? j.reference_images.length : 0) +
-          "장</div>";
+          "장</div>" +
+          dopLine;
 
         const media = document.createElement("div");
         media.className = "job-media";
@@ -1125,10 +1138,10 @@
     const rt = data.runtime || {};
     $("runtimePill").textContent =
       "실행 엔진: " +
-      (rt.gti_installed || rt.gti_available
-        ? "GTI 로컬 준비됨 (병렬 생성)"
-        : rt.gemini_configured || rt.gemini_api_available
-        ? "Gemini API 준비됨"
+      (rt.nanobanana_configured || rt.gemini_configured || rt.gemini_api_available
+        ? "나노바나나 Pro 4K 준비됨 (병렬 생성)"
+        : rt.gti_installed || rt.gti_available
+        ? "GTI 백업 준비됨"
         : "프롬프트·프리비즈 번들 모드");
 
     // Populate pose preset buttons once
@@ -1420,11 +1433,11 @@
         location_scope: $("selLocationScope").value,
         canvas_preset: $("selCanvasPreset").value,
         provider: $("selProvider").value,
-        camera_id: $("selCameraBody") ? $("selCameraBody").value : "hasselblad_x2d",
-        film_id: $("selFilmStock") ? $("selFilmStock").value : "digital_neutral_raw",
+        camera_id: $("selCameraBody") ? $("selCameraBody").value : "auto",
+        film_id: $("selFilmStock") ? $("selFilmStock").value : "auto",
         lighting_mode: $("selLightingMode") ? $("selLightingMode").value : "auto",
         aperture_mode: $("selApertureMode") ? $("selApertureMode").value : "auto",
-        cohesion_mode: $("selFilmStock") ? $("selFilmStock").value : "digital_neutral_raw",
+        cohesion_mode: $("selFilmStock") ? $("selFilmStock").value : "auto",
         face_direction_mode: state.faceDirectionMode,
         attach_previz_image: false,
         pose: Object.assign({}, state.pose, {

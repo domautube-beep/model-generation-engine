@@ -329,36 +329,46 @@ APERTURE_DOF_DESCRIPTIONS: Dict[str, str] = {
 
 @dataclass(frozen=True)
 class SingleLensRadiometricSpec:
-    """Camera × Film Stock × Lens DOF & Anti-AI-Yellow/Crunch optical specification."""
+    """Autonomous DoP + Camera × Film Stock × Lens DOF + Illuminance (Lux) + Light Flow specification."""
 
     kelvin_est: int = 5400
-    contrast_ratio_stops: float = 2.2
-    shadow_floor_luma: float = 26.0
-    median_luma: float = 112.0
+    illuminance_lux: int = 650
+    contrast_ratio_stops: float = 2.4
+    shadow_floor_luma: float = 24.0
+    median_luma: float = 108.0
     highlight_p95_luma: float = 220.0
-    highlight_bloom: float = 0.04
+    highlight_bloom: float = 0.05
     lab_a_cast: float = 1.5
     lab_b_cast: float = 3.5
     lighting_regime: str = "directional_side_key"
     key_light_vector: str = (
-        "single directional natural daylight source creating a believable 2-stop highlight-to-shadow transition across the subject and space"
+        "single directional natural daylight source creating a believable 2.4-stop highlight-to-shadow transition across the subject and space"
     )
+    light_flow_desc: str = (
+        "light enters from a single off-camera architectural opening, skims gently across the lit cheekbone, collar edge, "
+        "and natural fabric folds to reveal quiet real-world texture, bounces softly from nearby surfaces into the lower chin, "
+        "and falls off smoothly into calm, deep room shadow"
+    )
+    illuminance_desc: str = "natural indoor-window editorial illuminance (~650 lux key, ~120 lux ambient shadow)"
     color_cast_summary: str = (
         "grey-card calibrated 5500K neutral daylight white balance—clean whites, true garment colors, and natural skin free of any yellow cast"
     )
-    recommended_aperture: str = "f/2.0"
+    recommended_aperture: str = "f/1.8"
+    recommended_focal_mm: int = 85
     camera_id: str = "hasselblad_x2d"
-    film_id: str = "digital_neutral_raw"
+    film_id: str = "kodak_portra_400"
+    dop_rationale: str = "auto_curated_editorial_dop"
     source: str = "measured_scene_radiometry"
 
     def to_single_lens_header(self, focal_length_mm: int = 85) -> str:
-        """Emit an authentic Camera Body + Lens Focal/Aperture + Film Stock optical capture header."""
+        """Emit an authentic Master DoP Camera Body + Lens Focal/Aperture + Film Stock + Illuminance capture header."""
         cam = CAMERA_PROFILES.get(self.camera_id, CAMERA_PROFILES["hasselblad_x2d"])
         film = FILM_PROFILES.get(self.film_id, FILM_PROFILES["digital_neutral_raw"])
-        ap = self.recommended_aperture or "f/2.0"
+        ap = self.recommended_aperture or "f/1.8"
         return (
-            f"Editorial portrait. Unstaged real-world photograph shot on a {cam['sensor_desc']}, "
-            f"fitted with a {focal_length_mm}mm {ap} prime lens, developed with {film['prompt_color_desc']}."
+            "Editorial portrait. Masterpiece of natural light, quiet real-world texture, and optical depth—unstaged real-world "
+            f"photograph shot on a {cam['sensor_desc']}, fitted with a {focal_length_mm}mm {ap} prime lens under "
+            f"{self.illuminance_desc}, developed with {film['prompt_color_desc']}."
         )
 
     def to_relighting_and_cohesion_clause(
@@ -366,51 +376,170 @@ class SingleLensRadiometricSpec:
         has_catalog_items: bool = True,
         has_placed_bag: bool = False,
     ) -> str:
-        """Emit the Anti-AI-Yellow, Anti-AI-Crunch, Distance-True Optical & Single-Lens DOF Law."""
-        ap = self.recommended_aperture or "f/2.0"
-        dof_desc = APERTURE_DOF_DESCRIPTIONS.get(ap, APERTURE_DOF_DESCRIPTIONS["f/2.0"])
+        """Emit the Master DoP Law: Light Flow, Illuminance, True White Balance, Grazing Texture Restraint & Lens DOF."""
+        ap = self.recommended_aperture or "f/1.8"
+        dof_desc = APERTURE_DOF_DESCRIPTIONS.get(ap, APERTURE_DOF_DESCRIPTIONS["f/1.8"])
         film = FILM_PROFILES.get(self.film_id, FILM_PROFILES["digital_neutral_raw"])
 
         shadow_side_rule = (
-            f"Maintain a natural, unforced {min(2.8, max(1.8, self.contrast_ratio_stops)):.1f}-stop directional light-to-shadow "
-            "transition from the window-lit side to the shaded side of the face and torso—do NOT illuminate both cheeks flatly "
-            "with studio flash, and do NOT carve harsh HDR contrast or neon rim-light halos"
+            f"Sculpt authentic {min(3.2, max(1.9, self.contrast_ratio_stops)):.1f}-stop three-dimensional chiaroscuro under "
+            f"{self.illuminance_desc}: {self.light_flow_desc}. NEVER illuminate both cheeks evenly with flat studio flash, "
+            "and NEVER crush the eyes into muddy black or add fake HDR halos"
         )
 
-        item_relight_rule = ""
-        if has_catalog_items:
-            item_relight_rule = (
-                " 2) DISTANCE-APPROPRIATE GARMENT & LEATHER REALISM (거리 비례 해상도 · 반복 패턴/과잉 질감 금지): "
-                "Attached product images were photographed at 30cm macro studio distance—when worn or placed at 2–3.5m editorial "
-                "camera distance, preserve their true silhouette, seam lines, pattern layout, and intrinsic color under neutral "
-                "daylight while letting sub-millimeter fabric weave, suede nap, and leather grain calm down naturally with camera "
-                "distance! NEVER stamp uniform repetitive pebble-leather bumps, sandpaper suede grit, or synthetic repeating weave "
-                "grids; discard the product photos' bright #FFFFFF studio table exposure so folds and shaded surfaces settle calmly into the room's light."
-            )
+        catalog_exposure_note = (
+            " Discard any attached product photos' bright #FFFFFF studio table exposure and relight all garments/accessories "
+            "strictly under the room's ambient luminance."
+            if has_catalog_items
+            else ""
+        )
+        item_relight_rule = (
+            " 2) GRAZING-LIGHT TEXTURE & DISTANCE-TRUE MTF (빛이 스치는 곳에만 살아나는 진짜 질감 · 반복 패턴 금지): "
+            "Photography is the art of light skimming real surfaces—let fabric drape, wool/cotton/suede softness, and leather character "
+            "reveal themselves ONLY where directional light grazes a fold or turn of form, while broad lit and shaded areas stay "
+            f"calm, smooth-yet-organic, and proportionate to 2–3.5m camera distance!{catalog_exposure_note} "
+            "NEVER stamp uniform repetitive pebble-leather bumps or synthetic sandpaper grit."
+        )
 
         placed_prop_rule = ""
         if has_placed_bag:
             placed_prop_rule = (
-                " Angle any grounded/placed bag naturally in the room's 3D floor perspective with soft floor contact shadow and "
-                "let its surface detail soften naturally according to its focal-plane distance (never a sharp catalog cutout)."
+                " Ground any placed bag naturally in the room's 3D perspective and local floor shadow with real contact occlusion "
+                "and optical distance defocus (never a bright pasted catalog sticker)."
             )
 
         return (
-            "CRITICAL REAL-CAMERA OPTICAL REALISM, TRUE WHITE BALANCE & ANTI-AI-SLOP RULES: "
-            "1) NATURAL SINGLE-SOURCE LIGHT & ZERO STUDIO CUTOUT: Images 1–3 (face anchors) were shot under flat studio flash—"
-            "take ONLY 3D craniofacial structure, hair, eyewear silhouette, and real camera skin realism; discard their studio flash "
-            f"and relight naturally under {self.key_light_vector}. {shadow_side_rule}. "
+            "CRITICAL DIRECTOR-OF-PHOTOGRAPHY LIGHT, ILLUMINANCE, TEXTURE & DEPTH LAWS: "
+            "1) LIVING LIGHT FLOW & ILLUMINANCE (빛의 흐름 · 밝기 · 조도 · 명암): Images 1–3 (face anchors) were shot under flat studio flash—"
+            "take ONLY 3D craniofacial bone structure, hair, eyewear silhouette, and real camera skin realism; 100% discard their studio flash "
+            f"and relight under {self.key_light_vector}. {shadow_side_rule}. "
             f"{item_relight_rule}{placed_prop_rule} "
-            "3) STRICT NEUTRAL WHITE BALANCE — ZERO AI YELLOW/AMBER CAST (특유의 이상한 노란끼 절대 금지): "
-            f"Enforce {film['prompt_color_desc']} and {self.color_cast_summary}. NEVER drench the image in a yellow, amber, sepia, "
-            "or orange tint! White/ivory shirts, watch dials, walls, and highlights must read clean and neutral-true; human skin "
-            "must show clean, natural translucent undertones without jaundiced yellow or orange cast. "
-            f"4) THREE-PLANE SPATIAL DEPTH & LENS DOF ({ap}): Apply {dof_desc}. Keep the architectural background calm, simple, "
-            "ordinary, and uncluttered—NEVER crowd the room with cliché AI props (no rows of antique leather books, ornate vintage "
-            "brass lamps, staged floral vases, or fake glowing bokeh orbs). "
-            "5) ZERO AI HYPER-TEXTURE CRUNCH: Match the unretouched real-camera pixel smoothness of Image 2—no repeated artificial "
-            "pores, no wire-sharp individual hair strands, no HDR local micro-contrast, and no oversharpening."
+            "3) TRUE WHITE BALANCE & COLOR HARMONY (자연스러운 화이트밸런스와 색감 · 이상한 노란끼 금지): "
+            f"Enforce {film['prompt_color_desc']} and {self.color_cast_summary}. Keep white/ivory garments, watch dials, and skin "
+            "clean, breathable, and true-to-life—strictly ZERO jaundiced yellow/sepia/orange AI filter! "
+            f"4) THREE-PLANE SPATIAL DEPTH & LENS DOF ({ap} 심도의 예술): Apply {dof_desc}. Frame with genuine architectural depth "
+            "(subtle softly defocused foreground cue, crisp focal plane on the subject's eyes, and calm spatial recession behind) "
+            "in an uncluttered, authentic real-world space free of cliché staged props. "
+            "5) UNRETOUCHED REAL-CAMERA SKIN & HAIR: Match the organic real-camera pixel smoothness of Image 2—natural skin tone and "
+            "subtle real texture where light touches, without repeated artificial pores, wire-sharp hair strands, or oversharpening."
         )
+
+
+class AutonomousDoPDirector:
+    """Translates ANY rough/slang/contradictory user intent or reference photo into optimal Camera + Film + Lens + Lux + Light Flow."""
+
+    @classmethod
+    def curate_rig(
+        cls,
+        raw_text: str = "",
+        is_backlit: bool = False,
+        median_luma: float = 110.0,
+        b_shift: float = 0.0,
+        contrast_stops: float = 2.2,
+        has_reference_photo: bool = False,
+    ) -> Dict[str, object]:
+        low = raw_text.lower()
+
+        bw_kw = ("흑백", "모노크롬", "black and white", "monochrome", "b&w", "느와르")
+        rain_night_kw = ("비", "비오는", "밤", "저녁", "새벽", "어둑", "어두", "가로등", "위스키", "바", "쓸쓸", "고독", "rain", "night", "dusk", "twilight", "evening", "moody", "dark", "low-key")
+        backlit_afternoon_kw = ("오후", "창가", "역광", "루버", "블라인드", "노을", "햇살", "따스", "커피", "카페", "서재", "작업", "책상", "afternoon", "window", "louver", "sunlit", "cafe", "desk")
+        airy_fresh_kw = ("아침", "청량", "맑은", "미니멀", "갤러리", "중정", "산책", "봄", "여름", "담백", "깨끗", "흐린", "morning", "airy", "minimal", "gallery", "courtyard", "clean", "fresh", "overcast")
+        contradict_dark_bright = any(k in low for k in ("어두", "어둑", "컴컴", "밤")) and any(
+            k in low for k in ("잘 보이", "환하", "선명", "살아", "죽지 않")
+        )
+
+        if any(k in low for k in bw_kw):
+            return {
+                "camera_id": "leica_sl3",
+                "film_id": "ilford_hp5_bw",
+                "aperture": "f/1.8",
+                "focal_length_mm": 50,
+                "kelvin_est": 5400,
+                "contrast_ratio_stops": 2.8,
+                "illuminance_lux": 320,
+                "illuminance_desc": "sculpted monochrome directional window illuminance (~320 lux key, ~45 lux deep shadow)",
+                "light_flow_desc": (
+                    "crisp side-window light carves silver-toned grazing highlights along cheekbone, glasses rim, and lapel edge "
+                    "before dropping steeply into velvety monochrome shadow"
+                ),
+                "color_cast_summary": "true silver-gelatin monochrome tonality with luminous unclipped highlights and rich midtone gradation",
+                "rationale": "monochrome_classic_leica_hp5",
+            }
+
+        if contradict_dark_bright or any(k in low for k in rain_night_kw) or (
+            has_reference_photo and median_luma < 82.0 and not is_backlit and b_shift < 7.0
+        ):
+            return {
+                "camera_id": "leica_sl3",
+                "film_id": "cinestill_50d",
+                "aperture": "f/1.4",
+                "focal_length_mm": 50,
+                "kelvin_est": 5000,
+                "contrast_ratio_stops": 2.9,
+                "illuminance_lux": 150,
+                "illuminance_desc": "intimate low-key twilight/evening window illuminance (~150 lux focused key on face, ~25 lux enveloping room shadow)",
+                "light_flow_desc": (
+                    "a narrow beam of cool-clean twilight window light enters from the side, catching the nearer eye, nasal bridge, "
+                    "and upper fabric folds with crystal clarity so the subject's expression and garment texture stay vividly readable "
+                    "while the rest of the room recedes into deep, quiet, atmospheric shadow"
+                ),
+                "color_cast_summary": "clean 5000K neutral-cool twilight white balance—crisp highlights on skin and fabric with deep charcoal-slate shadows and ZERO muddy orange/sepia cast",
+                "rationale": "low_key_rembrandt_leica_f14_cinestill50d",
+            }
+
+        if is_backlit or any(k in low for k in backlit_afternoon_kw) or (has_reference_photo and b_shift >= 7.0):
+            return {
+                "camera_id": "contax_645",
+                "film_id": "kodak_portra_400",
+                "aperture": "f/1.8",
+                "focal_length_mm": 50 if any(w in low for w in ("책상", "작업", "카페", "테이블", "desk", "cafe", "table")) else 85,
+                "kelvin_est": 5300,
+                "contrast_ratio_stops": 2.6,
+                "illuminance_lux": 580,
+                "illuminance_desc": "directional slant window daylight (~2800 lux sunlit rim/louvers vs. ~580 lux soft interior shadow fill)",
+                "light_flow_desc": (
+                    "slanting natural window light flows from behind-side, kissing hair contours, shoulder seams, and tabletop edges "
+                    "with gentle luminous wrap while bouncing soft secondary fill light upward onto the shaded cheek and collar"
+                ),
+                "color_cast_summary": "natural 5300K daylight white balance—clean off-white fabrics and translucent skin with gentle architectural sunlight warmth ONLY where sunbeams strike",
+                "rationale": "slant_window_contax645_portra400_f18",
+            }
+
+        if any(k in low for k in airy_fresh_kw) or (has_reference_photo and median_luma >= 128.0 and b_shift <= 3.0):
+            return {
+                "camera_id": "hasselblad_x2d",
+                "film_id": "fujifilm_pro_400h",
+                "aperture": "f/2.0",
+                "focal_length_mm": 85,
+                "kelvin_est": 5650,
+                "contrast_ratio_stops": 2.1,
+                "illuminance_lux": 1400,
+                "illuminance_desc": "open airy architectural daylight (~1400 lux soft sky/window key, ~420 lux clean open shade)",
+                "light_flow_desc": (
+                    "broad, breathable open daylight wraps smoothly around facial planes and draped fabric from the side courtyard/window, "
+                    "creating effortless three-dimensional volume with airy cool-neutral shadow transparency"
+                ),
+                "color_cast_summary": "grey-card calibrated 5650K airy daylight white balance—pure neutral whites, cool-clean architectural shadows, and zero yellow tint",
+                "rationale": "airy_architectural_hasselblad_fuji400h_f20",
+            }
+
+        # Universal balanced default when prompt is super brief, slangy, or abstract ("알아서 멋지게")
+        return {
+            "camera_id": "hasselblad_x2d",
+            "film_id": "kodak_portra_400",
+            "aperture": "f/1.8",
+            "focal_length_mm": 85,
+            "kelvin_est": 5450,
+            "contrast_ratio_stops": 2.4,
+            "illuminance_lux": 750,
+            "illuminance_desc": "natural editorial side-window daylight (~750 lux key light, ~160 lux dimensional interior shade)",
+            "light_flow_desc": (
+                "natural single-window daylight flows obliquely across the frame, skimming the cheekbone, eyewear frame, "
+                "and outer garment folds before tapering smoothly into quiet architectural shadow behind the subject"
+            ),
+            "color_cast_summary": "calibrated 5450K neutral daylight white balance—clean whites, authentic garment hues, and breathable human skin tone",
+            "rationale": "universal_editorial_hasselblad_portra400_f18",
+        }
 
 
 class SceneRadiometryAnalyzer:
@@ -424,46 +553,68 @@ class SceneRadiometryAnalyzer:
         lighting_note: str = "",
         lighting_mode: str = "auto",
         aperture_mode: str = "auto",
-        camera_id: str = "hasselblad_x2d",
-        film_id: str = "digital_neutral_raw",
+        camera_id: str = "auto",
+        film_id: str = "auto",
     ) -> SingleLensRadiometricSpec:
         forced_ap = APERTURE_MODES.get(aperture_mode, "")
-        eff_cam = camera_id if camera_id in CAMERA_PROFILES else "hasselblad_x2d"
-        eff_film = film_id if film_id in FILM_PROFILES else "digital_neutral_raw"
+        combined_text = f"{mood_prompt} {lighting_note}".strip()
 
         if lighting_mode in LIGHTING_MODES and lighting_mode != "auto":
             preset = LIGHTING_MODES[lighting_mode]
+            dop = AutonomousDoPDirector.curate_rig(
+                raw_text=f"{combined_text} {lighting_mode}".strip(),
+                is_backlit=(lighting_mode == "natural_window_backlight"),
+                median_luma=72.0 if lighting_mode == "moody_chiaroscuro_interior" else 112.0,
+                contrast_stops=float(preset["contrast_ratio_stops"]),  # type: ignore[arg-type]
+                has_reference_photo=(scene_bgr is not None),
+            )
+            eff_cam = camera_id if camera_id in CAMERA_PROFILES else str(dop["camera_id"])
+            eff_film = film_id if (film_id in FILM_PROFILES and film_id != "off") else str(dop["film_id"])
+            if film_id == "off":
+                eff_film = "off"
             return SingleLensRadiometricSpec(
                 kelvin_est=int(preset["kelvin_est"]),  # type: ignore[arg-type]
+                illuminance_lux=int(dop["illuminance_lux"]),  # type: ignore[arg-type]
                 contrast_ratio_stops=float(preset["contrast_ratio_stops"]),  # type: ignore[arg-type]
                 shadow_floor_luma=float(preset["shadow_floor_luma"]),  # type: ignore[arg-type]
                 highlight_bloom=float(preset["highlight_bloom"]),  # type: ignore[arg-type]
                 lighting_regime=str(preset["lighting_regime"]),
                 key_light_vector=str(preset["key_light_vector"]),
+                light_flow_desc=str(dop["light_flow_desc"]),
+                illuminance_desc=str(dop["illuminance_desc"]),
                 color_cast_summary=str(preset["color_cast_summary"]),
                 recommended_aperture=forced_ap or str(preset["recommended_aperture"]),
+                recommended_focal_mm=int(dop["focal_length_mm"]),  # type: ignore[arg-type]
                 camera_id=eff_cam,
                 film_id=eff_film,
+                dop_rationale=str(dop["rationale"]),
                 source=f"preset_{lighting_mode}",
             )
 
         if scene_bgr is not None and scene_bgr.size > 0:
-            return cls._analyze_bgr(scene_bgr, forced_aperture=forced_ap, camera_id=eff_cam, film_id=eff_film)
+            return cls._analyze_bgr(
+                scene_bgr,
+                raw_text=combined_text,
+                forced_aperture=forced_ap,
+                camera_id=camera_id,
+                film_id=film_id,
+            )
 
         return cls._infer_from_text(
-            f"{mood_prompt} {lighting_note}".strip(),
+            combined_text,
             forced_aperture=forced_ap,
-            camera_id=eff_cam,
-            film_id=eff_film,
+            camera_id=camera_id,
+            film_id=film_id,
         )
 
     @classmethod
     def _analyze_bgr(
         cls,
         bgr: np.ndarray,
+        raw_text: str = "",
         forced_aperture: str = "",
-        camera_id: str = "hasselblad_x2d",
-        film_id: str = "digital_neutral_raw",
+        camera_id: str = "auto",
+        film_id: str = "auto",
     ) -> SingleLensRadiometricSpec:
         h, w = bgr.shape[:2]
         scale = min(1.0, 640.0 / float(max(h, w)))
@@ -480,7 +631,7 @@ class SceneRadiometryAnalyzer:
         dark_frac = float(np.mean(l_ch <= 55.0))
         contrast_stops = float(np.clip(np.log2(max(1.2, (p95 + 12.0) / max(14.0, p15 + 8.0))), 1.4, 3.6))
 
-        # Estimate physical source Kelvin (for unit-test diagnostics), while keeping prompt WB clean!
+        # Estimate physical source Kelvin (for radiometric diagnostics), while keeping prompt WB clean!
         kelvin_measured = int(round(np.clip(5500.0 - b_shift * 110.0 - a_shift * 30.0, 3200.0, 6500.0)))
 
         gh, gw = max(1, wh // 3), max(1, ww // 3)
@@ -521,7 +672,19 @@ class SceneRadiometryAnalyzer:
             regime = "directional_side_key"
             key_vec = f"soft directional {side_desc} daylight creating a smooth natural luminance falloff across face and outfit"
 
-        # Damp reference yellow bias in prompt summary so GPT-Image NEVER over-yellows the output!
+        dop = AutonomousDoPDirector.curate_rig(
+            raw_text=raw_text,
+            is_backlit=is_backlit,
+            median_luma=p50,
+            b_shift=b_shift,
+            contrast_stops=contrast_stops,
+            has_reference_photo=True,
+        )
+        eff_cam = camera_id if camera_id in CAMERA_PROFILES else str(dop["camera_id"])
+        eff_film = film_id if (film_id in FILM_PROFILES and film_id != "off") else str(dop["film_id"])
+        if film_id == "off":
+            eff_film = "off"
+
         if b_shift >= 10.0:
             color_summary = (
                 "natural daylight white balance (5300K–5500K) preserving subtle warm wood/sunlight atmosphere ONLY on environmental "
@@ -530,7 +693,7 @@ class SceneRadiometryAnalyzer:
         elif b_shift <= -4.0:
             color_summary = "clean airy 5700K daylight balance with cool-neutral shadow transparency and crisp whites"
         else:
-            color_summary = "grey-card calibrated 5500K neutral daylight white balance with clean whites and true-to-life skin tone"
+            color_summary = str(dop["color_cast_summary"])
 
         gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
         lap = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
@@ -542,14 +705,15 @@ class SceneRadiometryAnalyzer:
         if forced_aperture:
             ap = forced_aperture
         elif dof_ratio < 0.58 or is_backlit:
-            ap = "f/2.0"
+            ap = str(dop["aperture"])
         elif dof_ratio < 0.82:
-            ap = "f/2.4"
+            ap = "f/2.0"
         else:
             ap = "f/2.8"
 
         return SingleLensRadiometricSpec(
             kelvin_est=kelvin_measured,
+            illuminance_lux=int(dop["illuminance_lux"]),  # type: ignore[arg-type]
             contrast_ratio_stops=round(contrast_stops, 2),
             shadow_floor_luma=round(p05, 1),
             median_luma=round(p50, 1),
@@ -559,10 +723,14 @@ class SceneRadiometryAnalyzer:
             lab_b_cast=round(float(np.clip(b_shift * 0.45, -5.0, 6.5)), 1),
             lighting_regime=regime,
             key_light_vector=key_vec,
+            light_flow_desc=str(dop["light_flow_desc"]),
+            illuminance_desc=str(dop["illuminance_desc"]),
             color_cast_summary=color_summary,
             recommended_aperture=ap,
-            camera_id=camera_id,
-            film_id=film_id,
+            recommended_focal_mm=int(dop["focal_length_mm"]),  # type: ignore[arg-type]
+            camera_id=eff_cam,
+            film_id=eff_film,
+            dop_rationale=str(dop["rationale"]),
             source="measured_scene_radiometry",
         )
 
@@ -571,15 +739,24 @@ class SceneRadiometryAnalyzer:
         cls,
         text: str,
         forced_aperture: str = "",
-        camera_id: str = "hasselblad_x2d",
-        film_id: str = "digital_neutral_raw",
+        camera_id: str = "auto",
+        film_id: str = "auto",
     ) -> SingleLensRadiometricSpec:
         low = text.lower()
-        backlit_kw = ("backlit", "backlight", "louver", "blind", "rim", "역광", "블라인드", "루버")
-        sun_kw = ("sunlit", "afternoon", "window", "lounge", "wood", "오후", "창가", "자연광", "햇살")
-        cool_kw = ("cool", "concrete", "overcast", "slate", "gallery", "차분", "콘크리트", "갤러리", "흐린")
+        dop = AutonomousDoPDirector.curate_rig(raw_text=text, has_reference_photo=False)
+        eff_cam = camera_id if camera_id in CAMERA_PROFILES else str(dop["camera_id"])
+        eff_film = film_id if (film_id in FILM_PROFILES and film_id != "off") else str(dop["film_id"])
+        if film_id == "off":
+            eff_film = "off"
 
-        if any(k in low for k in backlit_kw):
+        backlit_kw = ("backlit", "backlight", "louver", "blind", "rim", "역광", "블라인드", "루버")
+        lowkey_kw = ("비", "비오는", "밤", "저녁", "새벽", "어둑", "어두", "컴컴", "가로등", "쓸쓸", "고독", "rain", "night", "dusk", "twilight", "moody", "dark", "low-key")
+        sun_kw = ("sunlit", "afternoon", "window", "lounge", "wood", "오후", "창가", "자연광", "햇살", "사선")
+        cool_kw = ("cool", "concrete", "overcast", "slate", "gallery", "courtyard", "차분", "콘크리트", "갤러리", "중정", "흐린", "청량")
+
+        if any(k in low for k in lowkey_kw):
+            base = LIGHTING_MODES["moody_chiaroscuro_interior"]
+        elif any(k in low for k in backlit_kw):
             base = LIGHTING_MODES["natural_window_backlight"]
         elif any(k in low for k in cool_kw):
             base = LIGHTING_MODES["cool_overcast_architectural"]
@@ -589,17 +766,22 @@ class SceneRadiometryAnalyzer:
             base = LIGHTING_MODES["soft_diffused_daylight"]
 
         return SingleLensRadiometricSpec(
-            kelvin_est=int(base["kelvin_est"]),  # type: ignore[arg-type]
-            contrast_ratio_stops=float(base["contrast_ratio_stops"]),  # type: ignore[arg-type]
+            kelvin_est=int(dop.get("kelvin_est", base["kelvin_est"])),  # type: ignore[arg-type]
+            illuminance_lux=int(dop["illuminance_lux"]),  # type: ignore[arg-type]
+            contrast_ratio_stops=float(dop.get("contrast_ratio_stops", base["contrast_ratio_stops"])),  # type: ignore[arg-type]
             shadow_floor_luma=float(base["shadow_floor_luma"]),  # type: ignore[arg-type]
             highlight_bloom=float(base["highlight_bloom"]),  # type: ignore[arg-type]
             lighting_regime=str(base["lighting_regime"]),
             key_light_vector=str(base["key_light_vector"]),
-            color_cast_summary=str(base["color_cast_summary"]),
-            recommended_aperture=forced_aperture or str(base["recommended_aperture"]),
-            camera_id=camera_id,
-            film_id=film_id,
-            source="inferred_from_scene_text",
+            light_flow_desc=str(dop["light_flow_desc"]),
+            illuminance_desc=str(dop["illuminance_desc"]),
+            color_cast_summary=str(dop.get("color_cast_summary", base["color_cast_summary"])),
+            recommended_aperture=forced_aperture or str(dop["aperture"]),
+            recommended_focal_mm=int(dop["focal_length_mm"]),  # type: ignore[arg-type]
+            camera_id=eff_cam,
+            film_id=eff_film,
+            dop_rationale=str(dop["rationale"]),
+            source="autonomous_dop_director",
         )
 
 
@@ -738,21 +920,21 @@ class PostGenCohesionMasterer:
             cur_mid_a = float(np.median(A[mid_zone])) if np.any(mid_zone) else float(np.median(A))
             cur_sh_a = float(np.median(A[sh_zone])) if np.any(sh_zone) else float(np.median(A))
 
-            # Remove GPT-Image's muddy yellow/orange bias across highlights, midtones, and shadows!
-            if cur_hi_b > tgt_hi_b:
+            # Remove abnormal muddy yellow/orange bias (`cur_b > tgt_b`), while preserving intentional cool twilight airiness!
+            if cur_hi_b > tgt_hi_b + 0.5:
                 db_hi = -de_yellow * (cur_hi_b - tgt_hi_b)
             else:
-                db_hi = 0.55 * (tgt_hi_b - cur_hi_b)
+                db_hi = 0.22 * (tgt_hi_b - cur_hi_b)
 
-            if cur_mid_b > tgt_mid_b:
+            if cur_mid_b > tgt_mid_b + 0.5:
                 db_mid = -de_yellow * 0.85 * (cur_mid_b - tgt_mid_b)
             else:
-                db_mid = 0.50 * (tgt_mid_b - cur_mid_b)
+                db_mid = 0.20 * (tgt_mid_b - cur_mid_b)
 
-            if cur_sh_b > tgt_sh_b:
+            if cur_sh_b > tgt_sh_b + 0.5:
                 db_sh = -de_yellow * 0.80 * (cur_sh_b - tgt_sh_b)
             else:
-                db_sh = 0.50 * (tgt_sh_b - cur_sh_b)
+                db_sh = 0.20 * (tgt_sh_b - cur_sh_b)
 
             # Also pull excess muddy orange-red `a*` (> +5) in highlights/walls back toward clean neutral!
             da_hi = -de_yellow * 0.70 * max(0.0, cur_hi_a - 1.5)

@@ -1123,6 +1123,91 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertGreaterEqual(len(st["film_profiles"]), 6)
             self.assertGreaterEqual(len(st["lighting_modes"]), 5)
 
+    def test_21_nanobanana_default_and_autonomous_dop_director(self) -> None:
+        """Verify StudioImageRuntime defaults to Nano Banana Pro (`nanobanana_pro`) and AutonomousDoPDirector curates all 9 optical dimensions."""
+        import tempfile
+        from model_generation_engine import (
+            AutonomousDoPDirector,
+            CanvasSpec,
+            EngineConfig,
+            ModelGenerationPipeline,
+            PosePrevizSpec,
+            PromptFirewall,
+            SceneLocationInput,
+            SubjectProfile,
+        )
+        from model_generation_engine.studio_app import StudioImageRuntime
+
+        # 1. Runtime MUST default to `nanobanana_pro` (Google Gemini 3 Pro Image) whenever a Gemini API key is present
+        rt_nb = StudioImageRuntime(gemini_api_key="AIza" + "X" * 35)
+        caps = rt_nb.capabilities()
+        self.assertTrue(caps["nanobanana_configured"])
+        self.assertEqual(caps["default_provider"], "nanobanana_pro")
+        self.assertIn("gemini-3-pro-image", str(caps["primary_model"]))
+
+        # 2. AutonomousDoPDirector resolves contradictory dark+readable slang into Leica SL3 + f/1.4 + CineStill 50D (~150 lux)
+        dop_dark = AutonomousDoPDirector.curate_rig(
+            raw_text="어두컴컴한데 얼굴이랑 옷 결은 절대 죽지 않게 비 오는 저녁 창가 테이블 분위기"
+        )
+        self.assertEqual(dop_dark["camera_id"], "leica_sl3")
+        self.assertEqual(dop_dark["film_id"], "cinestill_50d")
+        self.assertEqual(dop_dark["aperture"], "f/1.4")
+        self.assertEqual(dop_dark["illuminance_lux"], 150)
+
+        # 3. Backlit afternoon louver desk -> Contax 645 + Portra 400 + f/1.8 + 50mm
+        dop_louver = AutonomousDoPDirector.curate_rig(
+            raw_text="오후 책상 창가 블라인드 작업", is_backlit=True
+        )
+        self.assertEqual(dop_louver["camera_id"], "contax_645")
+        self.assertEqual(dop_louver["film_id"], "kodak_portra_400")
+        self.assertEqual(dop_louver["aperture"], "f/1.8")
+        self.assertEqual(dop_louver["focal_length_mm"], 50)
+
+        # 4. Airy architectural courtyard -> Hasselblad X2D + Fujifilm Pro 400H + f/2.0 (~1400 lux)
+        dop_airy = AutonomousDoPDirector.curate_rig(raw_text="맑고 청량한 아침 중정 갤러리 산책")
+        self.assertEqual(dop_airy["camera_id"], "hasselblad_x2d")
+        self.assertEqual(dop_airy["film_id"], "fujifilm_pro_400h")
+        self.assertEqual(dop_airy["aperture"], "f/2.0")
+        self.assertEqual(dop_airy["illuminance_lux"], 1400)
+
+        # 5. Monochrome request -> Leica SL3 + Ilford HP5 Plus 400
+        dop_bw = AutonomousDoPDirector.curate_rig(raw_text="고독한 흑백 모노크롬 에디토리얼")
+        self.assertEqual(dop_bw["film_id"], "ilford_hp5_bw")
+
+        # 6. End-to-end `compose_batch` with ALL optical controls set to `"auto"`
+        cfg_4k = EngineConfig(canvas=CanvasSpec(target_width=3840, target_height=2160))
+        pipe = ModelGenerationPipeline(cfg_4k)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            canon_p, _ = pipe.turnaround.prepare_canonical_identity_anchor(self.ref_face, tmp / "front.jpg", (600, 750))
+            jobs_auto = pipe.batch_composer.compose_batch(
+                canonical_front_path=canon_p,
+                subject=SubjectProfile(),
+                locations=[
+                    SceneLocationInput(
+                        name="contradictory_twilight",
+                        mood_or_place_prompt="어두컴컴한데 얼굴이랑 옷 느낌은 죽지 않게 비 오는 저녁 창가",
+                    )
+                ],
+                poses=[PosePrevizSpec()],
+                face_direction_mode="auto",
+                lighting_mode="auto",
+                aperture_mode="auto",
+                camera_id="auto",
+                film_id="auto",
+                cohesion_mode="auto",
+                work_dir=tmp / "stg_auto",
+            )
+            self.assertEqual(len(jobs_auto), 1)
+            j_auto = jobs_auto[0]
+            PromptFirewall.validate_prompt(j_auto.prompt)
+            self.assertEqual(j_auto.radiometric_spec.camera_id, "leica_sl3")
+            self.assertEqual(j_auto.radiometric_spec.film_id, "cinestill_50d")
+            self.assertEqual(j_auto.radiometric_spec.recommended_aperture, "f/1.4")
+            self.assertEqual(j_auto.cohesion_mode, "cinestill_50d")
+            self.assertIn("150 lux", j_auto.prompt)
+            self.assertIn("GRAZING-LIGHT TEXTURE", j_auto.prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -154,12 +154,10 @@ def create_studio_app(
                 }
                 for k, v in POSE_PRESETS.items()
             ],
-            "camera_profiles": [
-                {"id": k, "label": str(v["label_ko"])} for k, v in CAMERA_PROFILES.items()
-            ],
-            "film_profiles": [
-                {"id": k, "label": str(v["label_ko"])} for k, v in FILM_PROFILES.items()
-            ],
+            "camera_profiles": [{"id": "auto", "label": "자동 촬영감독 (무드·조도·레퍼런스 맞춰 바디 찰떡 선택)"}]
+            + [{"id": k, "label": str(v["label_ko"])} for k, v in CAMERA_PROFILES.items()],
+            "film_profiles": [{"id": "auto", "label": "자동 촬영감독 (화이트밸런스·색감·톤·무드 찰떡 필름 매칭)"}]
+            + [{"id": k, "label": str(v["label_ko"])} for k, v in FILM_PROFILES.items()],
             "lighting_modes": [
                 {"id": k, "label": str(v["label_ko"])} for k, v in LIGHTING_MODES.items()
             ],
@@ -601,8 +599,8 @@ def create_studio_app(
         provider = str(data.get("provider") or "auto")
         lighting_mode = str(data.get("lighting_mode") or "auto")
         aperture_mode = str(data.get("aperture_mode") or "auto")
-        camera_id = str(data.get("camera_id") or "hasselblad_x2d")
-        film_id = str(data.get("film_id") or "digital_neutral_raw")
+        camera_id = str(data.get("camera_id") or "auto")
+        film_id = str(data.get("film_id") or "auto")
         cohesion_mode = str(data.get("cohesion_mode") or film_id)
 
         bid = f"batch_{int(time.time())}_{uuid.uuid4().hex[:6]}"

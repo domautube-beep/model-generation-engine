@@ -9,13 +9,13 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-badge">UNIVERSAL ENGINE v3.0</span>
+      <span class="brand-badge">NANO BANANA PRO 4K · AUTO DoP v4.0</span>
       <h1>모델생성 스튜디오</h1>
-      <p class="subtitle">실존 인물 8각도 마스터 앵커 · 의상/악세사리/가방/신발 멀티 첨부 · 다중 장소 N장 병렬 대입 · 인터랙티브 3D 프리비즈 포즈 디렉터</p>
+      <p class="subtitle">나노바나나 Pro 4K 네이티브 · 자동 촬영감독(빛·질감·심도·조도·화이트밸런스 찰떡 연출) · 8방향 실존인물 · 멀티 에셋 1원본들→1생성</p>
     </div>
     <div class="topbar-meta">
       <div id="runtimePill" class="pill pill-info">엔진 확인 중...</div>
-      <div class="pill pill-outline">Optical Lanczos-4 · Zero Hardcoding · 9-Gate Audit</div>
+      <div class="pill pill-outline">Nano Banana Pro · Autonomous DoP · 9-Gate Audit</div>
     </div>
   </header>
 
@@ -260,9 +260,10 @@
             <option value="1x1_square">스퀘어 1:1 (2048×2048)</option>
           </select>
           <select id="selProvider">
-            <option value="auto">실행 엔진: 자동 감지 (GTI 우선)</option>
-            <option value="gti">GTI 로컬 생성 엔진</option>
-            <option value="gemini">Gemini API 엔진</option>
+            <option value="auto" selected>실행 엔진: 자동 감지 (나노바나나 Pro 4K 우선)</option>
+            <option value="nanobanana_pro">나노바나나 Pro (Gemini 3 Pro Image · 4K 네이티브)</option>
+            <option value="nanobanana_2">나노바나나 2.1 (Gemini Nano Banana 2.1)</option>
+            <option value="gti">GTI / GPT 백업 엔진 (수동 선택 시)</option>
             <option value="manifest">프롬프트·3D프리비즈 번들만 생성</option>
           </select>
           <button type="button" id="btnLaunchBatch" class="btn btn-launch">총 1장 동시 생성 시작</button>
@@ -273,25 +274,28 @@
         <div class="loc-upload-col">
           <div class="upload-bar">
             <select id="selCameraBody" title="카메라 바디 & 센서 특성">
-              <option value="hasselblad_x2d" selected>카메라: Hasselblad X2D 100C (HNCS 중립 리얼 컬러)</option>
+              <option value="auto" selected>카메라: 자동 촬영감독 (무드·조도·레퍼런스 찰떡 선택)</option>
+              <option value="hasselblad_x2d">카메라: Hasselblad X2D 100C (HNCS 중립 리얼 컬러)</option>
               <option value="leica_sl3">카메라: Leica SL3 (맑고 깊은 라이카 입체 계조)</option>
-              <option value="sony_a7rv">카메라: Sony α7R V (정밀 화이트밸런스 커머셜)</option>
               <option value="contax_645">카메라: Contax 645 (중형 필름 바디 입체감)</option>
+              <option value="sony_a7rv">카메라: Sony α7R V (정밀 화이트밸런스 커머셜)</option>
               <option value="canon_r5">카메라: Canon EOS R5 (맑고 자연스러운 스킨톤)</option>
             </select>
-            <select id="selFilmStock" title="필름 종류 / 컬러 사이언스 (AI 노란끼 자동 교정)">
-              <option value="digital_neutral_raw" selected>필름/컬러: 무보정 클린 디지털 RAW (노란끼 제로)</option>
+            <select id="selFilmStock" title="필름 종류 / 컬러 사이언스 (화이트밸런스·색감·톤 자동 매칭)">
+              <option value="auto" selected>필름/컬러: 자동 촬영감독 (빛·무드·색감 찰떡 필름 매칭)</option>
+              <option value="digital_neutral_raw">필름/컬러: 무보정 클린 디지털 RAW (노란끼 제로)</option>
               <option value="kodak_portra_400">필름: Kodak Portra 400 (맑은 스킨톤·크리미 뉴트럴)</option>
               <option value="fujifilm_pro_400h">필름: Fujifilm Pro 400H (청량한 쿨-에어리 데이라이트)</option>
-              <option value="cinestill_50d">필름: CineStill 50D (투명한 시네마 데이라이트)</option>
+              <option value="cinestill_50d">필름: CineStill 50D (투명한 시네마 데이라이트·로우키)</option>
               <option value="kodak_gold_200">필름: Kodak Gold 200 (담백한 오후 내추럴 웜)</option>
               <option value="ilford_hp5_bw">필름: Ilford HP5 Plus 400 (클래식 흑백)</option>
               <option value="off">후처리 끄기 (생성 원본 그대로)</option>
             </select>
             <select id="selApertureMode" title="렌즈 조리개 심도 (DOF)">
+              <option value="auto" selected>렌즈 심도: 자동 촬영감독 (공간·조도 맞춤 최적 심도)</option>
               <option value="f1_4">렌즈 심도: f/1.4 (극얕은 대구경 개방·강한 배경분리)</option>
               <option value="f1_8">렌즈 심도: f/1.8 (얕은 아웃포커싱 심도)</option>
-              <option value="f2_0" selected>렌즈 심도: f/2.0 (리얼 에디토리얼 표준 심도)</option>
+              <option value="f2_0">렌즈 심도: f/2.0 (리얼 에디토리얼 표준 심도)</option>
               <option value="f2_8">렌즈 심도: f/2.8 (착장 디테일·공간 밸런스)</option>
               <option value="f5_6">렌즈 심도: f/5.6 (공간·건축 깊은 심도)</option>
             </select>

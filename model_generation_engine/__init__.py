@@ -43,6 +43,7 @@ from .previz_pose import GAZE_MODES, POSE_PRESETS, PosePrevizSpec, Previz3DRende
 from .scene_radiometry import (
     APERTURE_DOF_DESCRIPTIONS,
     APERTURE_MODES,
+    AutonomousDoPDirector,
     CAMERA_PROFILES,
     COHESION_MASTERING_MODES,
     FILM_PROFILES,
@@ -108,6 +109,7 @@ __all__ = [
     "CAMERA_PROFILES",
     "FILM_PROFILES",
     "COHESION_MASTERING_MODES",
+    "AutonomousDoPDirector",
     "SingleLensRadiometricSpec",
     "SceneRadiometryAnalyzer",
     "PostGenCohesionMasterer",
