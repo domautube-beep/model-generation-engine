@@ -620,9 +620,11 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                 canon_path, subj, approved_3q_left_path=fake_3q_l, approved_3q_right_path=fake_3q_r
             )
             self.assertEqual(set(plans.keys()), set(TURNAROUND_VIEWS))
+            # ZERO MULTI-HOP CHAINING LAW: every turnaround angle must reference ONLY untouched Gen-0 (`len == 1`)!
             self.assertEqual(len(plans["three_quarter_left"]["reference_images"]), 1)
-            self.assertEqual(len(plans["left_profile"]["reference_images"]), 2)
+            self.assertEqual(len(plans["left_profile"]["reference_images"]), 1)
             for v in ("three_quarter_left", "three_quarter_right", "left_profile", "right_profile"):
+                self.assertEqual(plans[v]["hop"], 1)
                 PromptFirewall.validate_prompt(plans[v]["prompt"])
 
             angle_bank = {
@@ -687,11 +689,10 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             subj = SubjectProfile(subject_identity_label="Universal subject")
             plans8 = pipe.turnaround.plan_progressive_8angle_turnaround(canon_path, subj, existing_angles=bank)
             self.assertEqual(set(plans8.keys()), set(TURNAROUND_FULL_SWEEP))
-            self.assertEqual(plans8["left_22"]["hop"], 1)
-            self.assertEqual(plans8["left_45"]["hop"], 2)
-            self.assertEqual(plans8["left_67"]["hop"], 3)
-            self.assertEqual(plans8["left_90"]["hop"], 4)
+            # ZERO MULTI-HOP CHAINING LAW: all 8 directions are hop=1 directly from Gen-0!
             for v in TURNAROUND_8_VIEWS:
+                self.assertEqual(plans8[v]["hop"], 1)
+                self.assertEqual(plans8[v]["reference_images"], [str(canon_path)])
                 PromptFirewall.validate_prompt(str(plans8[v]["prompt"]))
 
             sheet9 = pipe.turnaround.assemble_master_turnaround_sheet(
@@ -756,6 +757,15 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             loc2_p = tmp / "loc_gallery.jpg"
             cv2.imwrite(str(loc2_p), np.full((360, 640, 3), (210, 205, 198), dtype=np.uint8))
 
+            from model_generation_engine import TURNAROUND_8_VIEWS
+
+            full_bank = {"front": canon_path}
+            for v in TURNAROUND_8_VIEWS:
+                vp = tmp / f"b_{v}.jpg"
+                vp.write_bytes(canon_path.read_bytes())
+                full_bank[v] = vp
+            full_bank["right_67"] = fake_r67
+
             jobs = pipe.batch_composer.compose_batch(
                 canonical_front_path=canon_path,
                 subject=SubjectProfile(subject_identity_label="Editorial subject"),
@@ -765,7 +775,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                     SceneLocationInput(name="terrace", mood_or_place_prompt="sunlit stone terrace"),
                 ],
                 poses=[PosePrevizSpec(preset_id="hand_in_pocket", head_azimuth_deg=67.5, torso_azimuth_deg=55.0)],
-                angle_bank={"front": canon_path, "right_67": fake_r67},
+                angle_bank=full_bank,
                 items=[
                     AttachmentItem(category="garment", image_path=garment_p, sub_role="outerwear", description="linen jacket"),
                     AttachmentItem(category="accessory", image_path=acc_p, sub_role="watch", description="chronograph watch"),
@@ -816,6 +826,15 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             r_8p = client.post(f"/api/subjects/{sid}/generate-8angles", json={"provider": "manifest"})
             self.assertEqual(r_8p.status_code, 200)
             self.assertEqual(len(r_8p.json()["plans"]), 9)
+
+            # Upload all 8 turnaround directions so Mandatory8DirBankVerifier permits Step 4 batch launch
+            for v in TURNAROUND_8_VIEWS:
+                with open(canon_path, "rb") as fa:
+                    r_ang = client.post(
+                        f"/api/subjects/{sid}/angles/{v}",
+                        files={"photo": (f"{v}.jpg", fa, "image/jpeg")},
+                    )
+                self.assertEqual(r_ang.status_code, 200)
 
             with open(garment_p, "rb") as fg:
                 r_up_g = client.post(
@@ -888,11 +907,20 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             for p in (p_outer, p_inner, p_bot, p_watch, p_bag_mini, p_shoe):
                 cv2.imwrite(str(p), item_img)
 
+            from model_generation_engine import TURNAROUND_8_VIEWS
+
+            bank18 = {"front": canon_path}
+            for v in TURNAROUND_8_VIEWS:
+                vp = tmp / f"v32_{v}.jpg"
+                vp.write_bytes(canon_path.read_bytes())
+                bank18[v] = vp
+
             jobs = pipe.batch_composer.compose_batch(
                 canonical_front_path=canon_path,
                 subject=SubjectProfile(subject_identity_label="Editorial subject"),
                 locations=[SceneLocationInput(name="terrace", mood_or_place_prompt="sunlit architectural terrace")],
                 poses=[PosePrevizSpec(preset_id="standing_editorial", head_azimuth_deg=-22.5, shot_scale="medium upper-body portrait shot")],
+                angle_bank=bank18,
                 items=[
                     AttachmentItem(category="garment", image_path=p_outer, sub_role="outerwear", wearing_style="auto", description="olive suede jacket"),
                     AttachmentItem(category="garment", image_path=p_inner, sub_role="inner_top", description="navy striped t-shirt"),
@@ -1097,12 +1125,21 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         pipe = ModelGenerationPipeline(cfg_4k)
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
+            from model_generation_engine import TURNAROUND_8_VIEWS
+
             canon_p, _ = pipe.turnaround.prepare_canonical_identity_anchor(self.ref_face, tmp / "front.jpg", (600, 750))
+            bank20 = {"front": canon_p}
+            for v in TURNAROUND_8_VIEWS:
+                vp = tmp / f"v20_{v}.jpg"
+                vp.write_bytes(canon_p.read_bytes())
+                bank20[v] = vp
+
             jobs = pipe.batch_composer.compose_batch(
                 canonical_front_path=canon_p,
                 subject=SubjectProfile(),
                 locations=[SceneLocationInput(name="clean_room", mood_or_place_prompt="quiet daylight room")],
                 poses=[pose_desk],
+                angle_bank=bank20,
                 lighting_mode="soft_diffused_daylight",
                 aperture_mode="f1_4",
                 camera_id="leica_sl3",
@@ -1179,7 +1216,15 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         pipe = ModelGenerationPipeline(cfg_4k)
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
+            from model_generation_engine import TURNAROUND_8_VIEWS
+
             canon_p, _ = pipe.turnaround.prepare_canonical_identity_anchor(self.ref_face, tmp / "front.jpg", (600, 750))
+            bank21 = {"front": canon_p}
+            for v in TURNAROUND_8_VIEWS:
+                vp = tmp / f"v21_{v}.jpg"
+                vp.write_bytes(canon_p.read_bytes())
+                bank21[v] = vp
+
             jobs_auto = pipe.batch_composer.compose_batch(
                 canonical_front_path=canon_p,
                 subject=SubjectProfile(),
@@ -1190,6 +1235,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                     )
                 ],
                 poses=[PosePrevizSpec()],
+                angle_bank=bank21,
                 face_direction_mode="auto",
                 lighting_mode="auto",
                 aperture_mode="auto",
@@ -1207,6 +1253,112 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertEqual(j_auto.cohesion_mode, "cinestill_50d")
             self.assertIn("150 lux", j_auto.prompt)
             self.assertIn("GRAZING-LIGHT TEXTURE", j_auto.prompt)
+
+    def test_22_redteam_mandatory_8dir_verifier_and_zero_hop_chaining(self) -> None:
+        """Red Team Audit: Mandatory 8-Direction Bank Verifier (blocks skipping Step 1) + Zero Multi-Hop Chaining (blocks 8dir->8dir & scene->scene)."""
+        import json
+        import subprocess
+        import tempfile
+        from fastapi.testclient import TestClient
+        from model_generation_engine import (
+            ChainedGenerationViolationError,
+            Incomplete8DirectionBankError,
+            Mandatory8DirBankVerifier,
+            ModelGenerationPipeline,
+            OriginOnlyOneShotGuard,
+            PosePrevizSpec,
+            SceneLocationInput,
+            SubjectProfile,
+            TURNAROUND_8_VIEWS,
+        )
+        from model_generation_engine.studio_app import StudioImageRuntime, create_studio_app
+
+        pipe = ModelGenerationPipeline(self.config)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            canon_p, _ = pipe.turnaround.prepare_canonical_identity_anchor(self.ref_face, tmp / "gen0_front.jpg", (600, 750))
+            guard = OriginOnlyOneShotGuard(ledger_path=tmp / "rt_ledger.json")
+            pipe.batch_composer.origin_guard = guard
+
+            # 1. RED TEAM RULE A: Skipping 8-Direction Bank (angle_bank=None or <8 views) MUST raise Incomplete8DirectionBankError!
+            with self.assertRaises(Incomplete8DirectionBankError):
+                pipe.batch_composer.compose_batch(
+                    canonical_front_path=canon_p,
+                    subject=SubjectProfile(),
+                    locations=[SceneLocationInput(name="s1", mood_or_place_prompt="daylight room")],
+                    poses=[PosePrevizSpec()],
+                    angle_bank=None,
+                )
+
+            partial_bank = {"front": canon_p, "left_22": canon_p}
+            with self.assertRaises(Incomplete8DirectionBankError):
+                Mandatory8DirBankVerifier.verify_complete_8dir_bank(canon_p, partial_bank)
+
+            # Studio API `/api/batches` MUST ALSO reject with HTTP 400 if 8 directions are not ready!
+            app = create_studio_app(workspace_dir=tmp / "ws_rt", runtime=StudioImageRuntime())
+            client = TestClient(app)
+            with open(self.ref_face, "rb") as fh:
+                sid = client.post("/api/subjects", data={"name": "RT"}, files={"photo": ("f.jpg", fh, "image/jpeg")}).json()["id"]
+            r_blocked = client.post(
+                "/api/batches",
+                json={"subject_id": sid, "text_locations": ["studio"], "provider": "manifest"},
+            )
+            self.assertEqual(r_blocked.status_code, 400)
+            self.assertIn("8방향", r_blocked.json()["detail"])
+
+            # 2. RED TEAM RULE B: Feeding a generated 8dir turnaround image into ANOTHER 8dir generation (Hop-Chaining) MUST FAIL!
+            gen1_turn = tmp / "s03_8dir_l22.jpg"
+            cv2.imwrite(str(gen1_turn), np.full((128, 128, 3), (90, 110, 130), dtype=np.uint8))
+            guard.register_approved_origin(gen1_turn, kind="8dir_face", depth=1)
+
+            with self.assertRaises(ChainedGenerationViolationError):
+                guard.verify_turnaround_1hop_inputs([canon_p, gen1_turn])
+
+            # Pure Gen-0 input ONLY passes turnaround 1-hop check!
+            guard.verify_turnaround_1hop_inputs([canon_p])
+
+            # 3. RED TEAM RULE C: PreToolUse Hook (`enforce_1origin_1gen_hook.py`) denies BOTH 8dir->8dir chaining AND scene->anything re-feeding!
+            hook_script = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+            hop_chain_payload = json.dumps(
+                {
+                    "toolCall": {
+                        "name": "generate_image",
+                        "args": {"ImageName": "s03_8dir_l67", "ImagePaths": [str(gen1_turn)]},
+                    }
+                }
+            )
+            p_chain = subprocess.run(["python3", str(hook_script)], input=hop_chain_payload, text=True, capture_output=True, check=True)
+            self.assertEqual(json.loads(p_chain.stdout)["decision"], "deny")
+
+            scene_refeed_payload = json.dumps(
+                {
+                    "toolCall": {
+                        "name": "generate_image",
+                        "args": {"ImageName": "new_scene", "ImagePaths": ["/tmp/nb_raw_dop01_rainy.jpg"]},
+                    }
+                }
+            )
+            p_scene = subprocess.run(["python3", str(hook_script)], input=scene_refeed_payload, text=True, capture_output=True, check=True)
+            self.assertEqual(json.loads(p_scene.stdout)["decision"], "deny")
+
+            # 4. Complete 8-Direction Bank verified -> Step 2 Scene Composition succeeds cleanly with Image 1 = Gen-0 Macro!
+            full_bank = {"front": canon_p}
+            for v in TURNAROUND_8_VIEWS:
+                vp = tmp / f"pure1hop_{v}.jpg"
+                vp.write_bytes(canon_p.read_bytes())
+                full_bank[v] = vp
+            guard.register_verified_subject_8dir_bank(canon_p, full_bank)
+            jobs_ok = pipe.batch_composer.compose_batch(
+                canonical_front_path=canon_p,
+                subject=SubjectProfile(),
+                locations=[SceneLocationInput(name="ok_room", mood_or_place_prompt="quiet studio")],
+                poses=[PosePrevizSpec(head_azimuth_deg=-45.0)],
+                angle_bank=full_bank,
+                work_dir=tmp / "ok_stg",
+            )
+            self.assertEqual(len(jobs_ok), 1)
+            # Slot #1 (`Image 1`) MUST be Pure Gen-0 (`identity_primary_front`), NOT synthetic Gen-1!
+            self.assertEqual(jobs_ok[0].ordered_reference_images[0]["role"], "identity_primary_front")
 
 
 if __name__ == "__main__":

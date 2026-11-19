@@ -290,22 +290,30 @@ class QualityGateAuditor:
         if reference_face_bgr is not None:
             ref_face, ref_vec, ref_sh = self._get_cached_reference_bundle(reference_face_bgr)
             tilt_diff = abs(float(face.eye_tilt_degrees) - float(ref_face.eye_tilt_degrees))
-            if abs(ref_face.yaw_asymmetry_ratio - face.yaw_asymmetry_ratio) <= 0.16:
-                dst_vec = self._extract_sface_vec(patch, face)
-                id_sim = float(np.dot(ref_vec, dst_vec)) if (ref_vec is not None and dst_vec is not None) else 1.0
-                # Allow 0.06 cosine foreshortening margin when head has >= 8 deg 3-axis roll/bow downward gaze
+            yaw_diff = abs(float(ref_face.yaw_asymmetry_ratio) - float(face.yaw_asymmetry_ratio))
+
+            # ALWAYS compute SFace similarity (closed Red-Team Blind Spot: never silently skip when yaw_diff > 0.16!)
+            dst_vec = self._extract_sface_vec(patch, face)
+            id_sim = float(np.dot(ref_vec, dst_vec)) if (ref_vec is not None and dst_vec is not None) else 1.0
+            if yaw_diff <= 0.16:
                 eff_min_sim = (
                     max(0.58, self.config.min_identity_cosine_sim - 0.06)
                     if tilt_diff >= 8.0
                     else self.config.min_identity_cosine_sim
                 )
-                if id_sim < eff_min_sim:
-                    failures.append(
-                        f"Face identity similarity ({id_sim:.3f}) below min ({eff_min_sim:.3f}) — face drifted from reference"
-                    )
+            elif yaw_diff <= 0.34:
+                # Cross-angle Gen-0 identity floor (~25-45 deg difference): still rejects drifted faces (<0.58)!
+                eff_min_sim = max(0.58, self.config.min_identity_cosine_sim - 0.05)
+            else:
+                # Extreme profile (>60 deg) vs front
+                eff_min_sim = 0.45
+
+            if id_sim < eff_min_sim:
+                failures.append(
+                    f"Face identity similarity ({id_sim:.3f}) below min ({eff_min_sim:.3f}) — face drifted from reference"
+                )
             try:
-                # Skip spawning Swift Vision subprocess on angled references where frontal shape comparison is inapplicable
-                if ref_sh and ref_sh.get("frontal"):
+                if ref_sh and bool(ref_sh.get("auditable", ref_sh.get("frontal"))):
                     dst_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
                     dst_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(dst_pil))
                 else:

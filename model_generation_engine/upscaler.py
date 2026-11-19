@@ -55,8 +55,8 @@ class SuperResolutionEngine:
         lanczos_bgr = cv2.resize(src_bgr, (uw, uh), interpolation=cv2.INTER_LANCZOS4) if (uw, uh) != (sw, sh) else src_bgr.copy()
         lab = cv2.cvtColor(lanczos_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
         L = lab[:, :, 0]
-        fine = L - cv2.GaussianBlur(L, (0, 0), 1.0)
-        lab[:, :, 0] = np.clip(L + 0.11 * np.clip(fine, -5.0, 5.0), 0.0, 255.0)
+        fine = L - cv2.GaussianBlur(L, (0, 0), 1.05)
+        lab[:, :, 0] = np.clip(L + 0.22 * np.clip(fine, -6.5, 6.5), 0.0, 255.0)
         return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
 
     def upscale_image_file(self, input_path: Path, output_path: Path) -> Path:

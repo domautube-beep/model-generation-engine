@@ -32,7 +32,7 @@ from .identity_turnaround import (
     RealPersonTurnaroundEngine,
     resolve_8angle_view_from_azimuth,
 )
-from .origin_guard import OriginOnlyOneShotGuard
+from .origin_guard import Mandatory8DirBankVerifier, OriginOnlyOneShotGuard
 from .previz_pose import PosePrevizSpec, Previz3DRenderer
 from .prompt_builder import PromptFirewall
 from .scene_radiometry import SceneRadiometryAnalyzer, SingleLensRadiometricSpec
@@ -321,12 +321,17 @@ class MultiSceneBatchComposer:
         film_id: str = "auto",
         cohesion_mode: str = "auto",
         attach_previz_image: bool = False,  # HARD DEFAULT FALSE (`1원본들 → 1생성`: never pollute `--image` with synthetic wireframes)
+        require_complete_8dir_bank: bool = True,  # HARD VERIFIER: blocks scene composition if 8-direction bank is incomplete!
     ) -> List[ComposedSceneJob]:
-        """Compose `len(locations) * len(poses)` pure `1원본들 → 1생성` scene jobs attaching 8-Direction Face + Raw Original Assets."""
+        """Compose `len(locations) * len(poses)` pure `1원본들 → 1생성` scene jobs attaching Verified 8-Direction Bank + Gen-0 + Raw Assets."""
         if not locations:
             raise ValueError("At least one location or mood specification is required.")
         if not poses:
             poses = [PosePrevizSpec()]
+
+        raw_bank = angle_bank or {}
+        if require_complete_8dir_bank:
+            Mandatory8DirBankVerifier.verify_complete_8dir_bank(canonical_front_path, raw_bank)
 
         front_bgr = cv2.imread(str(canonical_front_path))
         if front_bgr is None:
@@ -335,10 +340,12 @@ class MultiSceneBatchComposer:
 
         stage_dir = Path(work_dir) if work_dir is not None else Path(canonical_front_path).parent / ".batch_staging"
         stage_dir.mkdir(parents=True, exist_ok=True)
-        raw_bank = angle_bank or {}
 
-        # Normalize & whitelist all approved 8-Direction Face Anchors + Canonical 0° Front
+        # Normalize & whitelist all approved 8-Direction Face Anchors + Pure Gen-0 Optical Face Macro
         self.origin_guard.register_approved_origin(canonical_front_path, kind="8dir_face")
+        gen0_macro_path = stage_dir / "gen0_pure_optical_face_macro.jpg"
+        self.turnaround.prepare_pure_gen0_face_macro_crop(canonical_front_path, gen0_macro_path)
+        self.origin_guard.register_approved_origin(gen0_macro_path, kind="8dir_face")
         norm_bank: Dict[str, Path] = {"front": Path(canonical_front_path)}
         for k, p in raw_bank.items():
             if p is not None and Path(p).exists():
@@ -486,45 +493,33 @@ class MultiSceneBatchComposer:
                 ordered_imgs: List[Dict[str, str]] = []
                 role_clauses: List[str] = []
 
-                # ── FACE ANCHORS (8-Direction Angle-Matched Primary + 0° Origin + Full 8-Direction Master Sheet) ──
+                # ── FACE ANCHORS (SLOT #1 = PURE Gen-0 REAL CAMERA MACRO, SLOT #2 = ANGLE-MATCHED 8-DIR, SLOT #3 = 8-DIR SHEET) ──
+                ordered_imgs.append(
+                    {
+                        "path": str(gen0_macro_path),
+                        "role": "identity_primary_front",
+                        "label": f"Untouched Gen-0 real camera close-up portrait ({blueprint.source_signed_yaw_deg:+.1f} deg)",
+                    }
+                )
+                role_clauses.append(
+                    "Image 1 (SUPREME-IDENTITY-AUTHORITY — PURE Gen-0 REAL CAMERA PORTRAIT): untouched real camera close-up of the "
+                    "exact target person—100% absolute ground-truth authority for exact cheek fullness, jawline width, eye shape, "
+                    "eyelid crease, nose bridge/tip roundness, philtrum length, lip shape/color, authentic iris color, head-fixed "
+                    "hair parting/ear-tuck, and unretouched real-camera skin realism (discard its studio flash and collar)"
+                )
                 if len(id_refs) > 1:
                     ordered_imgs.append(
                         {
                             "path": str(id_refs[1]),
                             "role": f"identity_angle_{matched_view}",
-                            "label": f"Primary target-angle 8-direction portrait ({VIEW_LABELS_KO.get(matched_view, matched_view)})",
+                            "label": f"Angle-matched 8-direction portrait ({VIEW_LABELS_KO.get(matched_view, matched_view)})",
                         }
                     )
                     role_clauses.append(
-                        f"Image 1 (TARGET-ANGLE-8DIR-FACE — {matched_view.upper()}, {pose.head_azimuth_deg:+.1f} deg): "
-                        "approved target-angle portrait of the subject from the 8-Direction Turnaround Bank—extract ONLY exact 3D "
-                        "craniofacial bone structure, eye/nose/mouth/jawline geometry, hair parting, and eyewear silhouette at this "
-                        "horizontal angle (100% DISCARD its flat white studio lighting, cool white balance, studio backdrop, and suit)"
-                    )
-                    ordered_imgs.append(
-                        {
-                            "path": str(id_refs[0]),
-                            "role": "identity_primary_front",
-                            "label": "Untouched 0-deg original front photograph (true iris color & skin texture ground-truth)",
-                        }
-                    )
-                    role_clauses.append(
-                        "Image 2 (IDENTITY-ORIGIN-0DEG & REAL-CAMERA-OPTICAL-ANCHOR): untouched 0-degree real camera photograph of the "
-                        "exact same person—ground-truth authority for authentic iris color, exact facial likeness, AND unretouched real-camera "
-                        "optical smoothness (match its non-CGI, non-procedural photographic realism; discard its studio flash)"
-                    )
-                else:
-                    ordered_imgs.append(
-                        {
-                            "path": str(id_refs[0]),
-                            "role": "identity_primary_front",
-                            "label": "Untouched 0-deg original front photograph",
-                        }
-                    )
-                    role_clauses.append(
-                        "Image 1 (IDENTITY-ORIGIN-0DEG & REAL-CAMERA-OPTICAL-ANCHOR): untouched 0-degree real camera photograph of the "
-                        "target subject—sole authority for exact 1:1 facial likeness, authentic iris color, eyewear, AND unretouched "
-                        "real-camera optical realism (discard its studio flash)"
+                        f"Image 2 (3D-ROTATION-GEOMETRY-ANCHOR — {matched_view.upper()}, {pose.head_azimuth_deg:+.1f} deg): "
+                        "approved target-angle portrait from the 8-Direction Turnaround Bank—use ONLY for 3D horizontal head rotation "
+                        "foreshortening and side silhouette while locking 100% of facial identity, cheek volume, and eyes/nose/lips "
+                        "to Image 1 (discard its studio flash and grey studio top)"
                     )
 
                 if resolved_sheet_path is not None:

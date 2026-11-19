@@ -274,53 +274,53 @@ def create_studio_app(
         rec["turnaround_state"] = "generating"
         save_state()
 
-        async def _run_3hop_turnaround() -> None:
+        async def _run_1hop_parallel_turnaround() -> None:
             try:
-                for hop_num in (1, 2, 3, 4):
-                    cur_bank = {
-                        v: Path(info["path"])
-                        for v, info in rec["angles"].items()
-                        if info.get("status") == "ready" and Path(info["path"]).exists()
+                cur_bank = {
+                    v: Path(info["path"])
+                    for v, info in rec["angles"].items()
+                    if info.get("status") == "ready" and Path(info["path"]).exists()
+                }
+                all_plans = pipe.turnaround.plan_progressive_8angle_turnaround(canon_path, subj_prof, cur_bank)
+                pending_views = [
+                    v for v, p in all_plans.items() if p["hop"] == 1 and v not in cur_bank
+                ]
+
+                async def _gen_one_view(v_name: str, plan_obj: dict) -> None:
+                    ang_tag = (
+                        f"{VIEW_AZIMUTH_DEG[v_name]:+05.1f}".replace("+", "p").replace("-", "m").replace(".", "_")
+                    )
+                    out_p = sdir / f"angle_{ang_tag}_{v_name}.jpg"
+                    rec["angles"][v_name] = {"view": v_name, "path": str(out_p), "url": "", "status": "running"}
+                    save_state()
+                    # STRICT 1-HOP DIRECT FROM GEN-0: verify NO generated 8dir image is chained into another!
+                    refs = [Path(rp) for rp in plan_obj["reference_images"]]
+                    rt.origin_guard.verify_turnaround_1hop_inputs(refs)
+                    await rt.generate_image(
+                        prompt=str(plan_obj["prompt"]),
+                        reference_image_paths=refs,
+                        output_path=out_p,
+                        size="1024x1536",
+                        provider=eff_provider,
+                    )
+                    rt.origin_guard.register_approved_origin(out_p, kind="8dir_face", depth=1)
+                    rec["angles"][v_name] = {
+                        "view": v_name,
+                        "path": str(out_p),
+                        "url": rel_url(out_p) + f"?t={int(time.time())}",
+                        "status": "ready",
                     }
-                    hop_plans = pipe.turnaround.plan_progressive_8angle_turnaround(canon_path, subj_prof, cur_bank)
-                    hop_views = [
-                        v
-                        for v, p in hop_plans.items()
-                        if p["hop"] == hop_num and v not in cur_bank
-                    ]
-                    if not hop_views:
-                        continue
+                    save_state()
 
-                    async def _gen_one_view(v_name: str, plan_obj: dict) -> None:
-                        ang_tag = (
-                            f"{VIEW_AZIMUTH_DEG[v_name]:+05.1f}".replace("+", "p").replace("-", "m").replace(".", "_")
-                        )
-                        out_p = sdir / f"angle_{ang_tag}_{v_name}.jpg"
-                        rec["angles"][v_name] = {"view": v_name, "path": str(out_p), "url": "", "status": "running"}
-                        save_state()
-                        refs = [Path(rp) for rp in plan_obj["reference_images"]]
-                        await rt.generate_image(
-                            prompt=str(plan_obj["prompt"]),
-                            reference_image_paths=refs,
-                            output_path=out_p,
-                            size="1024x1536",
-                            provider=eff_provider,
-                        )
-                        rec["angles"][v_name] = {
-                            "view": v_name,
-                            "path": str(out_p),
-                            "url": rel_url(out_p) + f"?t={int(time.time())}",
-                            "status": "ready",
-                        }
-                        save_state()
-
-                    await asyncio.gather(*[_gen_one_view(v, hop_plans[v]) for v in hop_views])
+                if pending_views:
+                    await asyncio.gather(*[_gen_one_view(v, all_plans[v]) for v in pending_views])
 
                 final_map = {
                     v: Path(info["path"])
                     for v, info in rec["angles"].items()
                     if info.get("status") == "ready" and Path(info["path"]).exists()
                 }
+                rt.origin_guard.register_verified_subject_8dir_bank(canon_path, final_map)
                 sheet_p = sdir / "master_8angle_sheet.jpg"
                 pipe.turnaround.assemble_master_turnaround_sheet(final_map, sheet_p, include_labels=True)
                 rec["master_sheet_url"] = rel_url(sheet_p) + f"?t={int(time.time())}"
@@ -330,7 +330,7 @@ def create_studio_app(
                 rec["turnaround_state"] = f"error: {exc}"
                 save_state()
 
-        task = asyncio.create_task(_run_3hop_turnaround())
+        task = asyncio.create_task(_run_1hop_parallel_turnaround())
         bg_tasks.add(task)
         task.add_done_callback(bg_tasks.discard)
         return {"subject": rec, "mode": eff_provider, "status": "started"}
@@ -611,24 +611,29 @@ def create_studio_app(
         sheet_cand = sdir_subj / "master_8angle_sheet.jpg"
         face_dir_mode = str(data.get("face_direction_mode") or "auto")
 
-        composed_jobs = pipe.batch_composer.compose_batch(
-            canonical_front_path=Path(subj_rec["canonical_front_path"]),
-            subject=subj_prof,
-            locations=loc_inputs,
-            poses=[pose_spec],
-            angle_bank=angle_bank,
-            master_8dir_sheet_path=sheet_cand if sheet_cand.exists() else None,
-            items=items,
-            work_dir=bdir / "staging",
-            aspect_ratio_label=aspect_lbl,
-            face_direction_mode=face_dir_mode,
-            lighting_mode=lighting_mode,
-            aperture_mode=aperture_mode,
-            camera_id=camera_id,
-            film_id=film_id,
-            cohesion_mode=cohesion_mode,
-            attach_previz_image=False,  # Strict `1원본들 → 1생성`: ONLY 8-dir faces + raw original assets!
-        )
+        try:
+            composed_jobs = pipe.batch_composer.compose_batch(
+                canonical_front_path=Path(subj_rec["canonical_front_path"]),
+                subject=subj_prof,
+                locations=loc_inputs,
+                poses=[pose_spec],
+                angle_bank=angle_bank,
+                master_8dir_sheet_path=sheet_cand if sheet_cand.exists() else None,
+                items=items,
+                work_dir=bdir / "staging",
+                aspect_ratio_label=aspect_lbl,
+                face_direction_mode=face_dir_mode,
+                lighting_mode=lighting_mode,
+                aperture_mode=aperture_mode,
+                camera_id=camera_id,
+                film_id=film_id,
+                cohesion_mode=cohesion_mode,
+                attach_previz_image=False,  # Strict `1원본들 → 1생성`: ONLY 8-dir faces + raw original assets!
+                require_complete_8dir_bank=True,
+            )
+        except Exception as exc:
+            shutil.rmtree(bdir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         caps = rt.capabilities()
         eff_provider = str(caps["default_provider"]) if provider == "auto" else provider

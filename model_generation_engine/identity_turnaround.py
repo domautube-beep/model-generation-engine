@@ -188,19 +188,20 @@ class AnatomicalBlueprint:
     mouth_to_eye_width_ratio: float
     source_yaw_asymmetry: float
     face_area_fraction: float
+    source_signed_yaw_deg: float = 0.0
 
     def to_3d_invariance_clause(self) -> str:
-        """Emit a gender-neutral, firewall-safe 3D Euclidean bone-structure invariance specification."""
+        """Emit a gender-neutral, firewall-safe 3D Euclidean bone & soft-tissue cheek fullness invariance specification."""
         return (
-            f"Measured 3D Craniofacial Lock (vertical eye-to-menton index {self.eye_to_chin_ratio:.3f}, "
-            f"craniofacial aspect index {self.width_to_length_ratio:.3f}, "
+            f"Measured 3D Craniofacial & Soft-Tissue Lock (vertical eye-to-menton index {self.eye_to_chin_ratio:.3f}, "
+            f"cheek-width-to-length aspect index {self.width_to_length_ratio:.3f}, "
             f"inter-ocular-to-cranial index {self.iod_to_bbox_width_ratio:.3f}, "
-            f"oral-to-ocular span index {self.mouth_to_eye_width_ratio:.3f}): "
-            "maintain rigid 3D Euclidean anatomical invariance across camera angles—vertical eye-to-nose-to-menton "
-            "spacing stays constant under horizontal rotation, horizontal contours foreshorten strictly by natural 3D "
-            "perspective without altering soft-tissue volume, nasal bridge height and tip projection stay locked, "
-            "authentic iris color from Image 1 is preserved without green/purple lens-coating tint, "
-            "and ear height/position relative to the eyebrow and nose-base plane remains identical."
+            f"oral-to-ocular span index {self.mouth_to_eye_width_ratio:.3f}, "
+            f"source portrait angle {self.source_signed_yaw_deg:+.1f} deg): "
+            "maintain strict 1:1 craniofacial and soft-tissue identity across camera angles—preserve exact natural cheek volume "
+            "and jaw width without altering facial breadth, preserve exact eye corner slant and eyelid crease, "
+            "exact nasal bridge height and rounded tip shape, exact philtrum length, exact lip contour, authentic iris color, "
+            "and head-fixed hair parting/ear-tuck geometry relative to the subject's own left/right ears."
         )
 
 
@@ -221,10 +222,33 @@ class RealPersonTurnaroundEngine:
 
     @staticmethod
     def requires_intermediate_turnaround_hop(
-        source_yaw_deg: float, target_yaw_deg: float, max_direct_delta_deg: float = 26.0
+        source_yaw_deg: float, target_yaw_deg: float, max_direct_delta_deg: float = 28.0
     ) -> bool:
-        """Zero-Quality-Loss Speed Gate: skip generating an intermediate turnaround hop when |target - source| <= 26 deg."""
+        """Zero-Quality-Loss Speed & Identity Gate: skip synthetic Gen-1 turnaround hop when |target - source| <= 28 deg."""
         return abs(float(target_yaw_deg) - float(source_yaw_deg)) > float(max_direct_delta_deg)
+
+    def prepare_pure_gen0_face_macro_crop(
+        self, raw_face_path: Path, output_crop_path: Path, target_size: Tuple[int, int] = (1024, 1024)
+    ) -> Path:
+        """Pure optical tight head-and-hair crop from untouched Gen-0 photo (0% AI drift, strips original outfit, 2.5x vision detail)."""
+        bgr = cv2.imread(str(raw_face_path))
+        if bgr is None:
+            raise FileNotFoundError(f"Cannot read raw portrait: {raw_face_path}")
+        h, w = bgr.shape[:2]
+        face = self.detector.detect(bgr)
+        fx, fy, fw, fh = face.bbox
+        cx = fx + 0.5 * fw
+        cy = fy + 0.44 * fh
+        # Tight head+hair+ear+neck box clamped strictly inside image bounds (zero border-replicate streaks!)
+        side = min(float(w), float(h), max(fw * 1.95, fh * 1.62))
+        x1 = int(round(np.clip(cx - 0.5 * side, 0.0, max(0.0, float(w) - side))))
+        y1 = int(round(np.clip(cy - 0.48 * side, 0.0, max(0.0, float(h) - side))))
+        iside = max(32, int(round(side)))
+        crop = bgr[y1 : min(h, y1 + iside), x1 : min(w, x1 + iside)]
+        out = cv2.resize(crop, target_size, interpolation=cv2.INTER_LANCZOS4)
+        output_crop_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_crop_path), out, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+        return output_crop_path
 
     def mask_foreign_faces_in_reference(
         self,
@@ -397,6 +421,11 @@ class RealPersonTurnaroundEngine:
         iod_ratio = eye_d / max(1.0, float(fw))
         face_frac = float(fw * fh) / max(1.0, float(w * h))
 
+        d_left = float(np.linalg.norm(nose - le))
+        d_right = float(np.linalg.norm(nose - re))
+        signed_asym = (d_left - d_right) / max(1.0, d_left + d_right)
+        signed_yaw_deg = float(np.clip(signed_asym * 135.0, -90.0, 90.0))
+
         eye_chin = 1.65
         width_len = 1.15
         try:
@@ -405,7 +434,8 @@ class RealPersonTurnaroundEngine:
             shape = self.apple_vision.compute_face_shape(marks)
             if shape:
                 eye_chin = float(shape.get("eyeChin", eye_chin))
-                width_len = float(shape.get("widthLength", width_len))
+                width_len = float(shape.get("normWidthLength", shape.get("widthLength", width_len)))
+                signed_yaw_deg = float(np.clip(float(shape.get("turn", 0.0)) * 95.0, -90.0, 90.0))
         except Exception:
             pass
 
@@ -417,6 +447,7 @@ class RealPersonTurnaroundEngine:
             mouth_to_eye_width_ratio=mouth_span,
             source_yaw_asymmetry=face.yaw_asymmetry_ratio,
             face_area_fraction=face_frac,
+            source_signed_yaw_deg=round(signed_yaw_deg, 1),
         )
 
     def prepare_canonical_identity_anchor(
@@ -474,30 +505,36 @@ class RealPersonTurnaroundEngine:
             raise ValueError(f"Unsupported turnaround view '{view}'. Choose from {tuple(VIEW_DIRECTIONS_EN)}.")
         view_title, view_desc = VIEW_DIRECTIONS_EN[view]
 
+        src_deg = blueprint.source_signed_yaw_deg
+        src_angle_desc = (
+            f"captured at {src_deg:+.1f} degrees yaw" if abs(src_deg) >= 6.0 else "captured at ~0 degrees front yaw"
+        )
         ref_roles = (
-            "Image 1 is the untouched canonical 0-degree front identity photograph—the primary ground-truth authority for "
-            "craniofacial anatomy, true iris color, authentic skin texture, eyewear geometry, hair color/parting, and shoulder scale."
+            f"Image 1 is the untouched real Gen-0 identity photograph ({src_angle_desc})—the absolute 1:1 ground-truth authority "
+            "for exact cheek fullness, jawline width, eye shape, nose tip roundness, philtrum length, lip contour, true iris color, "
+            "authentic skin texture, eyewear geometry, and head-fixed hair parting/ear-tuck style."
         )
         if has_intermediate_anchor:
             ref_roles += (
                 f" Image 2 is the approved {intermediate_label} of the exact same person—"
-                "rotate a precise additional 22.5-degree increment from Image 2 while keeping Image 1's exact identity and skin/iris fidelity."
+                "rotate smoothly from Image 2 to the target angle while keeping Image 1's exact 1:1 cheek volume, eye/nose/lip likeness, and skin fidelity."
             )
 
         prompt = (
-            "Editorial portrait. Shot on a medium-format 100MP camera with an 80mm f/5.6 prime lens, crisp optical micro-contrast, "
-            "deep true blacks, and zero atmospheric haze. Agency frontal-arc turnaround test photograph of the EXACT SAME "
-            "real person shown in Image 1 against a clean neutral studio backdrop. "
+            "Editorial portrait. Unretouched real-camera 85mm f/4 studio agency turnaround reference portrait of the EXACT SAME "
+            "real person shown in Image 1 against a clean light-neutral studio backdrop. "
             f"Reference Roles: {ref_roles} "
             f"Target Angle — {view_title}: {view_desc} "
-            "Do NOT mirror or flip to the opposite direction, do NOT invent a new person, and apply zero beauty-cam filter. "
+            "CRITICAL ANTI-DRIFT RULES: Do NOT mirror or flip to the opposite direction, do NOT invent a generic model face, "
+            "preserve exact cheek breadth and jaw width from Image 1 without thinning or elongating the head, and keep hair parting/ear-tuck fixed to the subject's own anatomical left/right sides in 3D! "
             f"Identity & Eyewear Continuity: Preserve {subject.facial_identity_descriptor()}. "
             "Keep authentic iris color from Image 1 with crystal-clear non-tinted lenses (zero green or purple coating cast). "
             "If eyewear is present in Image 1, render the temple arm extending continuously and uninterruptedly from the front outer "
             "frame hinge back to rest naturally over the top of the visible ear. "
             f"{blueprint.to_3d_invariance_clause()} "
-            "Wardrobe & Lighting Continuity: Keep the same clean tailored studio attire, balanced adult 7.5-to-8-head head-to-shoulder "
-            "scale, crisp directional studio lighting, and authentic real skin texture with subtle pores, zero plastic/oily gloss, "
+            "Wardrobe & Lighting Continuity: Dress the subject in a simple, plain matte dark-charcoal crewneck studio top (discarding any "
+            "pinstripes, badges, or busy patterns from Image 1 so turnaround anchors stay neutral), balanced adult 7.5-to-8-head "
+            "head-to-shoulder scale, soft natural studio key light, authentic unretouched real skin texture, zero plastic/oily gloss, "
             "zero text, and zero watermarks."
         )
         PromptFirewall.validate_prompt(prompt)
@@ -509,12 +546,11 @@ class RealPersonTurnaroundEngine:
         subject: SubjectProfile,
         existing_angles: Optional[Dict[str, Path]] = None,
     ) -> Dict[str, Dict[str, object]]:
-        """Plan the 8 detailed frontal-arc directions (-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°) + 0° Origin via 4-Hop 22.5° micro-steps."""
+        """Plan all 8 frontal-arc directions (-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°) + 0° Origin via STRICT 1-Hop Direct-from-Gen0 (ZERO multi-hop chaining!)."""
         front_bgr = cv2.imread(str(canonical_front_path))
         if front_bgr is None:
             raise FileNotFoundError(f"Cannot read canonical front anchor: {canonical_front_path}")
         blueprint = self.extract_anatomical_blueprint(front_bgr)
-        bank = existing_angles or {}
 
         plans: Dict[str, Dict[str, object]] = {
             "front": {
@@ -528,41 +564,21 @@ class RealPersonTurnaroundEngine:
             }
         }
 
-        # 4 progressive 22.5° hops outward on both Left (-) and Right (+) sides:
-        hop_specs = (
-            # (hop_num, target_view, preferred_bridges, bridge_label)
-            (1, "left_22", (), ""),
-            (1, "right_22", (), ""),
-            (2, "left_45", ("left_22",), "-22.5-degree semi-frontal left portrait"),
-            (2, "right_45", ("right_22",), "+22.5-degree semi-frontal right portrait"),
-            (3, "left_67", ("left_45", "left_22"), "-45-degree front-left three-quarter portrait"),
-            (3, "right_67", ("right_45", "right_22"), "+45-degree front-right three-quarter portrait"),
-            (4, "left_90", ("left_67", "left_45"), "-67.5-degree deep oblique left portrait"),
-            (4, "right_90", ("right_67", "right_45"), "+67.5-degree deep oblique right portrait"),
-        )
-
-        for hop_num, v_key, bridge_candidates, bridge_lbl in hop_specs:
-            refs = [str(canonical_front_path)]
-            chosen_bridge: Optional[Path] = None
-            for bc in bridge_candidates:
-                cand_p = bank.get(bc)
-                if cand_p is not None and Path(cand_p).exists():
-                    chosen_bridge = Path(cand_p)
-                    break
-            if chosen_bridge is not None:
-                refs.append(str(chosen_bridge))
+        # IRONCLAD ZERO-CHAINING LAW: Every single turnaround angle is `hop = 1` strictly from untouched `Gen-0` ONLY!
+        # NEVER feed a generated turnaround image (`Gen-1`) into another turnaround generation (`Gen-2..Gen-4`)!
+        for v_key in TURNAROUND_8_VIEWS:
             plans[v_key] = {
-                "hop": hop_num,
+                "hop": 1,
                 "azimuth_deg": VIEW_AZIMUTH_DEG[v_key],
                 "view": v_key,
                 "label_ko": VIEW_LABELS_KO[v_key],
-                "reference_images": refs,
+                "reference_images": [str(canonical_front_path)],
                 "prompt": self.build_turnaround_angle_prompt(
                     v_key,
                     subject,
                     blueprint,
-                    has_intermediate_anchor=(chosen_bridge is not None),
-                    intermediate_label=bridge_lbl,
+                    has_intermediate_anchor=False,
+                    intermediate_label="",
                 ),
             }
 
@@ -575,14 +591,11 @@ class RealPersonTurnaroundEngine:
         approved_3q_left_path: Optional[Path] = None,
         approved_3q_right_path: Optional[Path] = None,
     ) -> Dict[str, Dict[str, object]]:
-        """Backward-compatible 5-angle subset planner (`left_profile, three_quarter_left, front, three_quarter_right, right_profile`)."""
+        """Backward-compatible 5-angle subset planner — strictly 1-Hop Direct-from-Gen0 (ZERO multi-hop chaining!)."""
         front_bgr = cv2.imread(str(canonical_front_path))
         if front_bgr is None:
             raise FileNotFoundError(f"Cannot read canonical front anchor: {canonical_front_path}")
         blueprint = self.extract_anatomical_blueprint(front_bgr)
-
-        has_l = approved_3q_left_path is not None and Path(approved_3q_left_path).exists()
-        has_r = approved_3q_right_path is not None and Path(approved_3q_right_path).exists()
 
         return {
             "front": {
@@ -605,20 +618,16 @@ class RealPersonTurnaroundEngine:
                 "prompt": self.build_turnaround_angle_prompt("right_45", subject, blueprint, False),
             },
             "left_profile": {
-                "hop": 2,
+                "hop": 1,
                 "view": "left_profile",
-                "reference_images": [str(canonical_front_path)] + ([str(approved_3q_left_path)] if has_l else []),
-                "prompt": self.build_turnaround_angle_prompt(
-                    "left_90", subject, blueprint, has_l, "-45-degree front-left three-quarter portrait"
-                ),
+                "reference_images": [str(canonical_front_path)],
+                "prompt": self.build_turnaround_angle_prompt("left_90", subject, blueprint, False),
             },
             "right_profile": {
-                "hop": 2,
+                "hop": 1,
                 "view": "right_profile",
-                "reference_images": [str(canonical_front_path)] + ([str(approved_3q_right_path)] if has_r else []),
-                "prompt": self.build_turnaround_angle_prompt(
-                    "right_90", subject, blueprint, has_r, "+45-degree front-right three-quarter portrait"
-                ),
+                "reference_images": [str(canonical_front_path)],
+                "prompt": self.build_turnaround_angle_prompt("right_90", subject, blueprint, False),
             },
         }
 

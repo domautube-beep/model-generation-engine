@@ -159,39 +159,48 @@ class AppleVisionAnalyzer:
         if eyes <= 0 or length <= 0:
             return None
         turn = (nose[0] - mid_x) / eyes
+        # Cosine foreshortening compensation for semi-frontal turns (|turn| < 0.30, ~25 deg) so cheek width is STILL audited!
+        cos_comp = math.sqrt(max(0.72, 1.0 - min(0.28, (turn * 1.15) ** 2)))
+        norm_wl = (width / length) / cos_comp
         return {
             "eyePx": round(eyes, 1),
             "eyeChin": round(length / eyes, 3),
             "widthLength": round(width / length, 3),
+            "normWidthLength": round(norm_wl, 3),
             "turn": round(turn, 3),
             "frontal": abs(turn) < 0.12,
+            "auditable": abs(turn) < 0.30,
         }
 
     @staticmethod
     def compare_face_shapes(
         original: Optional[Dict[str, object]],
         result: Optional[Dict[str, object]],
-        limit_pct: float = 3.0,
+        limit_pct: float = 3.5,
     ) -> Dict[str, object]:
-        """Compare frontal facial proportions (% diff in eye-to-chin length and width-to-length ratio)."""
+        """Compare craniofacial proportions (% diff in eye-to-chin & perspective-normalized cheek width-to-length)."""
         if not original or not result:
             return {"state": "unmeasured", "passed": True, "note": "얼굴 윤곽 미검출"}
-        if not (original.get("frontal") and result.get("frontal")):
-            return {"state": "unmeasured", "passed": True, "note": "측면/회전 각도 비율 비교 생략"}
+        orig_aud = bool(original.get("auditable", original.get("frontal")))
+        res_aud = bool(result.get("auditable", result.get("frontal")))
+        if not (orig_aud and res_aud):
+            return {"state": "unmeasured", "passed": True, "note": "깊은 측면(>25°) 비율 비교 생략"}
 
         orig_ec = float(original["eyeChin"])
         res_ec = float(result["eyeChin"])
-        orig_wl = float(original["widthLength"])
-        res_wl = float(result["widthLength"])
+        both_strict_frontal = bool(original.get("frontal") and result.get("frontal"))
+        orig_wl = float(original["widthLength"] if both_strict_frontal else original.get("normWidthLength", original["widthLength"]))
+        res_wl = float(result["widthLength"] if both_strict_frontal else result.get("normWidthLength", result["widthLength"]))
+        eff_lim = limit_pct if both_strict_frontal else max(limit_pct, 4.0)
 
         length_diff = round((res_ec / orig_ec - 1.0) * 100.0, 1)
         ratio_diff = round((res_wl / orig_wl - 1.0) * 100.0, 1)
-        drifted = abs(length_diff) > limit_pct or abs(ratio_diff) > limit_pct
+        drifted = abs(length_diff) > eff_lim or abs(ratio_diff) > eff_lim
         return {
             "state": "drifted" if drifted else "same",
             "passed": not drifted,
             "lengthDiffPct": length_diff,
             "ratioDiffPct": ratio_diff,
-            "limitPct": limit_pct,
-            "note": f"원본 대비 눈~턱 {length_diff:+}% · 얼굴 폭/길이 {ratio_diff:+}%",
+            "limitPct": eff_lim,
+            "note": f"원본 대비 눈~턱 {length_diff:+}% · 볼폭/길이 {ratio_diff:+}%",
         }

@@ -192,7 +192,7 @@ class EngineConfig:
     unsharp_amount: float = 0.35
     unsharp_sigma: float = 1.0
     max_seam_l1_diff: float = 6.0
-    min_face_laplacian_var: float = 25.0
+    min_face_laplacian_var: float = 17.5
     min_organ_gradient_energy: float = 1.6
     min_inter_ocular_5k_px: float = 40.0
     auto_facelock_below_iod_5k_px: float = 0.0

@@ -1,10 +1,15 @@
-"""Ironclad `1원본들 → 1생성` (One-Originals-Set to One-Generation) Enforcement Guard (`origin_guard.py`).
+"""Ironclad `8방향 필수 검증 + 1원본들 → 1생성 + 다단계 체이닝 절대 금지` Red-Team Enforcement Guard (`origin_guard.py` v5.0).
 
-Physically blocks at code & runtime level:
-1. Re-feeding any previously generated scene output back into an image generator (`Depth >= 2` HARD BAN).
-2. Passing synthetic derived boards or wireframe renders (`composite_styling_board`, `previz_`, `closeup_`, `hero_`, `5k_21x9_`)
-   as visual `--image` references. ONLY approved 8-Direction Face Anchors + Raw User-Uploaded Asset Originals are permitted.
-3. Multi-pass generation on a single scene job (`1 Job == Strictly 1 Atomic Generation Call`).
+Physically blocks at code, API, and OS `PreToolUse` hook level:
+1. **Mandatory 8-Direction Bank Verifier (`Mandatory8DirBankVerifier`)**:
+   - Scene composition/generation is STRICTLY BLOCKED unless the subject has a complete, verified 8-Direction Turnaround Bank
+     (`left_90`, `left_67`, `left_45`, `left_22`, `right_22`, `right_45`, `right_67`, `right_90`) + `front` (`Gen-0`).
+2. **Zero Multi-Hop Chaining (`ChainedGenerationViolationError`)**:
+   - **Stage 1 (`Gen-0 -> 8-Dir`)**: Every 8-direction turnaround image MUST be generated in **1 single hop strictly from `Gen-0`**
+     (`depth == 0`). Feeding a generated `8dir` image to generate another `8dir` image (`Gen-1 -> Gen-2` chaining) is HARD-BANNED.
+   - **Stage 2 (`Gen-0 + 1-Hop 8-Dir + Raw Assets -> Scene`)**: Every scene output is a **Terminal Node (`depth == terminal`)**
+     and its SHA-256 is permanently blacklisted so it can NEVER be fed into any image generator again (`v1 -> v2` HARD-BANNED).
+3. **Single-Shot Job Token Lock**: `1 Job == Strictly 1 Atomic Generation Call`.
 """
 
 from __future__ import annotations
@@ -17,19 +22,49 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Set, Tuple
 
+REQUIRED_8DIR_VIEWS: Tuple[str, ...] = (
+    "left_90",
+    "left_67",
+    "left_45",
+    "left_22",
+    "right_22",
+    "right_45",
+    "right_67",
+    "right_90",
+)
+
+LEGACY_8DIR_ALIASES: Dict[str, str] = {
+    "left_profile": "left_90",
+    "three_quarter_left": "left_45",
+    "three_quarter_right": "right_45",
+    "right_profile": "right_90",
+}
+
 
 class OriginLineageViolationError(RuntimeError):
-    """Raised immediately whenever a non-original / previously-generated image or a 2nd generation pass is attempted."""
+    """Base error raised whenever lineage, 1-shot, or 8-direction rules are violated."""
+
+
+class Incomplete8DirectionBankError(OriginLineageViolationError):
+    """Raised when scene generation is attempted before all 8 turnaround directions (-90°..+90°) are built & verified."""
+
+
+class ChainedGenerationViolationError(OriginLineageViolationError):
+    """Raised when a generated output (including a generated 8-dir image in turnaround mode, or any scene output) is chained into another generation."""
 
 
 FORBIDDEN_DERIVED_FILENAME_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?:^|[/\\])live_test_", re.IGNORECASE), "Previously generated test scene output"),
     (re.compile(r"(?:^|[/\\])(?:hero|5k_21x9|21x9|closeup|macro_verify)_", re.IGNORECASE), "Post-processed/generated 5K output or crop"),
-    (re.compile(r"(?:^|[/\\])raw_batch_|(?:^|[/\\])raw_scene_", re.IGNORECASE), "Raw batch scene output"),
+    (re.compile(r"(?:^|[/\\])(?:raw_batch|raw_scene|nb_raw|nb_dop|nb_subj|s03_crimson)_", re.IGNORECASE), "Generated scene output (re-feeding forbidden)"),
     (re.compile(r"composite_styling_board", re.IGNORECASE), "Derived composite collage board (pass raw item originals instead)"),
     (re.compile(r"(?:^|[/\\])previz_.*\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE), "Synthetic 3D Previz wireframe image (use text pose + 8-dir face instead)"),
     (re.compile(r"[/\\]batches[/\\][^/\\]+[/\\](?:raw_|hero_|closeup_)", re.IGNORECASE), "Batch output artifact"),
-    (re.compile(r"[/\\]outputs[/\\](?:21x9_|5k_|hero_|closeup_)", re.IGNORECASE), "Vault generated scene output"),
+    (re.compile(r"[/\\]outputs[/\\](?:21x9_|5k_|hero_|closeup_|nb_|subj)", re.IGNORECASE), "Vault generated scene output"),
+)
+
+TURNAROUND_GENERATED_FILENAME_PATTERN = re.compile(
+    r"(?:^|[/\\])(?:t2_turn_|crisp_gen1_turn_|subj\d+_turn_|s\d+_8dir_|angle_[mp]\d)", re.IGNORECASE
 )
 
 
@@ -41,8 +76,51 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+class Mandatory8DirBankVerifier:
+    """Hard gate guaranteeing STEP 1 (Complete 8-Direction Turnaround Bank + Gen-0 Origin) is NEVER skipped before STEP 2."""
+
+    @classmethod
+    def verify_complete_8dir_bank(
+        cls,
+        canonical_front_path: Path,
+        angle_bank: Optional[Dict[str, Path]],
+    ) -> Dict[str, Path]:
+        front_p = Path(canonical_front_path)
+        if not front_p.is_file() or front_p.stat().st_size < 256:
+            raise Incomplete8DirectionBankError(
+                f"[8방향 필수 검증기 차단] 기준 원본(Gen-0) 얼굴 파일이 유효하지 않습니다: {front_p}"
+            )
+        if not angle_bank:
+            raise Incomplete8DirectionBankError(
+                "[8방향 필수 검증기 차단] 8방향 마스터 뱅크(angle_bank)가 비어 있습니다! "
+                "반드시 STEP 1에서 좌·우 8방향(-90°~+90°)을 먼저 완성한 뒤 본 장면 생성을 진행해야 합니다."
+            )
+
+        normalized: Dict[str, Path] = {"front": front_p}
+        for k, p in angle_bank.items():
+            if p is None:
+                continue
+            canon_k = LEGACY_8DIR_ALIASES.get(k, k)
+            cand = Path(p)
+            if cand.is_file() and cand.stat().st_size >= 256:
+                for pat, reason in FORBIDDEN_DERIVED_FILENAME_PATTERNS:
+                    if pat.search(str(cand.resolve())):
+                        raise ChainedGenerationViolationError(
+                            f"[8방향 필수 검증기 차단] 슬롯 '{canon_k}'에 장면 생성물({cand.name}: {reason})을 넣을 수 없습니다."
+                        )
+                normalized[canon_k] = cand
+
+        missing = [v for v in REQUIRED_8DIR_VIEWS if v not in normalized]
+        if missing:
+            raise Incomplete8DirectionBankError(
+                f"[8방향 필수 검증기 차단] 8방향 마스터 뱅크 미완성 (누락 슬롯 {len(missing)}개: {', '.join(missing)}). "
+                "8방향(-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°) 전 슬롯이 모두 검증되어야만 장면 생성이 허용됩니다."
+            )
+        return normalized
+
+
 class OriginOnlyOneShotGuard:
-    """Cryptographic SHA-256 + Path Lineage + Single-Shot Token Guard enforcing `1원본들 → 1생성`."""
+    """Cryptographic SHA-256 + Lineage Depth + Single-Shot Guard enforcing Zero Multi-Hop Chaining & Mandatory 8-Dir."""
 
     _lock = threading.Lock()
 
@@ -59,6 +137,7 @@ class OriginOnlyOneShotGuard:
                 "approved_origins_sha256": {},
                 "approved_8dir_faces_sha256": {},
                 "forbidden_generated_outputs_sha256": {},
+                "verified_8dir_subjects": {},
                 "executed_job_ids": [],
             }
             self.ledger_path.write_text(json.dumps(init_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -72,6 +151,7 @@ class OriginOnlyOneShotGuard:
                 "approved_origins_sha256": {},
                 "approved_8dir_faces_sha256": {},
                 "forbidden_generated_outputs_sha256": {},
+                "verified_8dir_subjects": {},
                 "executed_job_ids": [],
             }
 
@@ -79,23 +159,43 @@ class OriginOnlyOneShotGuard:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         self.ledger_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def register_approved_origin(self, path: Path, kind: str = "raw_asset") -> str:
-        """Whitelist a raw user-uploaded original asset or 8-direction face anchor."""
+    def register_approved_origin(self, path: Path, kind: str = "raw_asset", depth: int = 0) -> str:
+        """Whitelist a pure Gen-0 raw asset (`depth=0`) or a 1-Hop 8-direction face anchor (`kind='8dir_face'`, `depth=1`)."""
         p = Path(path).resolve()
         if not p.is_file():
             raise FileNotFoundError(f"Origin file does not exist: {p}")
         digest = sha256_file(p)
+        eff_depth = 1 if (kind == "8dir_face" and depth == 0 and TURNAROUND_GENERATED_FILENAME_PATTERN.search(str(p))) else depth
         with self._lock:
             data = self._load()
             bucket = "approved_8dir_faces_sha256" if kind == "8dir_face" else "approved_origins_sha256"
             rec = dict(data.get(bucket) or {})  # type: ignore[arg-type]
-            rec[digest] = {"path": str(p), "kind": kind, "registered_at": time.time()}
+            rec[digest] = {"path": str(p), "kind": kind, "depth": eff_depth, "registered_at": time.time()}
             data[bucket] = rec
             self._save(data)
         return digest
 
+    def register_verified_subject_8dir_bank(self, canonical_front_path: Path, angle_bank: Dict[str, Path]) -> str:
+        """Verify all 8 directions + Gen-0 and record cryptographic proof in ledger so OS hooks & composers allow Step 2."""
+        norm = Mandatory8DirBankVerifier.verify_complete_8dir_bank(canonical_front_path, angle_bank)
+        front_hash = self.register_approved_origin(norm["front"], kind="gen0_face", depth=0)
+        slot_hashes: Dict[str, str] = {"front": front_hash}
+        for v in REQUIRED_8DIR_VIEWS:
+            slot_hashes[v] = self.register_approved_origin(norm[v], kind="8dir_face", depth=1)
+        with self._lock:
+            data = self._load()
+            verified = dict(data.get("verified_8dir_subjects") or {})  # type: ignore[arg-type]
+            verified[front_hash] = {
+                "front_path": str(Path(canonical_front_path).resolve()),
+                "slots": slot_hashes,
+                "verified_at": time.time(),
+            }
+            data["verified_8dir_subjects"] = verified
+            self._save(data)
+        return front_hash
+
     def register_generated_scene_output(self, output_path: Path, job_id: str = "") -> Optional[str]:
-        """Permanently blacklist a generated scene output SHA-256 so it can NEVER be re-fed as an input."""
+        """Permanently blacklist a generated scene output SHA-256 (`depth=terminal`) so it can NEVER be re-fed."""
         p = Path(output_path).resolve()
         if not p.is_file():
             return None
@@ -103,21 +203,56 @@ class OriginOnlyOneShotGuard:
         with self._lock:
             data = self._load()
             forb = dict(data.get("forbidden_generated_outputs_sha256") or {})  # type: ignore[arg-type]
-            forb[digest] = {"path": str(p), "job_id": job_id, "generated_at": time.time()}
+            forb[digest] = {"path": str(p), "job_id": job_id, "depth": "terminal", "generated_at": time.time()}
             data["forbidden_generated_outputs_sha256"] = forb
             self._save(data)
         return digest
+
+    def verify_turnaround_1hop_inputs(self, reference_image_paths: Iterable[Path], job_id: Optional[str] = None) -> None:
+        """Red-Team Stage-1 Guard: 8-Direction Turnaround generation MUST ONLY accept pure Gen-0 (`depth == 0`) photos!
+        Feeding a generated `8dir` image into another `8dir` generation (`Hop >= 2` chaining) is strictly forbidden!
+        """
+        refs = [Path(p) for p in reference_image_paths]
+        if not refs:
+            raise OriginLineageViolationError("[8방향 1-Hop 위반] 최소 1장의 순수 Gen-0 원본 인물 사진이 필요합니다.")
+
+        with self._lock:
+            data = self._load()
+            forbidden_hashes: Dict[str, dict] = dict(data.get("forbidden_generated_outputs_sha256") or {})  # type: ignore[arg-type]
+            approved_8dir: Dict[str, dict] = dict(data.get("approved_8dir_faces_sha256") or {})  # type: ignore[arg-type]
+
+            for idx, rp in enumerate(refs, 1):
+                if not rp.is_file():
+                    raise OriginLineageViolationError(f"[8방향 1-Hop 위반] 입력 이미지 #{idx}가 존재하지 않습니다: {rp}")
+                resolved_str = str(rp.resolve())
+                digest = sha256_file(rp)
+
+                if digest in forbidden_hashes:
+                    raise ChainedGenerationViolationError(
+                        f"[레드팀 차단: 생성물 재먹이기 금지] '{rp.name}'은 이미 생성된 출력물입니다."
+                    )
+                for pat, reason in FORBIDDEN_DERIVED_FILENAME_PATTERNS:
+                    if pat.search(resolved_str):
+                        raise ChainedGenerationViolationError(
+                            f"[레드팀 차단: 파생/생성물 재투입 금지] '{rp.name}' ({reason})"
+                        )
+                if TURNAROUND_GENERATED_FILENAME_PATTERN.search(resolved_str) or (
+                    digest in approved_8dir and int(approved_8dir[digest].get("depth", 0)) >= 1
+                ):
+                    raise ChainedGenerationViolationError(
+                        f"[레드팀 차단: 다단계 체이닝(Hop-Chaining) 절대 금지] '{rp.name}'은 이미 생성된 1차 턴어라운드 이미지입니다! "
+                        "생성된 이미지를 가지고 다시 다른 각도를 생성하는 연쇄 생성은 절대 금지되며, 오직 순수 Gen-0 원본만 입력할 수 있습니다."
+                    )
+
+        if job_id:
+            self.verify_one_shot_and_inputs(refs, job_id=job_id)
 
     def verify_one_shot_and_inputs(
         self,
         reference_image_paths: Iterable[Path],
         job_id: Optional[str] = None,
     ) -> None:
-        """Validate `1원본들 → 1생성`:
-        - Every input path must exist, must NOT match derived/generated scene patterns, and its SHA-256 must NOT be in
-          `forbidden_generated_outputs_sha256`.
-        - If `job_id` is supplied, enforces that this `job_id` executes AT MOST ONCE (`max_passes == 1`).
-        """
+        """Validate `1원본들 → 1생성`: blocks any scene output re-feeding (`depth == terminal`) and blocks 2nd pass on `job_id`."""
         refs = [Path(p) for p in reference_image_paths]
         if not refs:
             raise OriginLineageViolationError(
@@ -133,7 +268,7 @@ class OriginOnlyOneShotGuard:
 
             if job_id:
                 if job_id in self._executed_job_ids or job_id in persisted_jobs:
-                    raise OriginLineageViolationError(
+                    raise ChainedGenerationViolationError(
                         f"[1원본들 → 1생성 위반] 작업 '{job_id}'에서 2회차 재생성(Multi-Pass / 재먹이기)이 시도되어 강제 차단되었습니다."
                     )
 
@@ -143,19 +278,18 @@ class OriginOnlyOneShotGuard:
                 resolved_str = str(rp.resolve())
                 digest = sha256_file(rp)
 
-                # Explicit whitelist check first: if not an approved 8dir face/origin, check blacklist & forbidden patterns
                 if digest in forbidden_hashes and digest not in approved_8dir and digest not in approved_orig:
                     prev_info = forbidden_hashes[digest]
-                    raise OriginLineageViolationError(
+                    raise ChainedGenerationViolationError(
                         f"[1원본들 → 1생성 위반] 입력 이미지 #{idx} ({rp.name})는 이전에 생성된 결과물({prev_info.get('path')})과 "
                         "동일한 SHA-256 해시를 가집니다. 생성물에 다시 생성하는 재먹이기는 절대 금지됩니다."
                     )
 
                 for pat, reason in FORBIDDEN_DERIVED_FILENAME_PATTERNS:
                     if pat.search(resolved_str):
-                        raise OriginLineageViolationError(
+                        raise ChainedGenerationViolationError(
                             f"[1원본들 → 1생성 위반] 입력 이미지 #{idx} ({rp.name})가 금지된 파생/생성 이미지 패턴({reason})에 해당합니다. "
-                            "오직 8방향 얼굴과 순수 원본 에셋 파일만 입력할 수 있습니다."
+                            "오직 검증된 1-Hop 8방향 얼굴과 순수 원본 에셋 파일만 입력할 수 있습니다."
                         )
 
             if job_id:
