@@ -25,7 +25,12 @@ from .apple_vision import AppleVisionAnalyzer
 
 
 class FaceLockCompositor:
-    """Photographic Face Re-Attachment (`facelock 1c` with Dual Person-Mask Intersection & Tone Retention)."""
+    """DEPRECATED 2D Oval Pixel Overlay (`facelock 1c` — disabled by default in production).
+
+    WARNING: Flat 2D oval pixel pasting cuts across eyewear temple arms (`cx ± 0.45*fw`), skews 2D facial axes
+    against 3D rotated heads, distorts cheek-to-skull proportions, and breaks scene lighting/tone-and-manner harmony.
+    Always use `ModelGenerationPipeline.run_tonematched_5k_synthesis` (Tone-Matched 3D In-Place Upper-Body Redraw) instead.
+    """
 
     def __init__(self, vision_analyzer: AppleVisionAnalyzer) -> None:
         self.vision = vision_analyzer

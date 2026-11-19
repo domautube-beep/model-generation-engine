@@ -184,3 +184,116 @@ class Seamless5KCompositor:
         out_canvas = canvas_5k_bgr.copy()
         out_canvas[y1:y2, x1:x2] = blended
         return out_canvas, (best_dx, best_dy), best_err, (hx1, hy1, hx2, hy2)
+
+    def integrate_tonematched_crop(
+        self,
+        canvas_5k_bgr: np.ndarray,
+        refined_crop_bgr: np.ndarray,
+        crop_box_5k: Tuple[int, int, int, int],
+    ) -> Tuple[np.ndarray, Tuple[int, int], float, Tuple[int, int, int, int]]:
+        """Seamlessly integrate a Tone-Matched 3D In-Place refined 16:9 upper-body crop into the 5K canvas.
+
+        Unlike narrow head-only boxes or 2D oval face pasting, this preserves 100% of the refined 3D head,
+        eyewear temple arms, neck, collar, and shoulder proportions inside the crop interior while applying
+        an edge-aware cosine feather + low-frequency border color match strictly on the outer perimeter.
+        """
+        ch, cw = canvas_5k_bgr.shape[:2]
+        x1, y1, x2, y2 = crop_box_5k
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 32 or bh < 32:
+            raise ValueError(f"crop_box_5k dimensions too small for integration: ({bw}x{bh})")
+
+        orig_patch = canvas_5k_bgr[y1:y2, x1:x2].astype(np.float32)
+        ref_patch = cv2.resize(
+            refined_crop_bgr, (bw, bh), interpolation=cv2.INTER_LANCZOS4
+        ).astype(np.float32)
+
+        face_in_crop = self.detector.detect(ref_patch.astype(np.uint8))
+        hx1, hy1, hx2, hy2 = self.detector.compute_head_halo_box((bh, bw), face_in_crop)
+
+        ring_mask = np.zeros((bh, bw), dtype=bool)
+        margin_x = min(max(12, int(bw * 0.08)), bw // 4)
+        margin_y = min(max(12, int(bh * 0.08)), bh // 4)
+        if x1 > 0:
+            ring_mask[:, :margin_x] = True
+        if x2 < cw:
+            ring_mask[:, -margin_x:] = True
+        if y1 > 0:
+            ring_mask[:margin_y, :] = True
+        if y2 < ch:
+            ring_mask[-margin_y:, :] = True
+
+        best_err = 1e18
+        best_dx, best_dy = 0, 0
+        border_guard = min(8, bh // 8, bw // 8)
+        for dy in range(-5, 6):
+            for dx in range(-5, 6):
+                shifted = np.roll(np.roll(ref_patch, dy, axis=0), dx, axis=1)
+                valid = ring_mask.copy()
+                if border_guard > 0:
+                    valid[:border_guard, :] = False
+                    valid[-border_guard:, :] = False
+                    valid[:, :border_guard] = False
+                    valid[:, -border_guard:] = False
+                if not np.any(valid):
+                    valid = ring_mask
+                err = float(np.mean(np.abs(shifted[valid] - orig_patch[valid])))
+                if err < best_err:
+                    best_err = err
+                    best_dx, best_dy = dx, dy
+
+        ref_aligned = np.roll(np.roll(ref_patch, best_dy, axis=0), best_dx, axis=1)
+        # Restore rolled wrap-around strips from orig_patch so edges never wrap opposite borders
+        if best_dy > 0:
+            ref_aligned[:best_dy, :] = orig_patch[:best_dy, :]
+        elif best_dy < 0:
+            ref_aligned[best_dy:, :] = orig_patch[best_dy:, :]
+        if best_dx > 0:
+            ref_aligned[:, :best_dx] = orig_patch[:, :best_dx]
+        elif best_dx < 0:
+            ref_aligned[:, best_dx:] = orig_patch[:, best_dx:]
+
+        ramp_l = min(96, bw // 10) if x1 > 0 else 0
+        ramp_r = min(96, bw // 10) if x2 < cw else 0
+        ramp_t = min(64, bh // 10) if y1 > 0 else 0
+        ramp_b = min(96, bh // 8) if y2 < ch else 0
+
+        wx = np.ones(bw, dtype=np.float32)
+        if ramp_l > 0:
+            t = np.linspace(0.0, 1.0, ramp_l, dtype=np.float32)
+            wx[:ramp_l] = 0.5 - 0.5 * np.cos(np.pi * t)
+        if ramp_r > 0:
+            t = np.linspace(1.0, 0.0, ramp_r, dtype=np.float32)
+            wx[-ramp_r:] = np.minimum(wx[-ramp_r:], 0.5 - 0.5 * np.cos(np.pi * t))
+
+        wy = np.ones(bh, dtype=np.float32)
+        if ramp_t > 0:
+            t = np.linspace(0.0, 1.0, ramp_t, dtype=np.float32)
+            wy[:ramp_t] = 0.5 - 0.5 * np.cos(np.pi * t)
+        if ramp_b > 0:
+            t = np.linspace(1.0, 0.0, ramp_b, dtype=np.float32)
+            wy[-ramp_b:] = np.minimum(wy[-ramp_b:], 0.5 - 0.5 * np.cos(np.pi * t))
+
+        w_mask = wy[:, None] * wx[None, :]
+
+        # Low-frequency ambient wall/border offset match confined strictly to the outer perimeter
+        low_diff = cv2.GaussianBlur(orig_patch - ref_aligned, (0, 0), 36.0)
+        perimeter_weight = (1.0 - w_mask)[..., None]
+        ref_harmonized = np.clip(ref_aligned + perimeter_weight * low_diff, 0.0, 255.0)
+
+        # Sharp-edge anti-ghosting guard strictly inside the outer feather zone (0 < w_mask < 0.98)
+        local_l1 = np.mean(np.abs(ref_harmonized - orig_patch), axis=2)
+        in_ramp = (w_mask > 0.0) & (w_mask < 0.98)
+        edge_suppress = np.zeros_like(w_mask)
+        edge_suppress[in_ramp] = np.clip((local_l1[in_ramp] - 18.0) / 28.0, 0.0, 1.0)
+        w_eff = w_mask * (1.0 - edge_suppress * (1.0 - w_mask))
+        w_eff = cv2.GaussianBlur(w_eff, (15, 15), 3.5)[..., None]
+
+        blended = np.clip(w_eff * ref_harmonized + (1.0 - w_eff) * orig_patch, 0.0, 255.0).astype(
+            np.uint8
+        )
+        seam_err = float(np.mean(np.abs(blended.astype(np.float32)[ring_mask] - orig_patch[ring_mask])))
+
+        out_canvas = canvas_5k_bgr.copy()
+        out_canvas[y1:y2, x1:x2] = blended
+        return out_canvas, (best_dx, best_dy), seam_err, (hx1, hy1, hx2, hy2)

@@ -88,21 +88,23 @@ class PromptFirewall:
     ) -> str:
         """Compose a universal, zero-hardcoding single-pass prompt with Hard Immutable Face Lock for ANY model, outfit, location, and camera angle."""
         prompt = (
-            "CRITICAL MANDATORY RULE — ZERO FACIAL & SKIN DEFORMATION (절대 얼굴·눈코입·얼굴형·피부질감·피부톤·피부색감 변형 금지): "
-            f"You MUST copy and preserve the exact 1:1 unmodified face AND the exact original skin texture, skin tone, and skin color of the {subject.subject_identity_label} "
+            "CRITICAL MANDATORY RULE — ZERO FACIAL DEFORMATION & TRUE 3D SCENE HARMONY "
+            "(절대 눈코입·얼굴형·피부질감 변형 금지 및 3D 비율·각도·톤앤매너 자연 조화): "
+            f"Preserve the exact 1:1 facial identity and natural matte real skin texture of the {subject.subject_identity_label} "
             f"from the reference image ({reference_filename}). "
             "NEVER alter, reshape, slim, widen, beautify, idealize, or deform the subject's face shape, lower cheek contour, "
             "jawline, chin, eyes, eyelid shape, eye corners, inter-ocular distance, nose bridge, nose tip, nostril width, "
-            "philtrum, mouth shape, lip thickness, ears, eyewear frame, or hairstyle by even 1%, "
-            "and NEVER darken, tint, yellow, muddy, or alter the subject's original skin texture, skin brightness, or skin color with background color cast. "
-            "The subject's head, face shape, eyes/nose/mouth, and skin tone/texture/color must remain 100% identical to the reference photo as if the exact same head were placed unchanged into the scene. "
+            "philtrum, mouth shape, lip thickness, ears, eyewear frame, or hairstyle. "
+            "Integrate the subject naturally in 3D perspective matching the target scene's exact camera angle, head turn/tilt, "
+            "balanced adult 7.5-to-8-head head-to-shoulder proportions, directional scene lighting, soft shadow falloff, "
+            "color temperature, and overall editorial tone & manner (NEVER look flatly pasted or crammed into a cutout mold). "
             f"Scene & Framing: create a photorealistic {camera.to_prompt_clause()}. "
-            f"Identity Lock: preserve {subject.facial_identity_descriptor()}. "
+            f"Identity & Eyewear Temple Continuity Lock: preserve {subject.facial_identity_descriptor()}. "
             "Anatomical Focus Lock: keep critical camera focus on the subject's exact reference eyes, nose, and mouth with zero melting or smudging. "
-            "Skin Expression: soft, even, natural MATTE skin texture with realistic subtle pores, "
+            "Skin Expression: soft, even, natural MATTE skin texture harmonized with the scene's directional lighting and realistic subtle pores, "
             "ZERO plastic/oily shine, ZERO dewy gloss, ZERO specular glare on the forehead, nose, or cheeks, and ZERO artificial wrinkles. "
             f"Physical Build: {subject.body_frame_descriptor()}. "
-            "Do NOT widen, slim, bloat, distort, or age the subject's face; keep the exact face contour of the reference photo. "
+            "Do NOT widen, slim, bloat, distort, or age the subject's face; keep the exact facial proportions of the reference photo. "
             f"Wardrobe: wearing {wardrobe.to_prompt_clause()}. "
             f"Environment & Props: set in {location.to_prompt_clause()}. "
             "Zero text, zero typography, zero watermarks."
@@ -125,19 +127,33 @@ class PromptFirewall:
         return cls.build_universal_single_pass_prompt(subject, w_spec, l_spec, c_spec)
 
     @classmethod
+    def build_tonematched_3d_refinement_prompt(
+        cls,
+        subject: SubjectProfile,
+        scene_context: str,
+    ) -> str:
+        """Universal 3-pillar Tone-Matched 3D In-Place Upper-Body Refinement prompt (replaces 2D oval pixel pasting)."""
+        prompt = (
+            f"Edit Image 2 ({scene_context}) into a crisp, high-resolution 85mm medium close-up photograph while keeping "
+            "Image 2's exact framing, shoulder position, 3D posture, wardrobe, props, and background environment 100% unchanged. "
+            f"1. True 3D Identity & Balanced Proportions: Render the {subject.subject_identity_label} from Image 1 with "
+            f"{subject.facial_identity_descriptor()}, naturally rotated in 3D to match Image 2's exact head turn/tilt and "
+            "calibrated to balanced adult 7.5-to-8-head head-to-shoulder proportions (never flat, crooked, oversized, or pasted). "
+            "2. Eyewear Temple Continuity: If eyewear is present in Image 1, render both temple arms clearly, continuously, "
+            "and uninterruptedly extending from the outer front frame hinges all the way back over the tops of both ears. "
+            "3. Scene Tone & Manner Harmony: Naturally relight the subject's face and skin to harmonize with Image 2's "
+            "directional key light, soft dimensional shadow falloff, color temperature, and overall editorial mood—"
+            "preserving natural matte real skin texture with subtle pores, zero plastic/oily shine, zero dewy gloss, "
+            "and zero artificial white-studio cutout look. Zero text, zero watermarks."
+        )
+        cls.validate_prompt(prompt)
+        return prompt
+
+    @classmethod
     def build_stage2_closeup_refinement_prompt(
         cls,
         subject: SubjectProfile,
         scene_context: str,
     ) -> str:
-        """Universal close-up identity refinement prompt without hardcoded gender, clothing, or doorway assumptions."""
-        prompt = (
-            f"Edit Image 2 ({scene_context}) so that the subject's face and head are an exact 1:1 photorealistic match "
-            f"to the {subject.subject_identity_label} in Image 1. "
-            f"Preserve {subject.facial_identity_descriptor()}, "
-            "and sharp, natural matte photographic skin detail with realistic subtle pores, zero oily shine, and zero dewy gloss. "
-            "Keep the exact same framing, head position, neckline/collar, shoulders, and environment background of Image 2 unchanged. "
-            "Zero text or watermarks."
-        )
-        cls.validate_prompt(prompt)
-        return prompt
+        """Universal close-up identity refinement prompt delegating to Tone-Matched 3D In-Place Refinement."""
+        return cls.build_tonematched_3d_refinement_prompt(subject, scene_context)

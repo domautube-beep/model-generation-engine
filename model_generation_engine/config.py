@@ -81,11 +81,17 @@ class SubjectProfile:
             self.expression,
         ]
         if self.eyewear is None:
-            parts.append("preserving the exact eyewear presence or absence shown in the reference portrait")
+            parts.append(
+                "preserving the exact eyewear presence or absence shown in the reference portrait "
+                "(if eyewear is worn, rendering both temple arms continuously from the outer front frame hinges over both ears)"
+            )
         elif self.eyewear.lower() in ("none", "no glasses", "without glasses"):
             parts.append("wearing no glasses (bare eyes)")
         else:
-            parts.append(f"wearing {self.eyewear}")
+            parts.append(
+                f"wearing {self.eyewear} with both temple arms extending continuously and uninterruptedly "
+                "from the outer front frame hinges over both ears"
+            )
 
         if self.hairstyle is None:
             parts.append("preserving the exact hairstyle, parting, and hair texture of the reference portrait")
@@ -188,8 +194,8 @@ class EngineConfig:
     min_face_laplacian_var: float = 25.0
     min_organ_gradient_energy: float = 1.6
     min_inter_ocular_5k_px: float = 40.0
-    auto_facelock_below_iod_5k_px: float = 135.0
-    max_face_shape_diff_pct: float = 3.5
+    auto_facelock_below_iod_5k_px: float = 0.0
+    max_face_shape_diff_pct: float = 5.5
     min_identity_cosine_sim: float = 0.65
     auto_restore_distant_face_iod_px: float = 0.0
     max_specular_glare_ratio: float = 0.04

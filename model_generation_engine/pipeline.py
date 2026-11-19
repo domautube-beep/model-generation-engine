@@ -239,6 +239,89 @@ class ModelGenerationPipeline:
                 "quality_report": report,
             }
 
+    def run_tonematched_5k_synthesis(
+        self,
+        fullbody_scene_path: Path,
+        refined_crop_path: Path,
+        output_hero_path: Path,
+        output_closeup_path: Optional[Path] = None,
+        crop_box_base_override: Optional[Tuple[int, int, int, int]] = None,
+        reference_face_path: Optional[Path] = None,
+        seed: int = 42,
+    ) -> Dict[str, object]:
+        """Tone-Matched 3D In-Place Upper-Body 5K Synthesis (Zero 2D Oval Pixel Pasting, Zero CodeFormer Distortion).
+
+        1. Upscales both `fullbody_scene_path` and `refined_crop_path` 4x via `realesrgan-ncnn-vulkan` (`4xNomos8kSC`).
+        2. Builds the auto-balanced 5K (`5040x2160`) 21:9 canvas and integrates the full 3D refined upper-body crop
+           via `integrate_tonematched_crop` (preserving continuous eyewear temples, 3D head-shoulder proportions, and collar).
+        3. Applies scene-harmonized P88 specular glare suppression (`reference_skin_profile=None`) so natural scene lighting,
+           shadow falloff, color temperature, and overall tone & manner remain 100% cohesive.
+        4. Verifies all 9 automated Quality Gates including `SFace` 128-D Identity & `Apple Vision` 3D Face Proportions.
+        """
+        ref_bgr: Optional[np.ndarray] = None
+        if reference_face_path is not None and Path(reference_face_path).exists():
+            ref_bgr = cv2.imread(str(reference_face_path))
+
+        with tempfile.TemporaryDirectory(prefix="tonematched_5k_") as tmp_dir:
+            tmp = Path(tmp_dir)
+            up_scene_path = self.upscaler.upscale_image_file(
+                Path(fullbody_scene_path), tmp / "up_scene.jpg"
+            )
+            up_crop_path = self.upscaler.upscale_image_file(
+                Path(refined_crop_path), tmp / "up_crop.jpg"
+            )
+
+            up_scene_bgr = cv2.imread(str(up_scene_path))
+            up_crop_bgr = cv2.imread(str(up_crop_path))
+            canvas_5k, _, _ = self.compositor.build_ultrawide_canvas(up_scene_bgr)
+
+            if crop_box_base_override is not None:
+                x1, y1, x2, y2 = crop_box_base_override
+                crop_box_5k = (x1 * 2, y1 * 2, x2 * 2, y2 * 2)
+            else:
+                face_5k = self.detector.detect(canvas_5k)
+                crop_box_5k = self.detector.compute_upper_body_crop_box(
+                    canvas_5k.shape[:2], face_5k, aspect_ratio=self.config.canvas.crop_aspect_ratio
+                )
+
+            final_canvas_5k, shift_xy, seam_err, _ = self.compositor.integrate_tonematched_crop(
+                canvas_5k, up_crop_bgr, crop_box_5k
+            )
+
+            X1, Y1, X2, Y2 = crop_box_5k
+            vx1, vy1 = max(0, X1 - 120), max(0, Y1 - 60)
+            vx2, vy2 = min(final_canvas_5k.shape[1], X2 + 120), min(
+                final_canvas_5k.shape[0], Y2 + 160
+            )
+            roi = final_canvas_5k[vy1:vy2, vx1:vx2].copy()
+            roi_matte, skin_metrics = self.skin_processor.process(
+                roi, seed=seed, reference_skin_profile=None
+            )
+            final_canvas_5k[vy1:vy2, vx1:vx2] = roi_matte
+
+            report: QualityReport = self.auditor.audit(
+                final_canvas_5k, crop_box_5k, seam_err, reference_face_bgr=ref_bgr
+            )
+            if not report.passed:
+                raise RuntimeError(f"QualityGateAuditor rejected output: {report.message}")
+
+            output_hero_path = Path(output_hero_path)
+            output_hero_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(output_hero_path), final_canvas_5k, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+            if output_closeup_path:
+                cv2.imwrite(
+                    str(output_closeup_path), roi_matte, [int(cv2.IMWRITE_JPEG_QUALITY), 97]
+                )
+
+            return {
+                "output_hero_path": str(output_hero_path),
+                "crop_box_5k": crop_box_5k,
+                "alignment_shift": shift_xy,
+                "seam_border_l1_diff": seam_err,
+                "skin_metrics": skin_metrics,
+                "quality_report": report,
+            }
+
 
 # Backward-compatible alias
 PortraitIdentityPipeline = ModelGenerationPipeline
