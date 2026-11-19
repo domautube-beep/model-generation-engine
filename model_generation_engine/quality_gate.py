@@ -68,7 +68,7 @@ class QualityGateAuditor:
         vec = self._sface_sess.run(None, {self._sface_sess.get_inputs()[0].name: blob})[0][0]
         return vec / (float(np.linalg.norm(vec)) + 1e-8)
 
-    def _get_cached_reference_bundle(self, ref_bgr: np.ndarray) -> Tuple[object, Optional[np.ndarray], Optional[dict]]:
+    def _get_cached_reference_bundle(self, ref_bgr: np.ndarray) -> Tuple[object, Optional[np.ndarray], Optional[dict], Optional[dict]]:
         import hashlib
 
         h_key = hashlib.blake2b(
@@ -80,12 +80,16 @@ class QualityGateAuditor:
         ref_face = self.detector.detect(ref_bgr)
         ref_vec = self._extract_sface_vec(ref_bgr, ref_face)
         ref_sh = None
+        ref_cran = None
         try:
             ref_pil = Image.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB))
-            ref_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(ref_pil))
+            marks = self.apple_vision.landmarks(ref_pil)
+            ref_sh = self.apple_vision.compute_face_shape(marks)
+            ref_cran = self.apple_vision.compute_cranial_and_scale_profile(ref_pil, marks=marks)
         except Exception:
             ref_sh = None
-        bundle = (ref_face, ref_vec, ref_sh)
+            ref_cran = None
+        bundle = (ref_face, ref_vec, ref_sh, ref_cran)
         if len(self._ref_cache) > 64:
             self._ref_cache.clear()
         self._ref_cache[h_key] = bundle
@@ -288,7 +292,7 @@ class QualityGateAuditor:
         id_sim: Optional[float] = None
         shape_note = ""
         if reference_face_bgr is not None:
-            ref_face, ref_vec, ref_sh = self._get_cached_reference_bundle(reference_face_bgr)
+            ref_face, ref_vec, ref_sh, ref_cran = self._get_cached_reference_bundle(reference_face_bgr)
             tilt_diff = abs(float(face.eye_tilt_degrees) - float(ref_face.eye_tilt_degrees))
             yaw_diff = abs(float(ref_face.yaw_asymmetry_ratio) - float(face.yaw_asymmetry_ratio))
 
@@ -325,6 +329,21 @@ class QualityGateAuditor:
                 shape_note = str(cmp.get("note", ""))
                 if not cmp.get("passed", True):
                     failures.append(f"Face shape proportion drift exceeded {eff_shape_lim}%: {shape_note}")
+
+                # Gate 10: Cranial Dome & 8-Head Editorial Face-to-Shoulder Scale Audit on full canvas!
+                full_pil = Image.fromarray(cv2.cvtColor(canvas_5k_bgr, cv2.COLOR_BGR2RGB))
+                dst_cran = self.apple_vision.compute_cranial_and_scale_profile(full_pil)
+                cran_cmp = self.apple_vision.compare_cranial_and_scale(
+                    ref_cran if yaw_diff <= 0.24 else None,
+                    dst_cran,
+                    max_face_to_shoulder=self.config.max_editorial_face_to_shoulder_ratio,
+                    max_dome_diff_pct=self.config.max_cranial_dome_diff_pct + (6.0 if tilt_diff >= 8.0 else 0.0),
+                )
+                if cran_cmp.get("note"):
+                    shape_note = f"{shape_note} · {cran_cmp['note']}".strip(" ·")
+                if not cran_cmp.get("passed", True):
+                    for iss in cran_cmp.get("issues", []):
+                        failures.append(str(iss))
             except Exception:
                 pass
 

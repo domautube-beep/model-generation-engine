@@ -197,6 +197,8 @@ class EngineConfig:
     min_inter_ocular_5k_px: float = 40.0
     auto_facelock_below_iod_5k_px: float = 0.0
     max_face_shape_diff_pct: float = 6.5
+    max_editorial_face_to_shoulder_ratio: float = 0.375
+    max_cranial_dome_diff_pct: float = 18.0
     min_identity_cosine_sim: float = 0.65
     auto_restore_distant_face_iod_px: float = 0.0
     max_specular_glare_ratio: float = 0.04

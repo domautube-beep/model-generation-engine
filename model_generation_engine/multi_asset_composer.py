@@ -163,6 +163,7 @@ class SceneLocationInput:
     lighting_note: str = ""
     scope: str = "scene_and_mood"
     override_yaw_deg: Optional[float] = None
+    erase_foreign_person: bool = True
 
 
 @dataclass
@@ -211,6 +212,21 @@ class MultiSceneBatchComposer:
             out_path.unlink(missing_ok=True)
             return src_path, 0
         return out_path, masked_count
+
+    def _prepare_clean_location_copy(
+        self, src_path: Path, work_dir: Path, prefix: str, erase_person: bool = True
+    ) -> Tuple[Path, int]:
+        bgr = cv2.imread(str(src_path))
+        if bgr is None:
+            raise FileNotFoundError(f"Cannot read location image: {src_path}")
+        if erase_person:
+            out_path = work_dir / f"{prefix}_{src_path.stem}_clean.jpg"
+            _, cov_pct = self.turnaround.erase_foreign_person_completely(bgr, output_clean_path=out_path)
+            if cov_pct < 0.05:
+                out_path.unlink(missing_ok=True)
+                return src_path, 0
+            return out_path, 1
+        return self._prepare_masked_copy(src_path, work_dir, prefix)
 
     @staticmethod
     def compile_styling_architecture(
@@ -322,6 +338,7 @@ class MultiSceneBatchComposer:
         cohesion_mode: str = "auto",
         attach_previz_image: bool = False,  # HARD DEFAULT FALSE (`1원본들 → 1생성`: never pollute `--image` with synthetic wireframes)
         require_complete_8dir_bank: bool = True,  # HARD VERIFIER: blocks scene composition if 8-direction bank is incomplete!
+        pure_gen0_max_delta_deg: float = 35.0,  # Within ±35 deg of Gen-0, attach ONLY untouched full-shoulder Gen-0 (0% synthetic dilution!)
     ) -> List[ComposedSceneJob]:
         """Compose `len(locations) * len(poses)` pure `1원본들 → 1생성` scene jobs attaching Verified 8-Direction Bank + Gen-0 + Raw Assets."""
         if not locations:
@@ -408,8 +425,8 @@ class MultiSceneBatchComposer:
             )
 
             if loc.image_path is not None and Path(loc.image_path).exists():
-                loc_img_prepared, loc_masked_cnt = self._prepare_masked_copy(
-                    Path(loc.image_path), stage_dir, f"loc{loc_idx:02d}"
+                loc_img_prepared, loc_masked_cnt = self._prepare_clean_location_copy(
+                    Path(loc.image_path), stage_dir, f"loc{loc_idx:02d}", erase_person=loc.erase_foreign_person
                 )
                 self.origin_guard.register_approved_origin(loc_img_prepared, kind="raw_asset")
 
@@ -493,21 +510,27 @@ class MultiSceneBatchComposer:
                 ordered_imgs: List[Dict[str, str]] = []
                 role_clauses: List[str] = []
 
-                # ── FACE ANCHORS (SLOT #1 = PURE Gen-0 REAL CAMERA MACRO, SLOT #2 = ANGLE-MATCHED 8-DIR, SLOT #3 = 8-DIR SHEET) ──
+                # ── FACE ANCHORS: UNTOUCHED FULL-CROWN+SHOULDER Gen-0 ORIGIN ALONE WHEN <= 35 DEG DELTA (ZERO 2-HOP DILUTION!) ──
                 ordered_imgs.append(
                     {
-                        "path": str(gen0_macro_path),
+                        "path": str(canonical_front_path),
                         "role": "identity_primary_front",
-                        "label": f"Untouched Gen-0 real camera close-up portrait ({blueprint.source_signed_yaw_deg:+.1f} deg)",
+                        "label": f"Untouched Gen-0 real camera head-and-shoulders portrait ({blueprint.source_signed_yaw_deg:+.1f} deg)",
                     }
                 )
                 role_clauses.append(
-                    "Image 1 (SUPREME-IDENTITY-AUTHORITY — PURE Gen-0 REAL CAMERA PORTRAIT): untouched real camera close-up of the "
-                    "exact target person—100% absolute ground-truth authority for exact cheek fullness, jawline width, eye shape, "
-                    "eyelid crease, nose bridge/tip roundness, philtrum length, lip shape/color, authentic iris color, head-fixed "
-                    "hair parting/ear-tuck, and unretouched real-camera skin realism (discard its studio flash and collar)"
+                    "Image 1 (SUPREME-IDENTITY-AND-CRANIAL-AUTHORITY — UNTOUCHED Gen-0 REAL CAMERA PORTRAIT): untouched real "
+                    "camera head-and-shoulders photograph of the exact target person—100% absolute ground-truth authority for "
+                    "exact cranial dome silhouette, forehead hairline height, natural crown root thickness, temporal skull and "
+                    "side-hair breadth, cheek fullness, eyebrow lightness, eyelid crease, rounded nose tip, philtrum, lip contour, "
+                    "authentic iris color, and unretouched skin realism (discard its original collar/pinstripes and studio backdrop, "
+                    "and calibrate head-to-shoulder scale to 7.8-to-8-head editorial distance where facial width is ~31% of shoulder span)"
                 )
-                if len(id_refs) > 1:
+
+                angular_delta = abs(float(pose.head_azimuth_deg) - float(blueprint.source_signed_yaw_deg))
+                needs_steep_rotation_bridge = angular_delta > float(pure_gen0_max_delta_deg)
+
+                if needs_steep_rotation_bridge and len(id_refs) > 1:
                     ordered_imgs.append(
                         {
                             "path": str(id_refs[1]),
@@ -517,24 +540,22 @@ class MultiSceneBatchComposer:
                     )
                     role_clauses.append(
                         f"Image 2 (3D-ROTATION-GEOMETRY-ANCHOR — {matched_view.upper()}, {pose.head_azimuth_deg:+.1f} deg): "
-                        "approved target-angle portrait from the 8-Direction Turnaround Bank—use ONLY for 3D horizontal head rotation "
-                        "foreshortening and side silhouette while locking 100% of facial identity, cheek volume, and eyes/nose/lips "
-                        "to Image 1 (discard its studio flash and grey studio top)"
+                        "approved steep-angle portrait from the 8-Direction Turnaround Bank—use ONLY for 3D side-profile "
+                        "foreshortening while locking 100% of facial identity, cranial dome, and cheek volume to Image 1 "
+                        "(discard its studio flash and grey studio top)"
                     )
-
-                if resolved_sheet_path is not None:
-                    ordered_imgs.append(
-                        {
-                            "path": str(resolved_sheet_path),
-                            "role": "identity_8dir_master_sheet",
-                            "label": "Complete -90°..+90° 8-Direction Facial Turnaround Sheet",
-                        }
-                    )
-                    role_clauses.append(
-                        f"Image {len(ordered_imgs)} (8-DIRECTION-MASTER-TURNAROUND-SHEET): full -90 deg to +90 deg 8-direction "
-                        "reference sheet of this exact person confirming 3D craniofacial consistency across all angles "
-                        "(render ONE single person in the scene, never a multi-panel grid, and discard its white studio backdrop)"
-                    )
+                    if resolved_sheet_path is not None:
+                        ordered_imgs.append(
+                            {
+                                "path": str(resolved_sheet_path),
+                                "role": "identity_8dir_master_sheet",
+                                "label": "Complete -90°..+90° 8-Direction Facial Turnaround Sheet",
+                            }
+                        )
+                        role_clauses.append(
+                            f"Image {len(ordered_imgs)} (8-DIRECTION-MASTER-TURNAROUND-SHEET): full -90 deg to +90 deg 8-direction "
+                            "reference sheet confirming 3D profile consistency (render ONE single person in the scene, never a grid)"
+                        )
 
                 # ── RAW ORIGINAL STYLING ASSETS (`1원본들 → 1생성`: pass every raw item original directly!) ──
                 has_catalog_items = False
@@ -571,12 +592,18 @@ class MultiSceneBatchComposer:
                             "label": f"Original Location / Style Reference ({loc.name})",
                         }
                     )
-                    mask_hint = (
-                        " (a solid ambient-colored privacy rectangle covers a foreign person's face in this reference—NEVER render "
-                        "any rectangle/box; place our subject from Image 1 naturally in that space)"
-                        if loc_masked_cnt > 0
-                        else ""
-                    )
+                    if loc_masked_cnt > 0 and loc.erase_foreign_person:
+                        mask_hint = (
+                            " (any previous person in this scene was seamlessly removed into an empty seat/space—place our subject "
+                            "from Image 1 naturally into that empty seat/space)"
+                        )
+                    elif loc_masked_cnt > 0:
+                        mask_hint = (
+                            " (a solid ambient-colored privacy rectangle covers a foreign person's face in this reference—NEVER render "
+                            "any rectangle/box; place our subject from Image 1 naturally in that space)"
+                        )
+                    else:
+                        mask_hint = ""
                     if loc.scope == "style_mood_only":
                         role_clauses.append(
                             f"Image {len(ordered_imgs)} (STYLE-MOOD-ORIGIN): primary authority for living lighting direction, "
@@ -615,14 +642,15 @@ class MultiSceneBatchComposer:
                 )
                 post_master_key = rad_spec.film_id if cohesion_mode in {"auto", ""} else cohesion_mode
 
+                id_anchor_ref_txt = "Image 1 & Image 2" if (needs_steep_rotation_bridge and len(id_refs) > 1) else "Image 1"
                 prompt = (
                     f"{optical_header} "
                     "CRITICAL MANDATORY RULE — 1-ORIGINALS-TO-1-GENERATION REAL IDENTITY LOCK + HIERARCHICAL LAYERING + SCALE LOCK: "
                     f"Create ONE single photorealistic {aspect_ratio_label} real-photo editorial image of the {subject.subject_identity_label} "
-                    "whose exact face at this angle is shown in Image 1 (confirmed by the 0-degree original & 8-Direction Turnaround Sheet). "
+                    "whose exact face and cranial silhouette are shown in Image 1. "
                     "Attached Original Reference Roles: " + "; ".join(role_clauses) + ". "
                     f"Identity & Eyewear Continuity: Preserve {subject.facial_identity_descriptor()}. "
-                    "Do NOT invent a generic model face—lock 100% onto the exact person in Image 1 & Image 2 with authentic iris color "
+                    f"Do NOT invent a generic model face—lock 100% onto the exact person in {id_anchor_ref_txt} with authentic iris color "
                     "(zero green or purple lens-coating tint), natural 3D head pitch/tilt inclination from the neck, and if eyewear is worn, "
                     "render both temple arms continuously over the ears. "
                     f"{blueprint.to_3d_invariance_clause()} "

@@ -410,8 +410,8 @@ class SingleLensRadiometricSpec:
 
         return (
             "CRITICAL DIRECTOR-OF-PHOTOGRAPHY LIGHT, ILLUMINANCE, TEXTURE & DEPTH LAWS: "
-            "1) LIVING LIGHT FLOW & ILLUMINANCE (빛의 흐름 · 밝기 · 조도 · 명암): Images 1–3 (face anchors) were shot under flat studio flash—"
-            "take ONLY 3D craniofacial bone structure, hair, eyewear silhouette, and real camera skin realism; 100% discard their studio flash "
+            "1) LIVING LIGHT FLOW & ILLUMINANCE (빛의 흐름 · 밝기 · 조도 · 명암): The identity portrait in Image 1 was shot under flat studio flash—"
+            "take ONLY 3D craniofacial bone structure, cranial dome silhouette, hair, eyewear silhouette, and real camera skin realism; 100% discard its studio flash "
             f"and relight under {self.key_light_vector}. {shadow_side_rule}. "
             f"{item_relight_rule}{placed_prop_rule} "
             "3) TRUE WHITE BALANCE & COLOR HARMONY (자연스러운 화이트밸런스와 색감 · 이상한 노란끼 금지): "
@@ -420,7 +420,7 @@ class SingleLensRadiometricSpec:
             f"4) THREE-PLANE SPATIAL DEPTH & LENS DOF ({ap} 심도의 예술): Apply {dof_desc}. Frame with genuine architectural depth "
             "(subtle softly defocused foreground cue, crisp focal plane on the subject's eyes, and calm spatial recession behind) "
             "in an uncluttered, authentic real-world space free of cliché staged props. "
-            "5) UNRETOUCHED REAL-CAMERA SKIN & HAIR: Match the organic real-camera pixel smoothness of Image 2—natural skin tone and "
+            "5) UNRETOUCHED REAL-CAMERA SKIN & HAIR: Match the organic real-camera pixel smoothness of Image 1—natural skin tone and "
             "subtle real texture where light touches, without repeated artificial pores, wire-sharp hair strands, or oversharpening."
         )
 

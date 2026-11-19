@@ -179,7 +179,7 @@ def resolve_8angle_view_from_azimuth(yaw_deg: float) -> str:
 
 @dataclass(frozen=True)
 class AnatomicalBlueprint:
-    """Measured craniofacial ratio profile extracted directly from a real reference photograph."""
+    """Measured craniofacial + above-eyebrow cranial dome & hairline ratio profile extracted from a real reference photograph."""
 
     eye_to_chin_ratio: float
     width_to_length_ratio: float
@@ -189,19 +189,32 @@ class AnatomicalBlueprint:
     source_yaw_asymmetry: float
     face_area_fraction: float
     source_signed_yaw_deg: float = 0.0
+    crown_to_eye_chin_ratio: float = 1.02
+    forehead_to_eye_chin_ratio: float = 0.65
+    crown_root_thickness_ratio: float = 0.36
+    cranial_to_face_width_ratio: float = 1.30
+    left_hair_lobe_ratio: float = 0.14
+    right_hair_lobe_ratio: float = 0.14
 
     def to_3d_invariance_clause(self) -> str:
-        """Emit a gender-neutral, firewall-safe 3D Euclidean bone & soft-tissue cheek fullness invariance specification."""
+        """Emit a gender-neutral, firewall-safe 3D Craniofacial + Cranial Dome + 8-Head Editorial Scale Lock specification."""
         return (
-            f"Measured 3D Craniofacial & Soft-Tissue Lock (vertical eye-to-menton index {self.eye_to_chin_ratio:.3f}, "
-            f"cheek-width-to-length aspect index {self.width_to_length_ratio:.3f}, "
-            f"inter-ocular-to-cranial index {self.iod_to_bbox_width_ratio:.3f}, "
-            f"oral-to-ocular span index {self.mouth_to_eye_width_ratio:.3f}, "
+            f"Measured 3D Craniofacial, Cranial Dome & Hairline Lock (vertical eye-to-menton index {self.eye_to_chin_ratio:.3f}, "
+            f"cheek-width-to-length index {self.width_to_length_ratio:.3f}, "
+            f"upper-cranium-to-menton dome index {self.crown_to_eye_chin_ratio:.3f}, "
+            f"forehead hairline height index {self.forehead_to_eye_chin_ratio:.3f}, "
+            f"crown root thickness index {self.crown_root_thickness_ratio:.3f}, "
+            f"outer-cranial-to-cheek breadth index {self.cranial_to_face_width_ratio:.3f}, "
+            f"left/right temporal hair lobe margins {self.left_hair_lobe_ratio:.2f}/{self.right_hair_lobe_ratio:.2f}, "
+            f"inter-ocular index {self.iod_to_bbox_width_ratio:.3f}, "
+            f"oral-to-ocular index {self.mouth_to_eye_width_ratio:.3f}, "
             f"source portrait angle {self.source_signed_yaw_deg:+.1f} deg): "
-            "maintain strict 1:1 craniofacial and soft-tissue identity across camera angles—preserve exact natural cheek volume "
-            "and jaw width without altering facial breadth, preserve exact eye corner slant and eyelid crease, "
-            "exact nasal bridge height and rounded tip shape, exact philtrum length, exact lip contour, authentic iris color, "
-            "and head-fixed hair parting/ear-tuck geometry relative to the subject's own left/right ears."
+            "maintain strict 1:1 craniofacial and cranial-dome identity—preserve exact forehead height and hairline contour without "
+            "compressing the forehead, preserve exact natural crown root thickness without inflating wig-like top volume, preserve "
+            "exact temporal skull and side-hair breadth (including head-fixed parting and ear-tuck asymmetry), preserve exact natural "
+            "cheek volume, eyebrow tone, eyelid crease, nasal bridge and rounded tip, philtrum length, and lip contour; "
+            "enforce perspective-calibrated 7.8-to-8-head editorial body proportion where facial breadth measures ~31% of full "
+            "bi-deltoid shoulder span (compensating close-up reference camera perspective so head scale never inflates relative to shoulders)."
         )
 
 
@@ -573,6 +586,12 @@ class RealPersonTurnaroundEngine:
 
         eye_chin = 1.65
         width_len = 1.15
+        crown_ec = 1.02
+        forehead_ec = 0.65
+        crown_root = 0.36
+        cranial_fw = 1.30
+        l_lobe = 0.14
+        r_lobe = 0.14
         try:
             pil_img = Image.fromarray(cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB))
             marks = self.apple_vision.landmarks(pil_img)
@@ -581,6 +600,14 @@ class RealPersonTurnaroundEngine:
                 eye_chin = float(shape.get("eyeChin", eye_chin))
                 width_len = float(shape.get("normWidthLength", shape.get("widthLength", width_len)))
                 signed_yaw_deg = float(np.clip(float(shape.get("turn", 0.0)) * 95.0, -90.0, 90.0))
+            cran = self.apple_vision.compute_cranial_and_scale_profile(pil_img, marks=marks)
+            if cran:
+                crown_ec = float(cran.get("crownToEyeChinRatio", crown_ec))
+                forehead_ec = float(cran.get("foreheadToEyeChinRatio", forehead_ec))
+                crown_root = float(cran.get("crownRootThicknessRatio", crown_root))
+                cranial_fw = float(cran.get("cranialToFaceWidthRatio", cranial_fw))
+                l_lobe = float(cran.get("leftHairLobeRatio", l_lobe))
+                r_lobe = float(cran.get("rightHairLobeRatio", r_lobe))
         except Exception:
             pass
 
@@ -593,6 +620,12 @@ class RealPersonTurnaroundEngine:
             source_yaw_asymmetry=face.yaw_asymmetry_ratio,
             face_area_fraction=face_frac,
             source_signed_yaw_deg=round(signed_yaw_deg, 1),
+            crown_to_eye_chin_ratio=crown_ec,
+            forehead_to_eye_chin_ratio=forehead_ec,
+            crown_root_thickness_ratio=crown_root,
+            cranial_to_face_width_ratio=cranial_fw,
+            left_hair_lobe_ratio=l_lobe,
+            right_hair_lobe_ratio=r_lobe,
         )
 
     def prepare_canonical_identity_anchor(

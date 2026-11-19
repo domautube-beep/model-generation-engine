@@ -215,3 +215,167 @@ class AppleVisionAnalyzer:
             "limitPct": eff_lim,
             "note": f"원본 대비 눈~턱 {length_diff:+}% · 볼폭/길이 {ratio_diff:+}%",
         }
+
+    def compute_cranial_and_scale_profile(
+        self,
+        raw_or_pil: Image.Image,
+        marks: Optional[Dict[str, List[List[float]]]] = None,
+    ) -> Optional[Dict[str, object]]:
+        """Measure above-eyebrow Cranial Dome (forehead height, crown root thickness, outer cranial width, L/R hair lobe) + Face-to-Shoulder scale."""
+        import cv2
+        import numpy as np
+
+        pil_rgb = ImageOps.exif_transpose(raw_or_pil).convert("RGB")
+        orig_w, orig_h = pil_rgb.size
+        scale = min(1.0, 1024.0 / float(max(orig_w, orig_h)))
+        work_pil = (
+            pil_rgb.resize((max(32, int(round(orig_w * scale))), max(32, int(round(orig_h * scale)))), Image.Resampling.BILINEAR)
+            if scale < 1.0
+            else pil_rgb
+        )
+        w, h = work_pil.size
+        eff_marks = self.landmarks(work_pil) if (marks is None or scale < 1.0) else marks
+        if not eff_marks or not eff_marks.get("contour") or not (eff_marks.get("leftPupil") or eff_marks.get("leftEye")):
+            return None
+
+        lp_pts = eff_marks.get("leftPupil") or eff_marks.get("leftEye")
+        rp_pts = eff_marks.get("rightPupil") or eff_marks.get("rightEye")
+        if not lp_pts or not rp_pts:
+            return None
+        lp = (sum(p[0] for p in lp_pts) / len(lp_pts), sum(p[1] for p in lp_pts) / len(lp_pts))
+        rp = (sum(p[0] for p in rp_pts) / len(rp_pts), sum(p[1] for p in rp_pts) / len(rp_pts))
+        mid_x, mid_y = 0.5 * (lp[0] + rp[0]), 0.5 * (lp[1] + rp[1])
+        contour = eff_marks["contour"]
+        chin_y = max(p[1] for p in contour)
+        fx_min, fx_max = min(p[0] for p in contour), max(p[0] for p in contour)
+        fw = max(1.0, fx_max - fx_min)
+        eye_to_chin = max(1.0, chin_y - mid_y)
+
+        pm = self.person_mask(work_pil)
+        if pm is None:
+            return None
+        pm_arr = np.array(pm.resize((w, h), Image.Resampling.BILINEAR)) > 120
+
+        # 1. Crown top y directly above pupil midpoint
+        cx1 = max(0, int(round(mid_x - 0.25 * fw)))
+        cx2 = min(w, int(round(mid_x + 0.25 * fw)))
+        ys_top = np.where(pm_arr[: max(1, int(round(mid_y))), cx1:cx2])[0]
+        crown_y = float(ys_top.min()) if len(ys_top) > 0 else max(0.0, mid_y - eye_to_chin)
+        crown_clipped = crown_y <= 3.0
+        crown_to_eye = (mid_y - crown_y) / eye_to_chin
+
+        # 2. Universal self-referenced CIE LAB hairline detector (compares upward strip against subject's own glabella skin!)
+        rgb_np = np.asarray(work_pil, dtype=np.uint8)
+        lab_np = cv2.cvtColor(rgb_np, cv2.COLOR_RGB2LAB).astype(np.float32)
+        glab_y1 = max(0, int(round(mid_y - 0.28 * eye_to_chin)))
+        glab_y2 = max(glab_y1 + 2, int(round(mid_y - 0.16 * eye_to_chin)))
+        sx1 = max(0, int(round(mid_x - 0.10 * fw)))
+        sx2 = min(w, max(sx1 + 2, int(round(mid_x + 0.10 * fw))))
+        glab_patch = lab_np[glab_y1:glab_y2, sx1:sx2]
+        skin_ref = np.median(glab_patch.reshape(-1, 3), axis=0) if glab_patch.size >= 3 else np.array([150.0, 132.0, 136.0])
+
+        hairline_y = crown_y
+        scan_start = max(int(round(crown_y)), int(round(mid_y - 0.24 * eye_to_chin)))
+        for yy in range(scan_start, max(0, int(round(crown_y))) - 1, -1):
+            row_med = np.median(lab_np[yy, sx1:sx2], axis=0)
+            dist_lab = float(np.linalg.norm(row_med - skin_ref))
+            if dist_lab >= 18.0:
+                hairline_y = float(yy)
+                break
+
+        forehead_ratio = float(np.clip((mid_y - hairline_y) / eye_to_chin, 0.35, 1.15))
+        crown_root_ratio = float(np.clip((hairline_y - crown_y) / eye_to_chin, 0.0, 0.85))
+
+        # 3. Outer cranial + temporal hair width at upper-temple level (`mid_y - 0.10 * eye_to_chin`)
+        ty = max(0, min(h - 1, int(round(mid_y - 0.10 * eye_to_chin))))
+        # Restrict horizontal search to connected head region around mid_x (`mid_x ± 1.15 * fw`) so raised hands don't count as skull!
+        hx1 = max(0, int(round(mid_x - 1.15 * fw)))
+        hx2 = min(w, int(round(mid_x + 1.15 * fw)))
+        xs_head = np.where(pm_arr[ty, hx1:hx2])[0]
+        if len(xs_head) > 0:
+            hl_x = float(hx1 + xs_head.min())
+            hr_x = float(hx1 + xs_head.max())
+            cranial_w = max(fw, hr_x - hl_x)
+            left_lobe = max(0.0, fx_min - hl_x) / fw
+            right_lobe = max(0.0, hr_x - fx_max) / fw
+        else:
+            cranial_w = fw * 1.25
+            left_lobe, right_lobe = 0.12, 0.12
+        cranial_to_face_w = float(np.clip(cranial_w / fw, 1.0, 2.0))
+
+        # 4. Perspective- & 3D-Yaw-Normalized Bi-deltoid Shoulder Span at `chin_y + 0.85 * fw`
+        eyes_px = max(1.0, math.dist(lp, rp))
+        nose_pts = eff_marks.get("nose") or []
+        nose_x = (sum(p[0] for p in nose_pts) / len(nose_pts)) if nose_pts else mid_x
+        turn_est = (nose_x - mid_x) / eyes_px
+        # When torso/head rotates toward profile, projected 2D shoulder span foreshortens by ~cos(yaw)
+        cos_torso = math.sqrt(max(0.58, 1.0 - min(0.42, (turn_est * 1.25) ** 2)))
+
+        sh_y1 = int(round(chin_y + 0.75 * fw))
+        sh_y2 = min(h - 1, int(round(chin_y + 1.55 * fw)))
+        shoulders_in_frame = False
+        face_to_shoulder = 0.32
+        if sh_y2 < int(h * 0.95) and sh_y2 > sh_y1 + 4 and (fw / float(min(w, h))) < 0.24:
+            tx1 = max(0, int(round(mid_x - 2.25 * fw)))
+            tx2 = min(w, int(round(mid_x + 2.25 * fw)))
+            band_mask = np.any(pm_arr[sh_y1:sh_y2, tx1:tx2], axis=0)
+            xs_torso = np.where(band_mask)[0]
+            if len(xs_torso) >= 10:
+                tl_x, tr_x = float(tx1 + xs_torso.min()), float(tx1 + xs_torso.max())
+                if tl_x > w * 0.03 and tr_x < w * 0.97:
+                    shoulders_in_frame = True
+                    raw_fts = float(fw / max(fw, tr_x - tl_x))
+                    face_to_shoulder = raw_fts * cos_torso
+
+        return {
+            "crownToEyeChinRatio": round(crown_to_eye, 3),
+            "foreheadToEyeChinRatio": round(forehead_ratio, 3),
+            "crownRootThicknessRatio": round(crown_root_ratio, 3),
+            "cranialToFaceWidthRatio": round(cranial_to_face_w, 3),
+            "leftHairLobeRatio": round(left_lobe, 3),
+            "rightHairLobeRatio": round(right_lobe, 3),
+            "crownClipped": crown_clipped,
+            "shouldersInFrame": shoulders_in_frame,
+            "faceToShoulderRatio": round(face_to_shoulder, 3),
+        }
+
+    @staticmethod
+    def compare_cranial_and_scale(
+        ref_cranial: Optional[Dict[str, object]],
+        dst_cranial: Optional[Dict[str, object]],
+        max_face_to_shoulder: float = 0.365,
+        max_dome_diff_pct: float = 18.0,
+    ) -> Dict[str, object]:
+        """Audit 8-Head Face-to-Shoulder Scale (rejecting big-head inflation) and Cranial Dome height/width invariance."""
+        if not dst_cranial:
+            return {"passed": True, "note": "두상 미계측"}
+
+        issues: List[str] = []
+        notes: List[str] = []
+
+        if bool(dst_cranial.get("shouldersInFrame")):
+            fts = float(dst_cranial["faceToShoulderRatio"])
+            notes.append(f"어깨대비얼굴 {fts * 100:.1f}%")
+            if fts > max_face_to_shoulder:
+                issues.append(
+                    f"대두 비율 발생 (어깨 대비 얼굴 폭 {fts * 100:.1f}% > 최대 {max_face_to_shoulder * 100:.1f}% — 7.5~8등신 소두 비율 위반)"
+                )
+
+        if ref_cranial and not bool(ref_cranial.get("crownClipped")) and not bool(dst_cranial.get("crownClipped")):
+            r_dome = max(0.4, float(ref_cranial["crownToEyeChinRatio"]))
+            d_dome = float(dst_cranial["crownToEyeChinRatio"])
+            dome_diff = (d_dome / r_dome - 1.0) * 100.0
+            r_cw = max(1.0, float(ref_cranial["cranialToFaceWidthRatio"]))
+            d_cw = float(dst_cranial["cranialToFaceWidthRatio"])
+            cw_diff = (d_cw / r_cw - 1.0) * 100.0
+            notes.append(f"상두상높이 {dome_diff:+.1f}% · 두상가로폭 {cw_diff:+.1f}%")
+            if abs(dome_diff) > max_dome_diff_pct:
+                issues.append(f"상두상/정수리 볼륨 왜곡 ({dome_diff:+.1f}%, 허용 ±{max_dome_diff_pct:.0f}%)")
+            if abs(cw_diff) > max_dome_diff_pct:
+                issues.append(f"옆두상 가로폭 왜곡 ({cw_diff:+.1f}%, 허용 ±{max_dome_diff_pct:.0f}%)")
+
+        return {
+            "passed": len(issues) == 0,
+            "issues": issues,
+            "note": " · ".join(notes),
+        }

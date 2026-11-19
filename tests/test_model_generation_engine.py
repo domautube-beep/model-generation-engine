@@ -981,7 +981,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                 p.write_bytes(canon_path.read_bytes())
                 bank[v] = p
 
-            # 1. Verify all 8-direction face anchors + 8-direction Master Sheet are attached automatically!
+            # 1a. Within ±35 deg of Gen-0: Pure Gen-0 Single-Anchor Isolation (ZERO synthetic 8-dir dilution!)
             pipe.batch_composer.origin_guard = guard
             jobs = pipe.batch_composer.compose_batch(
                 canonical_front_path=canon_path,
@@ -994,8 +994,22 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             )
             self.assertEqual(len(jobs), 1)
             self.assertTrue(jobs[0].direction_source.startswith("auto_"))
-            roles = [r["role"] for r in jobs[0].ordered_reference_images]
-            self.assertIn("identity_8dir_master_sheet", roles)
+            roles_front = [r["role"] for r in jobs[0].ordered_reference_images]
+            self.assertEqual(roles_front[0], "identity_primary_front")
+            self.assertNotIn("identity_8dir_master_sheet", roles_front)
+
+            # 1b. Steep side rotation (> 35 deg, e.g. -67.5 deg): attaches 1-Hop 8-direction bridge + master sheet!
+            jobs_steep = pipe.batch_composer.compose_batch(
+                canonical_front_path=canon_path,
+                subject=SubjectProfile(subject_identity_label="Subject"),
+                locations=[SceneLocationInput(name="steep_loc", mood_or_place_prompt="quiet studio", override_yaw_deg=-67.5)],
+                poses=[PosePrevizSpec(head_azimuth_deg=-67.5)],
+                angle_bank=bank,
+                face_direction_mode="manual",
+                work_dir=tmp / "steep_stage",
+            )
+            roles_steep = [r["role"] for r in jobs_steep[0].ordered_reference_images]
+            self.assertIn("identity_8dir_master_sheet", roles_steep)
 
             # 2. Verify 1-Job-1-Generation single-shot lock
             guard.verify_one_shot_and_inputs([canon_path], job_id="job_alpha_001")
@@ -1402,6 +1416,48 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             relit_out, r_meta = pipe.relit_integrator.integrate_relit_face(face_bgr, darker_warm_scene)
             self.assertEqual(relit_out.shape, face_bgr.shape)
             self.assertLess(float(r_meta["seamL1Diff"]), 3.5)
+
+    def test_24_v6_cranial_dome_8head_scale_and_pure_gen0_single_pass(self) -> None:
+        """Verify v6.0 Cranial Dome (forehead, crown root, outer cranial width) blueprint + Gate 10 8-Head Face-to-Shoulder Gate."""
+        from PIL import Image
+        from model_generation_engine import ModelGenerationPipeline, PromptFirewall
+
+        pipe = ModelGenerationPipeline(self.config)
+        face_bgr = cv2.imread(str(self.ref_face))
+        bp = pipe.turnaround.extract_anatomical_blueprint(face_bgr)
+        self.assertGreater(bp.crown_to_eye_chin_ratio, 0.50)
+        self.assertGreater(bp.forehead_to_eye_chin_ratio, 0.35)
+        self.assertGreater(bp.cranial_to_face_width_ratio, 1.00)
+        clause = bp.to_3d_invariance_clause()
+        PromptFirewall.validate_prompt(clause)
+        self.assertIn("31%", clause)
+
+        # Verify compare_cranial_and_scale rejects inflated big-head (>36.5% face-to-shoulder) and passes 31% 8-head scale
+        ref_c = {"crownToEyeChinRatio": 1.02, "cranialToFaceWidthRatio": 1.30, "crownClipped": False}
+        bad_big_head = {
+            "crownToEyeChinRatio": 1.03,
+            "cranialToFaceWidthRatio": 1.31,
+            "crownClipped": False,
+            "shouldersInFrame": True,
+            "faceToShoulderRatio": 0.395,
+        }
+        good_8head = {
+            "crownToEyeChinRatio": 1.03,
+            "cranialToFaceWidthRatio": 1.30,
+            "crownClipped": False,
+            "shouldersInFrame": True,
+            "faceToShoulderRatio": 0.315,
+        }
+        cmp_bad = pipe.apple_vision.compare_cranial_and_scale(ref_c, bad_big_head, max_face_to_shoulder=0.365)
+        self.assertFalse(cmp_bad["passed"])
+        self.assertIn("대두 비율", cmp_bad["note"] + " ".join(cmp_bad["issues"]))
+
+        cmp_ok = pipe.apple_vision.compare_cranial_and_scale(ref_c, good_8head, max_face_to_shoulder=0.365)
+        self.assertTrue(cmp_ok["passed"])
+
+        pil_rgb = Image.fromarray(cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB))
+        cran_prof = pipe.apple_vision.compute_cranial_and_scale_profile(pil_rgb)
+        self.assertIsNotNone(cran_prof)
 
 
 if __name__ == "__main__":

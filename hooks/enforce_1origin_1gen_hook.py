@@ -16,7 +16,8 @@ from pathlib import Path
 FORBIDDEN_INPUT_PATTERNS = [
     (re.compile(r"(?:^|[/\\])live_test_", re.IGNORECASE), "생성된 테스트 결과물 재투입 금지"),
     (re.compile(r"(?:^|[/\\])(?:hero|5k_21x9|21x9|closeup|macro_verify)_", re.IGNORECASE), "생성된 5K/클로즈업 결과물 재투입 금지"),
-    (re.compile(r"(?:^|[/\\])(?:raw_batch|raw_scene|nb_raw|nb_dop|nb_subj|s03_crimson)_", re.IGNORECASE), "1차 장면 생성물 재투입 금지"),
+    (re.compile(r"(?:^|[/\\])(?:raw_batch|raw_scene|nb_raw|nb_dop|nb_subj|s03_crimson|exp_m|exp_final)_", re.IGNORECASE), "1차 장면 생성물 재투입 금지"),
+    (re.compile(r"upscayl4k_|_upscayl", re.IGNORECASE), "Upscayl 변형본을 다시 생성기 입력으로 넣는 다단계 변형 금지 (순수 원본만 입력할 것)"),
     (re.compile(r"composite_styling_board", re.IGNORECASE), "합성 스타일링 보드 금지 (개별 원본 에셋을 직접 전달할 것)"),
     (re.compile(r"(?:^|[/\\])previz_.*\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE), "3D 프리비즈 이미지 첨부 금지 (포즈 텍스트 + 8방향 얼굴 원본만 전달할 것)"),
     (re.compile(r"[/\\]batches[/\\][^/\\]+[/\\](?:raw_|hero_|closeup_)", re.IGNORECASE), "배치 출력물 재투입 금지"),
