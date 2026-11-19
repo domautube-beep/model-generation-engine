@@ -44,6 +44,109 @@
     ["r_knee", "r_ankle", "#a54bc3"],
   ];
 
+  const CATEGORY_UI_SCHEMA = {
+    garment: {
+      subRoles: [
+        ["outerwear", "겉옷 / 아우터 (자켓·코트·점퍼)"],
+        ["inner_top", "속옷 / 이너 상의 (티셔츠·셔츠·터틀넥)"],
+        ["mid_layer", "미들 레이어 (니트·베스트·가디건)"],
+        ["bottom", "하의 (슬랙스·데님·스커트)"],
+        ["one_piece", "한벌 (수트·원피스·셋업)"],
+      ],
+      modes: [
+        ["auto", "착용방식: 자동 레이어링 (속옷 보이게 자동 오픈)"],
+        ["open_layered", "앞여밈 오픈 (속 티셔츠/셔츠 노출)"],
+        ["closed_buttoned", "단추/지퍼 깔끔히 잠금"],
+        ["sleeves_rolled", "소매 자연스럽게 걷기"],
+        ["tucked_in", "상의를 하의 안에 넣어입기 (Tuck-in)"],
+        ["untucked_relaxed", "상의를 하의 밖으로 빼입기"],
+      ],
+    },
+    accessory: {
+      subRoles: [
+        ["watch_left", "손목시계 — 왼손목 (40mm 비례잠금·소매노출)"],
+        ["watch_right", "손목시계 — 오른손목 (40mm 비례잠금·소매노출)"],
+        ["eyewear", "안경 / 선글라스 (두상 폭 1:1·안경다리 연속)"],
+        ["necklace_tie_scarf", "넥타이 / 목걸이 / 스카프 (V존 비례)"],
+        ["jewelry_fine", "귀걸이 / 반지 / 팔찌 (1~2.5cm 미세 주얼리)"],
+        ["belt", "벨트 (3.2cm 버클 허리선 비례)"],
+        ["hat", "모자 / 헤드웨어 (두상 밀착)"],
+      ],
+      modes: [
+        ["auto", "스케일: 인체 대비 표준 실측 비율 잠금"],
+        ["delicate", "슬림 / 미니멀 스케일"],
+        ["bold", "볼드 / 포인트 스케일 (과장 금지)"],
+      ],
+    },
+    bag: {
+      subRoles: [
+        ["briefcase_tote", "토트백 / 브리프케이스 / 탑핸들백"],
+        ["shoulder_bag", "숄더백 / 호보백"],
+        ["crossbody_bag", "크로스백 / 메신저백"],
+        ["clutch_pouch", "클러치 / 파우치"],
+        ["backpack", "백팩"],
+      ],
+      modes: [
+        ["hand_right", "위치: 오른손으로 탑핸들 자연스럽게 들기"],
+        ["hand_left", "위치: 왼손으로 탑핸들 자연스럽게 들기"],
+        ["crook_right", "위치: 오른팔 팔꿈치 안쪽에 걸치기"],
+        ["crook_left", "위치: 왼팔 팔꿈치 안쪽에 걸치기"],
+        ["shoulder_right", "위치: 오른쪽 어깨에 숄더로 메기"],
+        ["shoulder_left", "위치: 왼쪽 어깨에 숄더로 메기"],
+        ["crossbody_l2r", "위치: 크로스백 (왼어깨 → 오른골반)"],
+        ["crossbody_r2l", "위치: 크로스백 (오른어깨 → 왼골반)"],
+        ["underarm_clutch", "위치: 옆구리/겨드랑이에 클러치로 끼기"],
+        ["backpack", "위치: 양쪽 어깨에 백팩 메기"],
+        ["placed_beside", "위치: 들지 않고 옆 바닥/테이블에 내려놓기"],
+      ],
+    },
+    shoe: {
+      subRoles: [
+        ["dress_shoes", "드레스 구두 / 더비 / 옥스퍼드"],
+        ["loafers", "로퍼 (페니·태슬)"],
+        ["sneakers", "미니멀 스니커즈"],
+        ["boots", "앵클 / 첼시 부츠"],
+        ["heels_sandals", "힐 / 스트랩 샌들"],
+      ],
+      modes: [["auto", "스케일: 전신 풀바디 발 비율 자동 연동"]],
+    },
+  };
+
+  function getActiveSelectedBag() {
+    for (const a of state.assets) {
+      if (a.category === "bag" && state.selectedItemIds.has(a.id)) {
+        return a;
+      }
+    }
+    return null;
+  }
+
+  function populateCategoryControls() {
+    const schema = CATEGORY_UI_SCHEMA[state.activeItemCategory] || CATEGORY_UI_SCHEMA.garment;
+    const subSel = $("selItemSubRole");
+    const modeSel = $("selItemMode");
+    const bagSzSel = $("selBagSize");
+    if (!subSel || !modeSel) return;
+
+    subSel.innerHTML = "";
+    for (const [val, lbl] of schema.subRoles) {
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = lbl;
+      subSel.appendChild(opt);
+    }
+    modeSel.innerHTML = "";
+    for (const [val, lbl] of schema.modes) {
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = lbl;
+      modeSel.appendChild(opt);
+    }
+    if (bagSzSel) {
+      bagSzSel.classList.toggle("hidden", state.activeItemCategory !== "bag");
+    }
+  }
+
   const $ = (id) => document.getElementById(id);
 
   function showToast(msg) {
@@ -114,6 +217,23 @@
     if (preset && preset.joints) {
       for (const [k, v] of Object.entries(preset.joints)) {
         base[k] = [v[0], v[1], v[2]];
+      }
+    }
+    const activeBag = getActiveSelectedBag();
+    if (activeBag) {
+      const cm = activeBag.carry_mode || "hand_right";
+      if (cm === "hand_right") {
+        base.r_elbow = [0.25, 0.23, 0.04];
+        base.r_wrist = [0.25, -0.05, 0.06];
+      } else if (cm === "hand_left") {
+        base.l_elbow = [-0.25, 0.23, 0.04];
+        base.l_wrist = [-0.25, -0.05, 0.06];
+      } else if (cm === "crook_right") {
+        base.r_elbow = [0.25, 0.2, 0.06];
+        base.r_wrist = [0.14, 0.24, 0.2];
+      } else if (cm === "crook_left") {
+        base.l_elbow = [-0.25, 0.2, 0.06];
+        base.l_wrist = [-0.14, 0.24, 0.2];
       }
     }
     for (const [k, v] of Object.entries(state.pose.joints_override || {})) {
@@ -256,6 +376,70 @@
         ctx.strokeStyle = "#181c24";
         ctx.lineWidth = 1.5;
         ctx.stroke();
+      }
+    }
+
+    // Live 3D Proportional Bag Prop on Previz Canvas when a Bag is selected
+    const activeBag = getActiveSelectedBag();
+    if (activeBag) {
+      const szMul = {
+        micro_mini: 0.52,
+        small_compact: 0.74,
+        medium_standard: 1.0,
+        large_tote_weekender: 1.32,
+      }[activeBag.scale_mode || "medium_standard"] || 1.0;
+      const bw3 = 0.24 * szMul;
+      const bh3 = 0.20 * szMul;
+      const cm = activeBag.carry_mode || "hand_right";
+      let anchor = null;
+      let strapFrom = null;
+      if (cm === "hand_right" && world.r_wrist) {
+        anchor = [world.r_wrist[0], world.r_wrist[1] - 0.08 - bh3 * 0.5, world.r_wrist[2]];
+        strapFrom = world.r_wrist;
+      } else if (cm === "hand_left" && world.l_wrist) {
+        anchor = [world.l_wrist[0], world.l_wrist[1] - 0.08 - bh3 * 0.5, world.l_wrist[2]];
+        strapFrom = world.l_wrist;
+      } else if (cm === "crook_right" && world.r_elbow) {
+        anchor = [world.r_elbow[0] + 0.02, world.r_elbow[1] - 0.1 - bh3 * 0.5, world.r_elbow[2] + 0.04];
+        strapFrom = world.r_elbow;
+      } else if (cm === "crook_left" && world.l_elbow) {
+        anchor = [world.l_elbow[0] - 0.02, world.l_elbow[1] - 0.1 - bh3 * 0.5, world.l_elbow[2] + 0.04];
+        strapFrom = world.l_elbow;
+      } else if (cm === "shoulder_right" && world.r_hip) {
+        anchor = [world.r_hip[0] + 0.1, world.r_hip[1] + 0.06, world.r_hip[2]];
+        strapFrom = world.r_shoulder;
+      } else if (cm === "shoulder_left" && world.l_hip) {
+        anchor = [world.l_hip[0] - 0.1, world.l_hip[1] + 0.06, world.l_hip[2]];
+        strapFrom = world.l_shoulder;
+      } else if (cm === "crossbody_l2r" && world.r_hip) {
+        anchor = [world.r_hip[0] + 0.1, world.r_hip[1] + 0.02, world.r_hip[2] + 0.04];
+        strapFrom = world.l_shoulder;
+      } else if (cm === "crossbody_r2l" && world.l_hip) {
+        anchor = [world.l_hip[0] - 0.1, world.l_hip[1] + 0.02, world.l_hip[2] + 0.04];
+        strapFrom = world.r_shoulder;
+      } else if (cm === "underarm_clutch" && world.r_elbow) {
+        anchor = [world.r_elbow[0] - 0.04, world.r_elbow[1] + 0.04, world.r_elbow[2] + 0.06];
+      } else if (cm === "placed_beside") {
+        anchor = [0.44, -0.88 + bh3 * 0.5, 0.08];
+      }
+      if (anchor) {
+        const bp = project(anchor);
+        const pw = Math.max(14, (bw3 * fovScale) / bp.z);
+        const ph = Math.max(12, (bh3 * fovScale) / bp.z);
+        if (strapFrom) {
+          const sp = project(strapFrom);
+          ctx.strokeStyle = "#f5b342";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(sp.x, sp.y);
+          ctx.lineTo(bp.x, bp.y - ph / 2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = "rgba(245, 179, 66, 0.22)";
+        ctx.strokeStyle = "#f5b342";
+        ctx.lineWidth = 2;
+        ctx.fillRect(bp.x - pw / 2, bp.y - ph / 2, pw, ph);
+        ctx.strokeRect(bp.x - pw / 2, bp.y - ph / 2, pw, ph);
       }
     }
 
@@ -582,6 +766,41 @@
     topRow.appendChild(delBtn);
     body.appendChild(topRow);
 
+    if (asset.category === "bag") {
+      const carrySel = document.createElement("select");
+      carrySel.style.fontSize = "10px";
+      carrySel.style.padding = "3px 4px";
+      for (const [val, lbl] of CATEGORY_UI_SCHEMA.bag.modes) {
+        const o = document.createElement("option");
+        o.value = val;
+        o.textContent = lbl.replace("위치: ", "");
+        if (val === (asset.carry_mode || "hand_right")) o.selected = true;
+        carrySel.appendChild(o);
+      }
+      carrySel.addEventListener("change", async () => {
+        asset.carry_mode = carrySel.value;
+        await apiFetch("/api/assets/" + asset.id, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ carry_mode: carrySel.value }),
+        });
+        drawPrevizCanvas();
+      });
+      body.appendChild(carrySel);
+    } else if (asset.category !== "location") {
+      const metaTag = document.createElement("div");
+      metaTag.className = "mini-label";
+      metaTag.style.fontSize = "10px";
+      const modeInfo =
+        asset.category === "garment"
+          ? asset.wearing_style || "auto"
+          : asset.size_cm
+          ? asset.size_cm + "cm"
+          : asset.scale_mode || "비례잠금";
+      metaTag.textContent = (asset.sub_role || asset.category) + " · " + modeInfo;
+      body.appendChild(metaTag);
+    }
+
     if (asset.foreign_faces_masked > 0) {
       const mTag = document.createElement("div");
       mTag.className = "mask-tag";
@@ -861,6 +1080,7 @@
         document.querySelectorAll(".cat-tab").forEach((t) => t.classList.remove("active"));
         tab.classList.add("active");
         state.activeItemCategory = tab.dataset.cat;
+        populateCategoryControls();
         renderAssets();
       });
     });
@@ -870,8 +1090,20 @@
       if (!files.length) return;
       const fd = new FormData();
       fd.append("category", state.activeItemCategory);
-      fd.append("sub_role", $("itemSubRole").value || "");
+      fd.append("sub_role", $("selItemSubRole").value || "");
       fd.append("description", $("itemDesc").value || "");
+      const modeVal = $("selItemMode").value || "auto";
+      if (state.activeItemCategory === "garment") {
+        fd.append("wearing_style", modeVal);
+      } else if (state.activeItemCategory === "accessory") {
+        fd.append("scale_mode", modeVal);
+      } else if (state.activeItemCategory === "bag") {
+        fd.append("carry_mode", modeVal);
+        fd.append("scale_mode", $("selBagSize").value || "medium_standard");
+      }
+      if ($("itemSizeCm").value) {
+        fd.append("size_cm", $("itemSizeCm").value);
+      }
       for (const f of files) fd.append("files", f);
       try {
         const res = await apiFetch("/api/assets/upload", { method: "POST", body: fd });
@@ -881,7 +1113,8 @@
         }
         $("itemFilesInput").value = "";
         renderAssets();
-        showToast(res.count + "개 아이템 첨부 완료 (외부 얼굴 자동 마스킹 검사됨)");
+        drawPrevizCanvas();
+        showToast(res.count + "개 아이템 첨부 완료 (레이어링·스케일·포즈 연동 적용)");
       } catch (e) {
         showToast("아이템 업로드 실패: " + e.message);
       }
@@ -996,6 +1229,7 @@
   }
 
   window.addEventListener("DOMContentLoaded", async () => {
+    populateCategoryControls();
     bindEvents();
     try {
       await loadStatus();

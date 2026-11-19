@@ -860,6 +860,67 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             # 2 uploaded location images + 1 text location = 3 jobs!
             self.assertEqual(r_bat.json()["total_jobs"], 3)
 
+    def test_18_hierarchical_layering_scale_lock_and_bag_kinematics(self) -> None:
+        """Verify inner/mid/outer garment Z-order auto-open layering, watch/jewelry scale lock, bag carry modes, and proportional board."""
+        import tempfile
+        from model_generation_engine import (
+            AttachmentItem,
+            ModelGenerationPipeline,
+            PosePrevizSpec,
+            SceneLocationInput,
+        )
+
+        pipe = ModelGenerationPipeline(self.config)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            canon_path, _ = pipe.turnaround.prepare_canonical_identity_anchor(
+                self.ref_face, tmp / "front.jpg", target_size=(600, 750)
+            )
+            item_img = np.full((300, 300, 3), (240, 240, 240), dtype=np.uint8)
+            p_outer = tmp / "outer.jpg"
+            p_inner = tmp / "inner_tee.jpg"
+            p_bot = tmp / "trousers.jpg"
+            p_watch = tmp / "watch.jpg"
+            p_bag_mini = tmp / "mini_bag.jpg"
+            p_shoe = tmp / "sneakers.jpg"
+            for p in (p_outer, p_inner, p_bot, p_watch, p_bag_mini, p_shoe):
+                cv2.imwrite(str(p), item_img)
+
+            jobs = pipe.batch_composer.compose_batch(
+                canonical_front_path=canon_path,
+                subject=SubjectProfile(subject_identity_label="Editorial subject"),
+                locations=[SceneLocationInput(name="terrace", mood_or_place_prompt="sunlit architectural terrace")],
+                poses=[PosePrevizSpec(preset_id="standing_editorial", head_azimuth_deg=-22.5, shot_scale="medium upper-body portrait shot")],
+                items=[
+                    AttachmentItem(category="garment", image_path=p_outer, sub_role="outerwear", wearing_style="auto", description="olive suede jacket"),
+                    AttachmentItem(category="garment", image_path=p_inner, sub_role="inner_top", description="navy striped t-shirt"),
+                    AttachmentItem(category="garment", image_path=p_bot, sub_role="bottom", description="cream pleated trousers"),
+                    AttachmentItem(category="accessory", image_path=p_watch, sub_role="watch_left", description="40mm silver leather chronograph"),
+                    AttachmentItem(category="bag", image_path=p_bag_mini, scale_mode="micro_mini", size_cm=21.0, carry_mode="crossbody_l2r", description="black pebble mini bag"),
+                    AttachmentItem(category="shoe", image_path=p_shoe, sub_role="sneakers", description="white gum-sole sneakers"),
+                ],
+                work_dir=tmp / "staging_v32",
+            )
+            self.assertEqual(len(jobs), 1)
+            j0 = jobs[0]
+            PromptFirewall.validate_prompt(j0.prompt)
+            # 1. Inner tee comes BEFORE outerwear in Z-order AND outerwear auto-opens so inner tee is visible!
+            self.assertIn("INNER BASE TOP", j0.prompt)
+            self.assertIn("unbuttoned/open at the front so the inner shirt/t-shirt/knit underneath is clearly visible", j0.prompt)
+            self.assertLess(j0.prompt.index("INNER BASE TOP"), j0.prompt.index("OUTERWEAR LAYER"))
+            # 2. Watch left-wrist 38-42mm scale lock + sleeve cuff visibility
+            self.assertIn("38–42mm case diameter", j0.prompt)
+            self.assertIn("left sleeve cuff sits ~1.5cm above the wrist bone", j0.prompt)
+            # 3. Mini bag 21cm scale lock + crossbody_l2r kinematics
+            self.assertIn("21cm physical width", j0.prompt)
+            self.assertIn("NEVER enlarge into a tote", j0.prompt)
+            self.assertIn("diagonally from the LEFT shoulder across the chest", j0.prompt)
+            # 4. Attaching shoes automatically upgrades shot_scale to full-body so shoes are visible!
+            self.assertIn("full-body editorial head-to-toe shot showing complete footwear", j0.prompt)
+            # 5. Proportional Styling Board generated and attached
+            self.assertIsNotNone(j0.styling_board_path)
+            self.assertTrue(Path(j0.styling_board_path).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

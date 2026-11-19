@@ -48,13 +48,20 @@ description: Use this skill immediately whenever the user talks about creating, 
   - **Hop 3 (`±67.5°` 깊은 반측면)**: `left_67` (`② 좌 깊은¾ -67.5°`) & `right_67` (`⑦ 우 깊은¾ +67.5°`) bridged by `[0° + ±45.0°]`
   - **Hop 4 (`±90.0°` 완전 측면)**: `left_90` (`① 완전 좌 -90°`) & `right_90` (`⑧ 완전 우 +90°`) bridged by `[0° + ±67.5°]`
 
-### Step 2: Multi-Category Styling Attachments & Foreign-Face Grey Masking (`multi_asset_composer.py`)
-- Supports multiple optional image/text attachments across 4 dedicated slots:
-  1. **Clothes (`garment`)**: Outerwear, tops, bottoms, suits, dresses
-  2. **Accessories (`accessory`)**: Eyewear, watches, ties, scarves, hats, jewelry, belts
-  3. **Bags (`bag`)**: Briefcases, totes, shoulder bags, backpacks, clutches
-  4. **Shoes (`shoe`)**: Dress shoes, loafers, sneakers, boots, heels
-- `mask_foreign_faces_in_reference`: Every uploaded garment, accessory, bag, shoe, and location/style photo is scanned with `YuNet` and any foreign human face is covered with a neutral `#8C8C8C` grey box so foreign models never contaminate the subject's identity.
+### Step 2: Hierarchical Garment Layering, Anthropometric Scale Lock & Bag Kinematics (`multi_asset_composer.py` v3.2)
+- **Hierarchical Garment Z-Order (`GARMENT_SLOTS` + `WEARING_STYLES`)**:
+  - `inner_top` (속 티셔츠/셔츠) -> `mid_layer` (니트/베스트) -> `outerwear` (자켓/코트) + `bottom` (하의) / `one_piece`.
+  - When `inner_top` or `mid_layer` is paired with `outerwear` (`wearing_style="auto"`), the engine automatically sets `outerwear` to `open_layered` so inner tops are never hidden behind buttoned jackets unless explicitly set to `closed_buttoned`.
+- **Anthropometric Scale & Proportion Lock (`ACCESSORY_SLOTS` + `_build_proportional_styling_board`)**:
+  - Prevents standalone e-commerce macro photos from inflating watches or mini-bags:
+    - `watch_left` / `watch_right`: Locked to `38–42mm` (~68% of human wrist width) + exposes `~1.5cm` past the sleeve cuff.
+    - `eyewear`: `1:1` cranial temple span + continuous temple arms over ears.
+    - `jewelry_fine`: `1.0–2.5cm` earlobe/finger scale; `belt`: `3.0–3.5cm` loop width.
+  - Automatically builds a **Proportional Composite Styling Board (`composite_styling_board.jpg`)** where accessories/mini-bags occupy smaller cell ratios than coats/trousers.
+- **Bag Size Classes (`BAG_SIZES`) & 11 Carry/Placement Kinematics (`BAG_CARRY_MODES`)**:
+  - Size classes: `micro_mini (~20cm)`, `small_compact (~26cm)`, `medium_standard (~36cm)`, `large_tote_weekender (~48cm)`, plus optional exact `size_cm`.
+  - Carry/Position modes: `hand_right`, `hand_left`, `crook_right`, `crook_left`, `shoulder_right`, `shoulder_left`, `crossbody_l2r`, `crossbody_r2l`, `underarm_clutch`, `backpack`, and **`placed_beside` (not held—grounded upright beside chair/feet)**—synchronized directly onto the 3D Previz Mannequin!
+- **Foreign-Face Grey Masking (`mask_foreign_faces_in_reference`)**: Every uploaded item or location photo is scanned with `YuNet` and any foreign human face is covered with `#8C8C8C` neutral grey.
 
 ### Step 3: Interactive 3D Previz Pose Director (`previz_pose.py`)
 - `PosePrevizSpec` & `Previz3DRenderer.render_pose_guide`: Renders a 14-bone depth-sorted 3D articulated mannequin with perspective floor grid, camera focal-length projection (`35/50/85/105mm`), camera elevation (`low / eye / high`), horizontal composition placement, custom joint overrides, and a head gaze vector.

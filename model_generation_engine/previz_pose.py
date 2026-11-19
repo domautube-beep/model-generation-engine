@@ -244,6 +244,8 @@ class PosePrevizSpec:
     shot_scale: str = "three-quarter portrait shot"
     custom_pose_note: str = ""
     joints_override: Optional[Dict[str, Tuple[float, float, float]]] = None
+    bag_carry_mode: str = ""  # e.g. "hand_right", "shoulder_left", "crossbody_l2r", "placed_beside"
+    bag_size: str = "medium_standard"  # "micro_mini" | "small_compact" | "medium_standard" | "large_tote_weekender"
 
     @property
     def matched_8angle_view(self) -> str:
@@ -303,6 +305,21 @@ class Previz3DRenderer:
 
         preset = POSE_PRESETS.get(spec.preset_id, POSE_PRESETS["standing_editorial"])
         raw_joints: Dict[str, Tuple[float, float, float]] = dict(preset["joints"])  # type: ignore[arg-type]
+
+        # Auto-harmonize hand/elbow posture when carrying a bag by hand or crook of arm (unless manually overridden)
+        if spec.bag_carry_mode == "hand_right":
+            raw_joints["r_elbow"] = (0.25, 0.23, 0.04)
+            raw_joints["r_wrist"] = (0.25, -0.05, 0.06)
+        elif spec.bag_carry_mode == "hand_left":
+            raw_joints["l_elbow"] = (-0.25, 0.23, 0.04)
+            raw_joints["l_wrist"] = (-0.25, -0.05, 0.06)
+        elif spec.bag_carry_mode == "crook_right":
+            raw_joints["r_elbow"] = (0.25, 0.20, 0.06)
+            raw_joints["r_wrist"] = (0.14, 0.24, 0.20)
+        elif spec.bag_carry_mode == "crook_left":
+            raw_joints["l_elbow"] = (-0.25, 0.20, 0.06)
+            raw_joints["l_wrist"] = (-0.14, 0.24, 0.20)
+
         if spec.joints_override:
             raw_joints.update(spec.joints_override)
 
@@ -370,6 +387,64 @@ class Previz3DRenderer:
             else:
                 r_j = max(4, int(round(11.0 / max(1.0, jz))))
                 cv2.circle(img, (jx, jy), r_j, (250, 250, 252), -1, cv2.LINE_AA)
+
+        # Optional proportional 3D Bag Prop indicator on the Previz guide
+        if spec.bag_carry_mode:
+            sz_mul = {
+                "micro_mini": 0.52,
+                "small_compact": 0.74,
+                "medium_standard": 1.0,
+                "large_tote_weekender": 1.32,
+            }.get(spec.bag_size, 1.0)
+            bw_3d = 0.24 * sz_mul
+            bh_3d = 0.20 * sz_mul
+            anchor_pt: Optional[np.ndarray] = None
+            strap_from: Optional[np.ndarray] = None
+
+            if spec.bag_carry_mode == "hand_right":
+                anchor_pt = world_joints["r_wrist"] + np.array([0.0, -0.08 - bh_3d * 0.5, 0.0], dtype=np.float32)
+                strap_from = world_joints["r_wrist"]
+            elif spec.bag_carry_mode == "hand_left":
+                anchor_pt = world_joints["l_wrist"] + np.array([0.0, -0.08 - bh_3d * 0.5, 0.0], dtype=np.float32)
+                strap_from = world_joints["l_wrist"]
+            elif spec.bag_carry_mode == "crook_right":
+                anchor_pt = world_joints["r_elbow"] + np.array([0.02, -0.10 - bh_3d * 0.5, 0.04], dtype=np.float32)
+                strap_from = world_joints["r_elbow"]
+            elif spec.bag_carry_mode == "crook_left":
+                anchor_pt = world_joints["l_elbow"] + np.array([-0.02, -0.10 - bh_3d * 0.5, 0.04], dtype=np.float32)
+                strap_from = world_joints["l_elbow"]
+            elif spec.bag_carry_mode == "shoulder_right":
+                anchor_pt = world_joints["r_hip"] + np.array([0.10, 0.06, 0.0], dtype=np.float32)
+                strap_from = world_joints["r_shoulder"]
+            elif spec.bag_carry_mode == "shoulder_left":
+                anchor_pt = world_joints["l_hip"] + np.array([-0.10, 0.06, 0.0], dtype=np.float32)
+                strap_from = world_joints["l_shoulder"]
+            elif spec.bag_carry_mode == "crossbody_l2r":
+                anchor_pt = world_joints["r_hip"] + np.array([0.10, 0.02, 0.04], dtype=np.float32)
+                strap_from = world_joints["l_shoulder"]
+            elif spec.bag_carry_mode == "crossbody_r2l":
+                anchor_pt = world_joints["l_hip"] + np.array([-0.10, 0.02, 0.04], dtype=np.float32)
+                strap_from = world_joints["r_shoulder"]
+            elif spec.bag_carry_mode == "underarm_clutch":
+                anchor_pt = world_joints["r_elbow"] + np.array([-0.04, 0.04, 0.06], dtype=np.float32)
+            elif spec.bag_carry_mode == "placed_beside":
+                anchor_pt = np.array([0.44, -0.88 + bh_3d * 0.5, 0.08], dtype=np.float32)
+
+            if anchor_pt is not None:
+                bx, by, bz = project(anchor_pt)
+                pw = max(12, int(round((bw_3d * fov_scale) / bz)))
+                ph = max(10, int(round((bh_3d * fov_scale) / bz)))
+                if strap_from is not None:
+                    sx, sy, _ = project(strap_from)
+                    cv2.line(img, (sx, sy), (bx, by - ph // 2), (70, 190, 245), 2, cv2.LINE_AA)
+                cv2.rectangle(
+                    img,
+                    (bx - pw // 2, by - ph // 2),
+                    (bx + pw // 2, by + ph // 2),
+                    (55, 165, 235),
+                    2,
+                    cv2.LINE_AA,
+                )
 
         if output_path is not None:
             output_path.parent.mkdir(parents=True, exist_ok=True)

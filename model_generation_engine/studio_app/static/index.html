@@ -91,23 +91,31 @@
       <div class="panel-header">
         <div>
           <span class="step-tag">STEP 02</span>
-          <h2>의상 · 악세사리 · 가방 · 신발 멀티 첨부 <small>(필요 항목만 자유 첨부)</small></h2>
-          <p class="panel-desc">착용 컷에 다른 모델의 얼굴이 있어도 자동으로 중립 그레이(#8C8C8C) 마스킹 처리하여 얼굴 오염을 원천 차단합니다.</p>
+          <h2>의상 레이어링 · 인체비례 악세사리 · 가방 위치/스케일 · 신발 첨부</h2>
+          <p class="panel-desc">속옷(이너)·미들·아우터·하의 레이어 순서, 시계·주얼리 인체 대비 실측 비율, 가방 크기·드는 방식(3D 프리비즈 연동)을 정밀 제어합니다.</p>
         </div>
       </div>
 
       <div class="category-tabs">
-        <button type="button" class="cat-tab active" data-cat="garment">옷 / 착장 <span class="badge-cnt" id="cnt-garment">0</span></button>
-        <button type="button" class="cat-tab" data-cat="accessory">악세사리 <span class="badge-cnt" id="cnt-accessory">0</span></button>
-        <button type="button" class="cat-tab" data-cat="bag">가방 <span class="badge-cnt" id="cnt-bag">0</span></button>
+        <button type="button" class="cat-tab active" data-cat="garment">옷 / 레이어링 <span class="badge-cnt" id="cnt-garment">0</span></button>
+        <button type="button" class="cat-tab" data-cat="accessory">악세사리 (비례잠금) <span class="badge-cnt" id="cnt-accessory">0</span></button>
+        <button type="button" class="cat-tab" data-cat="bag">가방 (위치·크기) <span class="badge-cnt" id="cnt-bag">0</span></button>
         <button type="button" class="cat-tab" data-cat="shoe">신발 <span class="badge-cnt" id="cnt-shoe">0</span></button>
       </div>
 
-      <div class="upload-bar">
-        <input type="text" id="itemSubRole" placeholder="세부 구분 (예: 아우터, 셔츠, 손목시계, 안경, 토트백, 로퍼)" />
-        <input type="text" id="itemDesc" placeholder="재질·핏·컬러 메모 (선택)" />
+      <div class="upload-bar" id="dynamicSlotBar">
+        <select id="selItemSubRole" title="세부 부위 / 레이어"></select>
+        <select id="selItemMode" title="착용 방식 / 가방 드는 법 / 스케일"></select>
+        <select id="selBagSize" class="hidden" title="가방 크기 체급">
+          <option value="micro_mini">미니/마이크로 (~20cm)</option>
+          <option value="small_compact">스몰 컴팩트 (~26cm)</option>
+          <option value="medium_standard" selected>미디엄/서류가방 (~36cm)</option>
+          <option value="large_tote_weekender">라지 토트/보스턴 (~48cm)</option>
+        </select>
+        <input type="number" id="itemSizeCm" placeholder="실측 cm(선택)" step="0.5" style="max-width:110px;" />
+        <input type="text" id="itemDesc" placeholder="재질·컬러·핏 메모 (선택)" />
         <label class="btn btn-secondary file-btn">
-          + 사진 여러 장 첨부
+          + 사진 첨부
           <input type="file" id="itemFilesInput" accept="image/*" multiple hidden />
         </label>
       </div>

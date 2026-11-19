@@ -334,6 +334,10 @@ def create_studio_app(
         category: str = Form(...),  # garment | accessory | bag | shoe | location
         sub_role: str = Form(""),
         description: str = Form(""),
+        wearing_style: str = Form("auto"),
+        scale_mode: str = Form("medium_standard"),
+        size_cm: Optional[float] = Form(None),
+        carry_mode: str = Form("hand_right"),
         files: List[UploadFile] = File(...),
     ):
         if category not in {"garment", "accessory", "bag", "shoe", "location"}:
@@ -363,6 +367,10 @@ def create_studio_app(
                 "filename": uf.filename or raw_p.name,
                 "sub_role": sub_role.strip(),
                 "description": description.strip(),
+                "wearing_style": wearing_style.strip() or "auto",
+                "scale_mode": scale_mode.strip() or "medium_standard",
+                "size_cm": size_cm,
+                "carry_mode": carry_mode.strip() or "hand_right",
                 "raw_path": str(raw_p),
                 "active_path": str(active_p),
                 "preview_url": rel_url(raw_p),
@@ -374,6 +382,19 @@ def create_studio_app(
             created.append(item_rec)
         save_state()
         return {"uploaded": created, "count": len(created)}
+
+    @app.patch("/api/assets/{asset_id}")
+    def update_asset_metadata(asset_id: str, data: dict):
+        rec = db_state["assets"].get(asset_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Asset not found.")
+        for field_k in ("sub_role", "description", "wearing_style", "scale_mode", "carry_mode"):
+            if field_k in data and data[field_k] is not None:
+                rec[field_k] = str(data[field_k]).strip()
+        if "size_cm" in data:
+            rec["size_cm"] = float(data["size_cm"]) if data["size_cm"] not in (None, "") else None
+        save_state()
+        return rec
 
     @app.delete("/api/assets/{asset_id}")
     def delete_asset(asset_id: str):
@@ -403,6 +424,8 @@ def create_studio_app(
                 for k, v in (data.get("joints_override") or {}).items()
             }
             or None,
+            bag_carry_mode=str(data.get("bag_carry_mode") or ""),
+            bag_size=str(data.get("bag_size") or "medium_standard"),
         )
         out_p = base_dir / "previz" / "latest_previz.jpg"
         Previz3DRenderer.render_pose_guide(spec, canvas_size=(1280, 720), output_path=out_p)
@@ -434,7 +457,7 @@ def create_studio_app(
             if info.get("status") == "ready" and Path(info["path"]).exists()
         }
 
-        # Gather attached garments, accessories, bags, shoes
+        # Gather attached garments, accessories, bags, shoes with full layering, scale, and carry metadata
         items: List[AttachmentItem] = []
         for aid in data.get("item_asset_ids", []):
             arec = db_state["assets"].get(aid)
@@ -445,6 +468,10 @@ def create_studio_app(
                         image_path=Path(arec["active_path"]),
                         description=arec.get("description", ""),
                         sub_role=arec.get("sub_role", ""),
+                        wearing_style=arec.get("wearing_style", "auto"),
+                        scale_mode=arec.get("scale_mode", "medium_standard"),
+                        size_cm=arec.get("size_cm"),
+                        carry_mode=arec.get("carry_mode", "hand_right"),
                     )
                 )
         for txt_item in data.get("text_items", []):
@@ -454,6 +481,10 @@ def create_studio_app(
                         category=txt_item.get("category", "garment"),
                         description=txt_item["description"].strip(),
                         sub_role=txt_item.get("sub_role", ""),
+                        wearing_style=txt_item.get("wearing_style", "auto"),
+                        scale_mode=txt_item.get("scale_mode", "medium_standard"),
+                        size_cm=txt_item.get("size_cm"),
+                        carry_mode=txt_item.get("carry_mode", "hand_right"),
                     )
                 )
 
