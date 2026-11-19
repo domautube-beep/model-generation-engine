@@ -16,9 +16,9 @@
     python3 launch_studio.py
   ```
 
-### What You Can Do in `모델생성 스튜디오 v3.0`
-1. **STEP 01 — Real-Person 8-Angle Master Registration (`0° · 45° · 90° · 135° · 180° · 225° · 270° · 315°`)**:
-   - Upload a real person's face photo -> extracts an untouched pure optical `85mm` canonical anchor (`Gen-0`), measures 3D craniofacial ratios (`Apple Vision` + `YuNet`), and generates/manages all **8 compass turnaround views** via 3-Hop progressive bridging (`0° -> ±45° -> ±90° -> ±135° & 180°`) + `4×2` Master Sheet.
+### What You Can Do in `모델생성 스튜디오 v3.1`
+1. **STEP 01 — Real-Person Frontal-Arc Detailed 8-Direction Registration (`완전좌 -90° ~ 완전우 +90°` 사이 `22.5°` 간격 8방향 + 중앙 `0°` 원본)**:
+   - Upload a real person's face photo -> extracts an untouched pure optical `85mm` canonical anchor (`0°` `Gen-0`), measures 3D craniofacial ratios (`Apple Vision` + `YuNet`), and generates/manages **8 detailed frontal-hemisphere directions** (`-90°, -67.5°, -45°, -22.5°` | `[0° 원본]` | `+22.5°, +45°, +67.5°, +90°`) via 4-Hop `22.5°` progressive bridging (`<= 11.25°` max angular deviation across any portrait angle!).
 2. **STEP 02 — Clothes, Accessories, Bags & Shoes Multi-Slot Attachments**:
    - Attach multiple photos across `옷 (garment)`, `악세사리 (accessory)`, `가방 (bag)`, and `신발 (shoe)` as needed.
    - Automatic `YuNet` **Foreign-Face Neutral-Grey Masking (`#8C8C8C`)** ensures models inside product/lookbook photos never contaminate the subject's identity.

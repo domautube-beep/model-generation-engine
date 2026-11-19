@@ -25,12 +25,12 @@
       <div class="panel-header">
         <div>
           <span class="step-tag">STEP 01</span>
-          <h2>실제 인물 등록 &amp; 360° 8각도 마스터 앵커 시트</h2>
-          <p class="panel-desc">원본 사진(Gen-0)의 광학 선예도·동공 색상을 100% 보존하고, 3-Hop 점진 회전으로 8각도(0°~315°) 입체 기준점을 구축합니다.</p>
+          <h2>실제 인물 등록 &amp; 완전좌(-90°)~완전우(+90°) 디테일 8방향 마스터 시트</h2>
+          <p class="panel-desc">중앙 원본 사진(0° Gen-0)을 기준으로 좌측 4단계(-22.5°·-45°·-67.5°·-90°)와 우측 4단계(+22.5°·+45°·+67.5°·+90°) 총 8방향을 22.5° 정밀 간격으로 구축합니다.</p>
         </div>
         <div class="header-actions">
-          <button type="button" id="btnGenerate8Angles" class="btn btn-primary" disabled>선택 인물 8각도 자동 생성</button>
-          <a id="btnOpenMasterSheet" class="btn btn-ghost hidden" href="#" target="_blank" rel="noopener">8각도 마스터 시트 원본 열기</a>
+          <button type="button" id="btnGenerate8Angles" class="btn btn-primary" disabled>선택 인물 좌·우 디테일 8방향 자동 생성</button>
+          <a id="btnOpenMasterSheet" class="btn btn-ghost hidden" href="#" target="_blank" rel="noopener">마스터 시트 원본 열기</a>
         </div>
       </div>
 
@@ -142,11 +142,11 @@
       <div class="preset-row" id="posePresetButtons"></div>
 
       <div class="sliders-grid">
-        <label>머리 방향 (Azimuth): <strong id="valHeadAz">0°</strong>
-          <input type="range" id="rngHeadAz" min="0" max="359" step="1" value="0" />
+        <label>머리 좌우 (-90°~+90°): <strong id="valHeadAz">0°</strong>
+          <input type="range" id="rngHeadAz" min="-90" max="90" step="0.5" value="0" />
         </label>
-        <label>몸통 방향 (Torso): <strong id="valTorsoAz">0°</strong>
-          <input type="range" id="rngTorsoAz" min="0" max="359" step="1" value="0" />
+        <label>몸통 좌우 (-90°~+90°): <strong id="valTorsoAz">0°</strong>
+          <input type="range" id="rngTorsoAz" min="-90" max="90" step="0.5" value="0" />
         </label>
         <label>고개 상하 (Pitch): <strong id="valHeadPitch">0°</strong>
           <input type="range" id="rngHeadPitch" min="-25" max="25" step="1" value="0" />

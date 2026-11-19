@@ -27,7 +27,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import CanvasSpec, EngineConfig, SubjectProfile
-from ..identity_turnaround import TURNAROUND_8_VIEWS, VIEW_AZIMUTH_DEG, VIEW_LABELS_KO
+from ..identity_turnaround import (
+    TURNAROUND_8_VIEWS,
+    TURNAROUND_FULL_SWEEP,
+    VIEW_AZIMUTH_DEG,
+    VIEW_LABELS_KO,
+)
 from ..multi_asset_composer import AttachmentItem, SceneLocationInput
 from ..pipeline import ModelGenerationPipeline
 from ..previz_pose import POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
@@ -119,8 +124,13 @@ def create_studio_app(
             "vault_dir": str(pipe.config.vault_dir) if pipe.config.vault_dir else None,
             "runtime": rt.capabilities(),
             "turnaround_views": [
-                {"view": v, "label": VIEW_LABELS_KO[v], "azimuth_deg": VIEW_AZIMUTH_DEG[v]}
-                for v in TURNAROUND_8_VIEWS
+                {
+                    "view": v,
+                    "label": VIEW_LABELS_KO[v],
+                    "azimuth_deg": VIEW_AZIMUTH_DEG[v],
+                    "is_origin": (v == "front"),
+                }
+                for v in TURNAROUND_FULL_SWEEP
             ],
             "pose_presets": [
                 {
@@ -193,11 +203,12 @@ def create_studio_app(
     async def upload_subject_angle(subject_id: str, view: str, photo: UploadFile = File(...)):
         if subject_id not in db_state["subjects"]:
             raise HTTPException(status_code=404, detail="인물을 찾을 수 없습니다.")
-        if view not in TURNAROUND_8_VIEWS:
+        if view not in TURNAROUND_FULL_SWEEP:
             raise HTTPException(status_code=400, detail=f"지원하지 않는 각도입니다: {view}")
         rec = db_state["subjects"][subject_id]
         sdir = base_dir / "subjects" / subject_id
-        ang_path = sdir / f"angle_{int(VIEW_AZIMUTH_DEG[view]):03d}_{view}.jpg"
+        ang_tag = f"{VIEW_AZIMUTH_DEG[view]:+05.1f}".replace("+", "p").replace("-", "m").replace(".", "_")
+        ang_path = sdir / f"angle_{ang_tag}_{view}.jpg"
         ang_path.write_bytes(await photo.read())
         rec["angles"][view] = {"view": view, "path": str(ang_path), "url": rel_url(ang_path), "status": "ready"}
 
@@ -244,7 +255,7 @@ def create_studio_app(
 
         async def _run_3hop_turnaround() -> None:
             try:
-                for hop_num in (1, 2, 3):
+                for hop_num in (1, 2, 3, 4):
                     cur_bank = {
                         v: Path(info["path"])
                         for v, info in rec["angles"].items()
@@ -260,7 +271,10 @@ def create_studio_app(
                         continue
 
                     async def _gen_one_view(v_name: str, plan_obj: dict) -> None:
-                        out_p = sdir / f"angle_{int(VIEW_AZIMUTH_DEG[v_name]):03d}_{v_name}.jpg"
+                        ang_tag = (
+                            f"{VIEW_AZIMUTH_DEG[v_name]:+05.1f}".replace("+", "p").replace("-", "m").replace(".", "_")
+                        )
+                        out_p = sdir / f"angle_{ang_tag}_{v_name}.jpg"
                         rec["angles"][v_name] = {"view": v_name, "path": str(out_p), "url": "", "status": "running"}
                         save_state()
                         refs = [Path(rp) for rp in plan_obj["reference_images"]]

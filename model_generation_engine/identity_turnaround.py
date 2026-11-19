@@ -1,23 +1,26 @@
-"""Real-Person 8-Angle 360° Turnaround & Canonical Identity Registration System (`실제 인물 8각도 3D 모델시트 변환 엔진`).
+"""Real-Person Frontal-Arc Detailed 8-Direction Turnaround & Canonical Identity System (`완전좌 -90° ~ 완전우 +90° 디테일 8방향 + 원본 0°`).
 
 Universal, zero-hardcoding identity system for ALL projects:
-1. `prepare_canonical_identity_anchor`: Extracts a pure untouched optical `85mm` head-and-shoulders anchor (ZERO `Real-ESRGAN`
-   pre-smoothing, preserving 100% of real photographic sharpness and `7.5~8등신` shoulder context).
+1. `prepare_canonical_identity_anchor`: Extracts a pure untouched optical `85mm` head-and-shoulders anchor (`0°` Gen-0,
+   ZERO `Real-ESRGAN` pre-smoothing, preserving 100% of real photographic sharpness and `7.5~8등신` shoulder context).
 2. `extract_anatomical_blueprint`: Measures deterministic craniofacial ratios (`Apple Vision` + `YuNet`).
-3. `plan_progressive_8angle_turnaround`: Plans the full 360° **8-Angle Canonical Compass** at 45° intervals
-   (`0° Front · 45° Front-Left ¾ · 90° Left Profile · 135° Back-Left ¾ · 180° Back · 225° Back-Right ¾ · 270° Right Profile · 315° Front-Right ¾`)
-   using progressive multi-hop bridging (`0° -> ±45° -> ±90° -> ±135° & 180°`).
-4. `resolve_8angle_view_from_azimuth` & `select_angle_matched_references`: Maps any continuous 3D Previz azimuth (`0°..360°`)
-   or detected scene yaw to `[Untouched Gen-0 Front Anchor, Exact Angle-Matched 8-Way View]` so zero iris/skin color drift occurs.
+3. `plan_progressive_8angle_turnaround`: Plans the **8 detailed frontal-hemisphere directions** at `22.5°` micro-intervals
+   between **Complete Left (`-90°`)** and **Complete Right (`+90°`)** around the untouched **Original Front (`0°`)**:
+   - Left 4 directions: `-90° (완전 좌측면)` · `-67.5° (좌 깊은 ¾)` · `-45° (좌 표준 ¾)` · `-22.5° (좌 세미프론트)`
+   - Center Origin: `0° (원본 정면 Gen-0)`
+   - Right 4 directions: `+22.5° (우 세미프론트)` · `+45° (우 표준 ¾)` · `+67.5° (우 깊은 ¾)` · `+90° (완전 우측면)`
+   using 4-Hop `22.5°` progressive bridging (`0° -> ±22.5° -> ±45° -> ±67.5° -> ±90°`) so every hop rotates by only `22.5°`.
+4. `resolve_8angle_view_from_azimuth` & `select_angle_matched_references`: Maps any continuous head yaw (`-90°..+90°`)
+   with `<= 11.25°` max angular error to `[Untouched Gen-0 Front Anchor, Exact Angle-Matched Frontal-Arc View]`.
 5. `mask_foreign_faces_in_reference`: Automatically detects and neutral-grey-masks foreign faces inside uploaded garment,
-   accessory, bag, shoe, or style/mood reference images so foreign identities never contaminate the subject.
+   accessory, bag, shoe, or location/style reference images so foreign identities never contaminate the subject.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -29,18 +32,32 @@ from .detector import DynamicFaceDetector
 from .prompt_builder import PromptFirewall
 from .upscaler import SuperResolutionEngine
 
+# 8 generated directions spanning Complete Left (-90°) to Complete Right (+90°) in 22.5° increments
 TURNAROUND_8_VIEWS: Tuple[str, ...] = (
-    "front",
-    "three_quarter_left",
-    "left_profile",
-    "back_left_3q",
-    "back",
-    "back_right_3q",
-    "right_profile",
-    "three_quarter_right",
+    "left_90",
+    "left_67",
+    "left_45",
+    "left_22",
+    "right_22",
+    "right_45",
+    "right_67",
+    "right_90",
 )
 
-# Backward-compatible 5-view constant (`TURNAROUND_VIEWS`) + full 360° 8-view constant (`TURNAROUND_8_VIEWS`)
+# Complete 9-slot left-to-right horizontal sweep including untouched 0° original in the center
+TURNAROUND_FULL_SWEEP: Tuple[str, ...] = (
+    "left_90",
+    "left_67",
+    "left_45",
+    "left_22",
+    "front",
+    "right_22",
+    "right_45",
+    "right_67",
+    "right_90",
+)
+
+# Backward-compatible 5-view constant (`TURNAROUND_VIEWS`)
 TURNAROUND_5_VIEWS: Tuple[str, ...] = (
     "left_profile",
     "three_quarter_left",
@@ -50,80 +67,110 @@ TURNAROUND_5_VIEWS: Tuple[str, ...] = (
 )
 TURNAROUND_VIEWS: Tuple[str, ...] = TURNAROUND_5_VIEWS
 
+LEGACY_VIEW_ALIASES: Dict[str, str] = {
+    "left_profile": "left_90",
+    "three_quarter_left": "left_45",
+    "three_quarter_right": "right_45",
+    "right_profile": "right_90",
+}
+
+# Signed frontal yaw degrees: Negative = Left (-90°..0°), Positive = Right (0°..+90°)
 VIEW_AZIMUTH_DEG: Dict[str, float] = {
+    "left_90": -90.0,
+    "left_67": -67.5,
+    "left_45": -45.0,
+    "left_22": -22.5,
     "front": 0.0,
-    "three_quarter_left": 45.0,
-    "left_profile": 90.0,
-    "back_left_3q": 135.0,
-    "back": 180.0,
-    "back_right_3q": 225.0,
-    "right_profile": 270.0,
-    "three_quarter_right": 315.0,
+    "right_22": 22.5,
+    "right_45": 45.0,
+    "right_67": 67.5,
+    "right_90": 90.0,
 }
 
 VIEW_LABELS_KO: Dict[str, str] = {
-    "front": "① 정면 (0°)",
-    "three_quarter_left": "② 좌전방 ¾ (45°)",
-    "left_profile": "③ 좌측면 (90°)",
-    "back_left_3q": "④ 좌후방 ¾ (135°)",
-    "back": "⑤ 완전 후면 (180°)",
-    "back_right_3q": "⑥ 우후방 ¾ (225°)",
-    "right_profile": "⑦ 우측면 (270°)",
-    "three_quarter_right": "⑧ 우전방 ¾ (315°)",
+    "left_90": "① 완전 좌 (-90°)",
+    "left_67": "② 좌 깊은¾ (-67.5°)",
+    "left_45": "③ 좌 표준¾ (-45°)",
+    "left_22": "④ 좌 미세 (-22.5°)",
+    "front": "기준 원본 (0°)",
+    "right_22": "⑤ 우 미세 (+22.5°)",
+    "right_45": "⑥ 우 표준¾ (+45°)",
+    "right_67": "⑦ 우 깊은¾ (+67.5°)",
+    "right_90": "⑧ 완전 우 (+90°)",
 }
 
 VIEW_DIRECTIONS_EN: Dict[str, Tuple[str, str]] = {
     "front": (
-        "DIRECT FRONT VIEW (0 degrees azimuth)",
-        "Head, nose centerline, gaze, and shoulders face directly toward the camera with balanced visibility of both ears.",
+        "DIRECT FRONT ORIGIN (0 degrees yaw)",
+        "Head, nose centerline, gaze, and shoulders face directly toward the camera with symmetrical visibility of both ears.",
     ),
-    "three_quarter_left": (
-        "FRONT-LEFT THREE-QUARTER VIEW (45 degrees azimuth toward image-left)",
-        "Rotate head and shoulders together 45 degrees toward the LEFT edge of the frame so the nose points image-left, "
-        "both eyes remain visible in natural 3D foreshortening, and the image-right cheek/temple/ear side is clearly exposed.",
+    "left_22": (
+        "SUBTLE SEMI-FRONTAL LEFT TURN (-22.5 degrees yaw toward image-left)",
+        "Rotate head and shoulders gently 22.5 degrees toward the LEFT edge of the frame (halfway between 0 deg front and -45 deg three-quarter): "
+        "both eyes remain fully visible looking calmly forward-left, a subtle edge of the far (image-left) ear is still visible, "
+        "a wide span of the far (image-left) cheek remains visible outside the nose tip, and the near (image-right) cheek/temple/ear is slightly more prominent.",
     ),
-    "left_profile": (
-        "TRUE LEFT SIDE PROFILE (90 degrees azimuth toward image-left)",
-        "Rotate head and shoulders together 90 degrees so the nose tip, lips, chin, and horizontal gaze point cleanly "
-        "toward the LEFT edge of the frame, showing the authentic side silhouette of forehead, nasal bridge, philtrum, chin, and ear.",
+    "left_45": (
+        "CLASSIC FRONT-LEFT THREE-QUARTER TURN (-45 degrees yaw toward image-left)",
+        "Rotate head and shoulders 45 degrees toward the LEFT edge of the frame: both eyes remain clearly visible in natural 3D foreshortening, "
+        "the far (image-left) ear is occluded behind the head, the nose tip sits roughly halfway across the far (image-left) cheek without crossing its contour, "
+        "and the near (image-right) cheek, temple, and ear are cleanly exposed.",
     ),
-    "back_left_3q": (
-        "BACK-LEFT THREE-QUARTER VIEW (135 degrees azimuth, facing away toward upper-left)",
-        "Rotate head and shoulders together 135 degrees away from the camera toward image-left, showing the rear-three-quarter "
-        "crown hair, tapered nape hairline, outer back curve of the visible ear, eyewear temple tip over the ear if worn, "
-        "outer cheekbone edge, collar band, and back-left shoulder without turning the face toward the camera.",
+    "left_67": (
+        "DEEP OBLIQUE LEFT THREE-QUARTER PROFILE (-67.5 degrees yaw toward image-left)",
+        "Rotate head and shoulders 67.5 degrees toward the LEFT edge of the frame (strictly halfway between -45 deg three-quarter and -90 deg full profile): "
+        "the nasal bridge and nose tip graze or slightly cross the far (image-left) cheek outline so ONLY a narrow foreshortened sliver of the far eye/eyelashes "
+        "peeks past the nasal bridge, while the near (image-right) eye, full cheek, jawline, eyewear temple arm over the ear, and side-back hair volume dominate.",
     ),
-    "back": (
-        "STRAIGHT REAR / BACK VIEW (180 degrees azimuth, facing directly away from camera)",
-        "Rotate head and shoulders a full 180 degrees directly away from the camera, showing the back of the head, natural crown "
-        "hair swirl, clean nape hairline, subtle outer ear rims, collar band, and balanced back shoulders with no face visible.",
+    "left_90": (
+        "COMPLETE TRUE LEFT SIDE PROFILE (-90 degrees yaw toward image-left)",
+        "Rotate head and shoulders a full 90 degrees so the nose tip, lips, chin, and horizontal gaze point cleanly toward the LEFT edge of the frame: "
+        "only ONE eye (in pure side silhouette) is visible, the far eye and far cheek are completely hidden, showing the exact side profile of forehead, "
+        "nasal bridge, philtrum, lips, chin, and ear.",
     ),
-    "back_right_3q": (
-        "BACK-RIGHT THREE-QUARTER VIEW (225 / -135 degrees azimuth, facing away toward upper-right)",
-        "Rotate head and shoulders together 135 degrees away from the camera toward image-right, showing the rear-three-quarter "
-        "crown hair, tapered nape hairline, outer back curve of the visible ear, eyewear temple tip over the ear if worn, "
-        "outer cheekbone edge, collar band, and back-right shoulder without turning the face toward the camera.",
+    "right_22": (
+        "SUBTLE SEMI-FRONTAL RIGHT TURN (+22.5 degrees yaw toward image-right)",
+        "Rotate head and shoulders gently 22.5 degrees toward the RIGHT edge of the frame (halfway between 0 deg front and +45 deg three-quarter): "
+        "both eyes remain fully visible looking calmly forward-right, a subtle edge of the far (image-right) ear is still visible, "
+        "a wide span of the far (image-right) cheek remains visible outside the nose tip, and the near (image-left) cheek/temple/ear is slightly more prominent.",
     ),
-    "right_profile": (
-        "TRUE RIGHT SIDE PROFILE (270 / -90 degrees azimuth toward image-right)",
-        "Rotate head and shoulders together 90 degrees so the nose tip, lips, chin, and horizontal gaze point cleanly "
-        "toward the RIGHT edge of the frame, showing the authentic side silhouette of forehead, nasal bridge, philtrum, chin, and ear.",
+    "right_45": (
+        "CLASSIC FRONT-RIGHT THREE-QUARTER TURN (+45 degrees yaw toward image-right)",
+        "Rotate head and shoulders 45 degrees toward the RIGHT edge of the frame: both eyes remain clearly visible in natural 3D foreshortening, "
+        "the far (image-right) ear is occluded behind the head, the nose tip sits roughly halfway across the far (image-right) cheek without crossing its contour, "
+        "and the near (image-left) cheek, temple, and ear are cleanly exposed.",
     ),
-    "three_quarter_right": (
-        "FRONT-RIGHT THREE-QUARTER VIEW (315 / -45 degrees azimuth toward image-right)",
-        "Rotate head and shoulders together 45 degrees toward the RIGHT edge of the frame so the nose points image-right, "
-        "both eyes remain visible in natural 3D foreshortening, and the image-left cheek/temple/ear side is clearly exposed.",
+    "right_67": (
+        "DEEP OBLIQUE RIGHT THREE-QUARTER PROFILE (+67.5 degrees yaw toward image-right)",
+        "Rotate head and shoulders 67.5 degrees toward the RIGHT edge of the frame (strictly halfway between +45 deg three-quarter and +90 deg full profile): "
+        "the nasal bridge and nose tip graze or slightly cross the far (image-right) cheek outline so ONLY a narrow foreshortened sliver of the far eye/eyelashes "
+        "peeks past the nasal bridge, while the near (image-left) eye, full cheek, jawline, eyewear temple arm over the ear, and side-back hair volume dominate.",
+    ),
+    "right_90": (
+        "COMPLETE TRUE RIGHT SIDE PROFILE (+90 degrees yaw toward image-right)",
+        "Rotate head and shoulders a full 90 degrees so the nose tip, lips, chin, and horizontal gaze point cleanly toward the RIGHT edge of the frame: "
+        "only ONE eye (in pure side silhouette) is visible, the far eye and far cheek are completely hidden, showing the exact side profile of forehead, "
+        "nasal bridge, philtrum, lips, chin, and ear.",
     ),
 }
+# Support legacy 5-view names in build_turnaround_angle_prompt as well
+for _old_k, _new_k in LEGACY_VIEW_ALIASES.items():
+    VIEW_DIRECTIONS_EN[_old_k] = VIEW_DIRECTIONS_EN[_new_k]
 
 
-def resolve_8angle_view_from_azimuth(azimuth_deg: float) -> str:
-    """Snap any continuous 3D azimuth angle (0..360 deg, 0=front, 90=left, 180=back, 270=right) to the closest of the 8 canonical views."""
-    norm = float(azimuth_deg) % 360.0
+def normalize_frontal_yaw_deg(yaw_deg: float) -> float:
+    """Normalize any angle into signed frontal-hemisphere yaw [-90.0, +90.0] (-90 = full left, 0 = front, +90 = full right)."""
+    signed = ((float(yaw_deg) + 180.0) % 360.0) - 180.0
+    return float(np.clip(signed, -90.0, 90.0))
+
+
+def resolve_8angle_view_from_azimuth(yaw_deg: float) -> str:
+    """Snap any frontal yaw angle (-90..+90 deg) to the closest slot in TURNAROUND_FULL_SWEEP (<= 11.25 deg max error)."""
+    clamped = normalize_frontal_yaw_deg(yaw_deg)
     best_view = "front"
     best_dist = 999.0
-    for view, deg in VIEW_AZIMUTH_DEG.items():
-        diff = abs(((norm - deg + 180.0) % 360.0) - 180.0)
+    for view in TURNAROUND_FULL_SWEEP:
+        diff = abs(clamped - VIEW_AZIMUTH_DEG[view])
         if diff < best_dist:
             best_dist = diff
             best_view = view
@@ -158,7 +205,7 @@ class AnatomicalBlueprint:
 
 
 class RealPersonTurnaroundEngine:
-    """Converts any real person's photograph into an 8-Angle 360° Canonical Anchor Bank & Master Sheet."""
+    """Converts any real person's photograph into a Detailed 8-Direction (-90°..+90°) Frontal-Arc Bank & Master Sheet."""
 
     def __init__(
         self,
@@ -175,10 +222,7 @@ class RealPersonTurnaroundEngine:
     def mask_foreign_faces_in_reference(
         self, bgr_img: np.ndarray, output_masked_path: Optional[Path] = None
     ) -> Tuple[np.ndarray, int]:
-        """Detect all human faces in a mood/garment/accessory/location reference photo and cover them with neutral grey (#8C8C8C).
-
-        Ensures foreign models inside style/outfit references NEVER contaminate the target subject's facial identity.
-        """
+        """Detect all human faces in a mood/garment/accessory/location reference photo and cover them with neutral grey (#8C8C8C)."""
         h, w = bgr_img.shape[:2]
         scale = min(1.0, 1280.0 / float(max(w, h)))
         sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
@@ -288,35 +332,34 @@ class RealPersonTurnaroundEngine:
         subject: SubjectProfile,
         blueprint: AnatomicalBlueprint,
         has_intermediate_anchor: bool = False,
-        intermediate_label: str = "same-side intermediate turnaround portrait",
+        intermediate_label: str = "adjacent same-side intermediate turnaround portrait",
     ) -> str:
-        """Build a 3D Euclidean turnaround prompt for any of the 8 compass angles (`0°..315°`)."""
+        """Build a 3D Euclidean turnaround prompt for any frontal-arc direction (-90°..+90°)."""
         if view not in VIEW_DIRECTIONS_EN:
             raise ValueError(f"Unsupported turnaround view '{view}'. Choose from {tuple(VIEW_DIRECTIONS_EN)}.")
         view_title, view_desc = VIEW_DIRECTIONS_EN[view]
 
         ref_roles = (
-            "Image 1 is the untouched canonical front identity photograph—the primary ground-truth authority for "
+            "Image 1 is the untouched canonical 0-degree front identity photograph—the primary ground-truth authority for "
             "craniofacial anatomy, true iris color, authentic skin texture, eyewear geometry, hair color/parting, and shoulder scale."
         )
         if has_intermediate_anchor:
             ref_roles += (
                 f" Image 2 is the approved {intermediate_label} of the exact same person—"
-                "use Image 2 together with Image 1 as the 3D geometric bridge for skull contour, nasal/ear silhouette, "
-                "eyewear temple path, and hair volume."
+                "rotate a precise additional 22.5-degree increment from Image 2 while keeping Image 1's exact identity and skin/iris fidelity."
             )
 
         prompt = (
             "Editorial portrait. Shot on a medium-format 100MP camera with an 80mm f/5.6 prime lens, crisp optical micro-contrast, "
-            "deep true blacks, and zero atmospheric haze. Agency 360-degree digital turnaround test photograph of the EXACT SAME "
+            "deep true blacks, and zero atmospheric haze. Agency frontal-arc turnaround test photograph of the EXACT SAME "
             "real person shown in Image 1 against a clean neutral studio backdrop. "
             f"Reference Roles: {ref_roles} "
             f"Target Angle — {view_title}: {view_desc} "
             "Do NOT mirror or flip to the opposite direction, do NOT invent a new person, and apply zero beauty-cam filter. "
             f"Identity & Eyewear Continuity: Preserve {subject.facial_identity_descriptor()}. "
             "Keep authentic iris color from Image 1 with crystal-clear non-tinted lenses (zero green or purple coating cast). "
-            "If eyewear is present in Image 1 and visible from this angle, render the temple arm extending continuously and "
-            "uninterruptedly from the front outer frame hinge back to rest naturally over the top of the ear. "
+            "If eyewear is present in Image 1, render the temple arm extending continuously and uninterruptedly from the front outer "
+            "frame hinge back to rest naturally over the top of the visible ear. "
             f"{blueprint.to_3d_invariance_clause()} "
             "Wardrobe & Lighting Continuity: Keep the same clean tailored studio attire, balanced adult 7.5-to-8-head head-to-shoulder "
             "scale, crisp directional studio lighting, and authentic real skin texture with subtle pores, zero plastic/oily gloss, "
@@ -331,7 +374,7 @@ class RealPersonTurnaroundEngine:
         subject: SubjectProfile,
         existing_angles: Optional[Dict[str, Path]] = None,
     ) -> Dict[str, Dict[str, object]]:
-        """Plan the full 360° 8-Angle Turnaround (`Hop 1: ±45°`, `Hop 2: ±90°`, `Hop 3: ±135° & 180°`)."""
+        """Plan the 8 detailed frontal-arc directions (-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°) + 0° Origin via 4-Hop 22.5° micro-steps."""
         front_bgr = cv2.imread(str(canonical_front_path))
         if front_bgr is None:
             raise FileNotFoundError(f"Cannot read canonical front anchor: {canonical_front_path}")
@@ -350,57 +393,41 @@ class RealPersonTurnaroundEngine:
             }
         }
 
-        # Hop 1: ±45° three-quarter views anchored directly to untouched 0° Front
-        for v3q in ("three_quarter_left", "three_quarter_right"):
-            plans[v3q] = {
-                "hop": 1,
-                "azimuth_deg": VIEW_AZIMUTH_DEG[v3q],
-                "view": v3q,
-                "label_ko": VIEW_LABELS_KO[v3q],
-                "reference_images": [str(canonical_front_path)],
-                "prompt": self.build_turnaround_angle_prompt(v3q, subject, blueprint, has_intermediate_anchor=False),
-            }
+        # 4 progressive 22.5° hops outward on both Left (-) and Right (+) sides:
+        hop_specs = (
+            # (hop_num, target_view, preferred_bridges, bridge_label)
+            (1, "left_22", (), ""),
+            (1, "right_22", (), ""),
+            (2, "left_45", ("left_22",), "-22.5-degree semi-frontal left portrait"),
+            (2, "right_45", ("right_22",), "+22.5-degree semi-frontal right portrait"),
+            (3, "left_67", ("left_45", "left_22"), "-45-degree front-left three-quarter portrait"),
+            (3, "right_67", ("right_45", "right_22"), "+45-degree front-right three-quarter portrait"),
+            (4, "left_90", ("left_67", "left_45"), "-67.5-degree deep oblique left portrait"),
+            (4, "right_90", ("right_67", "right_45"), "+67.5-degree deep oblique right portrait"),
+        )
 
-        # Hop 2: ±90° side profiles bridged by [0° Front + ±45° 3/4]
-        for vprof, bridge_key, bridge_lbl in (
-            ("left_profile", "three_quarter_left", "45-degree front-left three-quarter portrait"),
-            ("right_profile", "three_quarter_right", "45-degree front-right three-quarter portrait"),
-        ):
+        for hop_num, v_key, bridge_candidates, bridge_lbl in hop_specs:
             refs = [str(canonical_front_path)]
-            bridge_p = bank.get(bridge_key)
-            has_b = bridge_p is not None and Path(bridge_p).exists()
-            if has_b:
-                refs.append(str(bridge_p))
-            plans[vprof] = {
-                "hop": 2,
-                "azimuth_deg": VIEW_AZIMUTH_DEG[vprof],
-                "view": vprof,
-                "label_ko": VIEW_LABELS_KO[vprof],
+            chosen_bridge: Optional[Path] = None
+            for bc in bridge_candidates:
+                cand_p = bank.get(bc)
+                if cand_p is not None and Path(cand_p).exists():
+                    chosen_bridge = Path(cand_p)
+                    break
+            if chosen_bridge is not None:
+                refs.append(str(chosen_bridge))
+            plans[v_key] = {
+                "hop": hop_num,
+                "azimuth_deg": VIEW_AZIMUTH_DEG[v_key],
+                "view": v_key,
+                "label_ko": VIEW_LABELS_KO[v_key],
                 "reference_images": refs,
                 "prompt": self.build_turnaround_angle_prompt(
-                    vprof, subject, blueprint, has_intermediate_anchor=has_b, intermediate_label=bridge_lbl
-                ),
-            }
-
-        # Hop 3: ±135° back-three-quarter & 180° full back bridged by [0° Front + ±90° Profile]
-        for vback, bridge_key, bridge_lbl in (
-            ("back_left_3q", "left_profile", "90-degree left side-profile portrait"),
-            ("back_right_3q", "right_profile", "90-degree right side-profile portrait"),
-            ("back", "right_profile", "90-degree side-profile portrait"),
-        ):
-            refs = [str(canonical_front_path)]
-            bridge_p = bank.get(bridge_key) or bank.get("left_profile")
-            has_b = bridge_p is not None and Path(bridge_p).exists()
-            if has_b:
-                refs.append(str(bridge_p))
-            plans[vback] = {
-                "hop": 3,
-                "azimuth_deg": VIEW_AZIMUTH_DEG[vback],
-                "view": vback,
-                "label_ko": VIEW_LABELS_KO[vback],
-                "reference_images": refs,
-                "prompt": self.build_turnaround_angle_prompt(
-                    vback, subject, blueprint, has_intermediate_anchor=has_b, intermediate_label=bridge_lbl
+                    v_key,
+                    subject,
+                    blueprint,
+                    has_intermediate_anchor=(chosen_bridge is not None),
+                    intermediate_label=bridge_lbl,
                 ),
             }
 
@@ -413,32 +440,76 @@ class RealPersonTurnaroundEngine:
         approved_3q_left_path: Optional[Path] = None,
         approved_3q_right_path: Optional[Path] = None,
     ) -> Dict[str, Dict[str, object]]:
-        """Backward-compatible 5-angle subset planner delegating to `plan_progressive_8angle_turnaround`."""
-        bank: Dict[str, Path] = {}
-        if approved_3q_left_path:
-            bank["three_quarter_left"] = approved_3q_left_path
-        if approved_3q_right_path:
-            bank["three_quarter_right"] = approved_3q_right_path
-        all_plans = self.plan_progressive_8angle_turnaround(canonical_front_path, subject, existing_angles=bank)
-        return {k: all_plans[k] for k in TURNAROUND_5_VIEWS}
+        """Backward-compatible 5-angle subset planner (`left_profile, three_quarter_left, front, three_quarter_right, right_profile`)."""
+        front_bgr = cv2.imread(str(canonical_front_path))
+        if front_bgr is None:
+            raise FileNotFoundError(f"Cannot read canonical front anchor: {canonical_front_path}")
+        blueprint = self.extract_anatomical_blueprint(front_bgr)
+
+        has_l = approved_3q_left_path is not None and Path(approved_3q_left_path).exists()
+        has_r = approved_3q_right_path is not None and Path(approved_3q_right_path).exists()
+
+        return {
+            "front": {
+                "hop": 0,
+                "view": "front",
+                "reference_images": [str(canonical_front_path)],
+                "prompt": None,
+                "status": "canonical_source",
+            },
+            "three_quarter_left": {
+                "hop": 1,
+                "view": "three_quarter_left",
+                "reference_images": [str(canonical_front_path)],
+                "prompt": self.build_turnaround_angle_prompt("left_45", subject, blueprint, False),
+            },
+            "three_quarter_right": {
+                "hop": 1,
+                "view": "three_quarter_right",
+                "reference_images": [str(canonical_front_path)],
+                "prompt": self.build_turnaround_angle_prompt("right_45", subject, blueprint, False),
+            },
+            "left_profile": {
+                "hop": 2,
+                "view": "left_profile",
+                "reference_images": [str(canonical_front_path)] + ([str(approved_3q_left_path)] if has_l else []),
+                "prompt": self.build_turnaround_angle_prompt(
+                    "left_90", subject, blueprint, has_l, "-45-degree front-left three-quarter portrait"
+                ),
+            },
+            "right_profile": {
+                "hop": 2,
+                "view": "right_profile",
+                "reference_images": [str(canonical_front_path)] + ([str(approved_3q_right_path)] if has_r else []),
+                "prompt": self.build_turnaround_angle_prompt(
+                    "right_90", subject, blueprint, has_r, "+45-degree front-right three-quarter portrait"
+                ),
+            },
+        }
 
     @staticmethod
     def assemble_master_turnaround_sheet(
         angle_image_paths: Dict[str, Path],
         output_sheet_path: Path,
-        cell_size: Tuple[int, int] = (560, 720),
+        cell_size: Tuple[int, int] = (420, 540),
         include_labels: bool = False,
         columns: Optional[int] = None,
     ) -> Path:
-        """Assemble 5 or 8 turnaround views into a crisp pure-Lanczos Master Character Sheet (4x2 grid for 8 views)."""
-        cw, ch = cell_size
-        pad = 20
-        header_h = 52 if include_labels else 0
-        ordered_views = [v for v in TURNAROUND_8_VIEWS if v in angle_image_paths and Path(angle_image_paths[v]).exists()]
+        """Assemble the left-to-right frontal-arc sweep (`-90° .. 0° .. +90°`) into a crisp pure-Lanczos Master Sheet."""
+        normalized_map: Dict[str, Path] = {}
+        for k, v in angle_image_paths.items():
+            canon_k = LEGACY_VIEW_ALIASES.get(k, k)
+            if Path(v).exists():
+                normalized_map[canon_k] = Path(v)
+
+        ordered_views = [v for v in TURNAROUND_FULL_SWEEP if v in normalized_map]
         if not ordered_views:
             raise ValueError("No valid angle image paths supplied for turnaround sheet.")
 
-        cols = columns or (4 if len(ordered_views) > 5 else len(ordered_views))
+        cw, ch = cell_size
+        pad = 16
+        header_h = 48 if include_labels else 0
+        cols = columns or len(ordered_views)
         rows = (len(ordered_views) + cols - 1) // cols
         total_w = pad + cols * (cw + pad)
         total_h = pad + rows * (ch + header_h + pad)
@@ -452,72 +523,105 @@ class RealPersonTurnaroundEngine:
                 "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
             ):
                 if Path(fp).exists():
-                    font = ImageFont.truetype(fp, 22)
-                    break
+                    try:
+                        font = ImageFont.truetype(fp, 21)
+                        break
+                    except Exception:
+                        pass
 
         for idx, view in enumerate(ordered_views):
-            r = idx // cols
-            c = idx % cols
-            x = pad + c * (cw + pad)
-            y = pad + r * (ch + header_h + pad)
-            with Image.open(angle_image_paths[view]) as im:
-                im_rgb = im.convert("RGB")
-                src_w, src_h = im_rgb.size
-                target_aspect = cw / float(ch)
-                src_aspect = src_w / float(src_h)
-                if src_aspect > target_aspect:
-                    new_w = int(round(src_h * target_aspect))
-                    x0 = (src_w - new_w) // 2
-                    im_crop = im_rgb.crop((x0, 0, x0 + new_w, src_h))
-                else:
-                    new_h = int(round(src_w / target_aspect))
-                    y0 = (src_h - new_h) // 2
-                    im_crop = im_rgb.crop((0, y0, src_w, y0 + new_h))
-                tile = im_crop.resize((cw, ch), Image.Resampling.LANCZOS)
-                sheet.paste(tile, (x, y))
+            r, c = divmod(idx, cols)
+            x0 = pad + c * (cw + pad)
+            y0 = pad + r * (ch + header_h + pad)
+            img = Image.open(normalized_map[view]).convert("RGB")
+            iw, ih = img.size
+            target_aspect = float(cw) / float(ch)
+            src_aspect = float(iw) / float(ih)
+            if src_aspect > target_aspect:
+                new_w = int(round(ih * target_aspect))
+                sx = (iw - new_w) // 2
+                img = img.crop((sx, 0, sx + new_w, ih))
+            else:
+                new_h = int(round(iw / target_aspect))
+                sy = max(0, int(round((ih - new_h) * 0.25)))
+                img = img.crop((0, sy, iw, min(ih, sy + new_h)))
+            img = img.resize((cw, ch), Image.Resampling.LANCZOS)
+            sheet.paste(img, (x0, y0))
+            if view == "front":
+                draw.rectangle([x0 - 2, y0 - 2, x0 + cw + 2, y0 + ch + 2], outline=(60, 120, 245), width=4)
             if include_labels:
-                draw.text((x + 10, y + ch + 12), VIEW_LABELS_KO.get(view, view), fill=(32, 36, 40), font=font)
+                lbl = VIEW_LABELS_KO.get(view, view)
+                color = (35, 90, 210) if view == "front" else (45, 45, 48)
+                draw.text((x0 + 8, y0 + ch + 11), lbl, fill=color, font=font)
 
         output_sheet_path.parent.mkdir(parents=True, exist_ok=True)
-        sheet.save(str(output_sheet_path), format="JPEG", quality=97)
+        sheet.save(str(output_sheet_path), format="JPEG", quality=96, subsampling=0)
         return output_sheet_path
+
+    def infer_target_turnaround_view(
+        self,
+        scene_bgr: Optional[np.ndarray] = None,
+        explicit_view: Optional[str] = None,
+        explicit_azimuth_deg: Optional[float] = None,
+    ) -> str:
+        """Determine which of the 8 detailed frontal-arc views (`-90°..+90°`) or `front` (`0°`) matches a target scene."""
+        if explicit_view:
+            mapped = LEGACY_VIEW_ALIASES.get(explicit_view, explicit_view)
+            if mapped in VIEW_AZIMUTH_DEG:
+                return mapped
+        if explicit_azimuth_deg is not None:
+            return resolve_8angle_view_from_azimuth(explicit_azimuth_deg)
+        if scene_bgr is None:
+            return "front"
+        try:
+            face = self.detector.detect(scene_bgr)
+            le, re, nose, _, _ = face.landmarks_5pt
+            d_left = float(np.linalg.norm(nose - le))
+            d_right = float(np.linalg.norm(nose - re))
+            signed_asym = (d_left - d_right) / max(1.0, d_left + d_right)
+            # signed_asym < 0 -> nose closer to image-left eye (turning left, negative yaw)
+            est_yaw = float(np.clip(signed_asym * 145.0, -90.0, 90.0))
+            return resolve_8angle_view_from_azimuth(est_yaw)
+        except Exception:
+            return "front"
 
     def select_angle_matched_references(
         self,
         canonical_front_path: Path,
         angle_bank: Dict[str, Path],
+        scene_bgr: Optional[np.ndarray] = None,
         target_view: Optional[str] = None,
         target_azimuth_deg: Optional[float] = None,
-        target_scene_bgr: Optional[np.ndarray] = None,
-        master_sheet_path: Optional[Path] = None,
     ) -> Tuple[List[Path], str]:
-        """Select `[Untouched Gen-0 Front Anchor, Angle-Matched 8-Way View]` from explicit view, 3D azimuth, or detected yaw."""
-        resolved_view = target_view
-        if resolved_view is None and target_azimuth_deg is not None:
-            resolved_view = resolve_8angle_view_from_azimuth(target_azimuth_deg)
-        if resolved_view is None and target_scene_bgr is not None:
-            try:
-                face = self.detector.detect(target_scene_bgr)
-                yaw = face.yaw_asymmetry_ratio
-                if yaw <= -0.26:
-                    resolved_view = "left_profile"
-                elif yaw <= -0.07:
-                    resolved_view = "three_quarter_left"
-                elif yaw >= 0.26:
-                    resolved_view = "right_profile"
-                elif yaw >= 0.07:
-                    resolved_view = "three_quarter_right"
-                else:
-                    resolved_view = "front"
-            except Exception:
-                resolved_view = "front"
+        """Return `[Untouched Gen-0 Front Anchor, Closest Available Frontal-Arc View]` for zero-drift synthesis."""
+        normalized_bank: Dict[str, Path] = {}
+        for k, v in angle_bank.items():
+            if Path(v).exists():
+                normalized_bank[LEGACY_VIEW_ALIASES.get(k, k)] = Path(v)
 
-        resolved_view = resolved_view or "front"
-        refs: List[Path] = [Path(canonical_front_path)]
+        view = self.infer_target_turnaround_view(
+            scene_bgr, explicit_view=target_view, explicit_azimuth_deg=target_azimuth_deg
+        )
+        refs: List[Path] = [canonical_front_path]
+        if view == "front":
+            return refs, (target_view if target_view in LEGACY_VIEW_ALIASES else "front")
 
-        if resolved_view != "front" and resolved_view in angle_bank and Path(angle_bank[resolved_view]).exists():
-            refs.append(Path(angle_bank[resolved_view]))
-        elif master_sheet_path is not None and Path(master_sheet_path).exists():
-            refs.append(Path(master_sheet_path))
+        # Find exact match or closest same-side angle in normalized_bank
+        chosen_p = normalized_bank.get(view)
+        if chosen_p is None:
+            target_deg = VIEW_AZIMUTH_DEG.get(view, 0.0)
+            same_side = [
+                (abs(VIEW_AZIMUTH_DEG[k] - target_deg), p)
+                for k, p in normalized_bank.items()
+                if k != "front" and (VIEW_AZIMUTH_DEG.get(k, 0.0) * target_deg > 0)
+            ]
+            if same_side:
+                same_side.sort(key=lambda t: t[0])
+                chosen_p = same_side[0][1]
 
-        return refs, resolved_view
+        if chosen_p is not None and chosen_p.resolve() != canonical_front_path.resolve():
+            refs.append(chosen_p)
+
+        # Preserve caller's legacy view name if explicitly passed (for backward-compatible callers)
+        out_label = target_view if (target_view and target_view in LEGACY_VIEW_ALIASES) else view
+        return refs, out_label

@@ -1,6 +1,6 @@
 ---
 name: model-generation-engine
-description: Use this skill immediately whenever the user talks about creating, generating, editing, or upscaling model/portrait/editorial hero images ('모델생성' 프로젝트, /Volumes/DOMA/Project/모델생성 및 /Users/doma/Projects/모델생성, GitHub domautube-beep/model-generation-engine), launching '모델생성 스튜디오' (http://127.0.0.1:18830), or asks to generate a real person/model with 8 turnaround angles, custom clothes, accessories, bags, shoes, multiple locations/style references, or 3D Previz poses. Enforces 100% Universal Zero-Hardcoding v3.0: Pure Optical Canonical Front + 3-Hop 8-Angle (0°..315°) Turnaround Bank, Foreign-Face Grey Masking on Outfit/Location References, Interactive 3D Previz Pose Rig, Multi-Location N-to-N Parallel Batching, 16-Point Scene Tone & Manner Harmony, Pure Optical Lanczos-4 5K (Real-ESRGAN & 2D facelock disabled), and 9 Automated Quality Gates.
+description: Use this skill immediately whenever the user talks about creating, generating, editing, or upscaling model/portrait/editorial hero images ('모델생성' 프로젝트, /Volumes/DOMA/Project/모델생성 및 /Users/doma/Projects/모델생성, GitHub domautube-beep/model-generation-engine), launching '모델생성 스튜디오' (http://127.0.0.1:18830), or asks to generate a real person/model with 8 detailed frontal-arc turnaround directions (-90°..+90°), custom clothes, accessories, bags, shoes, multiple locations/style references, or 3D Previz poses. Enforces 100% Universal Zero-Hardcoding v3.1: Pure Optical Canonical Front (0°) + 4-Hop Detailed 8-Direction (-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°) Frontal-Arc Bank, Foreign-Face Grey Masking on Outfit/Location References, Interactive 3D Previz Pose Rig, Multi-Location N-to-N Parallel Batching, 16-Point Scene Tone & Manner Harmony, Pure Optical Lanczos-4 5K (Real-ESRGAN & 2D facelock disabled), and 9 Automated Quality Gates.
 ---
 
 # Universal Model Generation Engine & Studio (`모델생성` — `model-generation-engine` v3.0)
@@ -38,14 +38,15 @@ description: Use this skill immediately whenever the user talks about creating, 
 
 ## 3. End-to-End 5-Module Studio & Engine Workflow (`v3.0`)
 
-### Step 1: Real-Person 8-Angle 360° Turnaround Registration (`identity_turnaround.py`)
-- `prepare_canonical_identity_anchor`: Normalizes any real face/portrait photo into a pure optical `85mm` `4:5` (`1200x1500`) head-and-shoulders anchor with zero GAN pre-smoothing.
+### Step 1: Real-Person Frontal-Arc Detailed 8-Direction Registration (`identity_turnaround.py` — `완전좌 -90° ~ 완전우 +90° 디테일 8방향`)
+- `prepare_canonical_identity_anchor`: Normalizes any real face/portrait photo into a pure optical `85mm` `4:5` (`1200x1500`) head-and-shoulders center origin (`0°` `Gen-0`) with zero GAN pre-smoothing.
 - `extract_anatomical_blueprint`: Measures `Apple Vision` + `YuNet` 3D Euclidean craniofacial ratios (`eye_to_chin`, `width_to_length`, `iod_to_bbox_width`, `mouth_to_eye_width`).
-- `plan_progressive_8angle_turnaround` & `assemble_master_turnaround_sheet`: Builds all **8 canonical compass angles** at `45°` intervals:
-  - `0°` `front` (① 정면) — Untouched `Gen-0` optical source
-  - `45°` `three_quarter_left` (② 좌전방 ¾) & `315°` `three_quarter_right` (⑧ 우전방 ¾) — **Hop 1** from `[0°]`
-  - `90°` `left_profile` (③ 좌측면) & `270°` `right_profile` (⑦ 우측면) — **Hop 2** bridged by `[0° + ±45°]`
-  - `135°` `back_left_3q` (④ 좌후방 ¾), `180°` `back` (⑤ 완전 후면), `225°` `back_right_3q` (⑥ 우후방 ¾) — **Hop 3** bridged by `[0° + ±90°]`
+- `plan_progressive_8angle_turnaround` & `assemble_master_turnaround_sheet`: Builds **8 detailed frontal-hemisphere directions** at exact **`22.5°` micro-intervals** between **Complete Left (`-90°`)** and **Complete Right (`+90°`)** around the untouched **`0°` Original** (`<= 11.25°` max angular error across the entire frontal arc, ZERO wasted rear-head slots):
+  - **Center Origin (`0°`)**: `front` (`기준 원본 0°`) — Untouched `Gen-0` optical source
+  - **Hop 1 (`±22.5°` 세미프론트)**: `left_22` (`④ 좌 미세 -22.5°`) & `right_22` (`⑤ 우 미세 +22.5°`) from `[0°]`
+  - **Hop 2 (`±45.0°` 표준 ¾)**: `left_45` (`③ 좌 표준¾ -45°`) & `right_45` (`⑥ 우 표준¾ +45°`) bridged by `[0° + ±22.5°]`
+  - **Hop 3 (`±67.5°` 깊은 반측면)**: `left_67` (`② 좌 깊은¾ -67.5°`) & `right_67` (`⑦ 우 깊은¾ +67.5°`) bridged by `[0° + ±45.0°]`
+  - **Hop 4 (`±90.0°` 완전 측면)**: `left_90` (`① 완전 좌 -90°`) & `right_90` (`⑧ 완전 우 +90°`) bridged by `[0° + ±67.5°]`
 
 ### Step 2: Multi-Category Styling Attachments & Foreign-Face Grey Masking (`multi_asset_composer.py`)
 - Supports multiple optional image/text attachments across 4 dedicated slots:

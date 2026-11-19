@@ -643,32 +643,34 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertEqual(resolved, "three_quarter_left")
             self.assertEqual(refs_3q, [canon_path, fake_3q_l])
 
-    def test_16_8angle_360_compass_foreign_face_masking_and_3d_previz(self) -> None:
-        """Verify 3-hop 8-Angle (0..315 deg) turnaround, continuous azimuth compass, foreign-face grey masking, and 3D Previz."""
+    def test_16_8angle_frontal_arc_foreign_face_masking_and_3d_previz(self) -> None:
+        """Verify 4-hop Detailed 8-Direction (-90..+90 deg) frontal-arc turnaround, foreign-face masking, and 3D Previz."""
         import tempfile
         from model_generation_engine import (
             ModelGenerationPipeline,
             PosePrevizSpec,
             Previz3DRenderer,
             TURNAROUND_8_VIEWS,
+            TURNAROUND_FULL_SWEEP,
             resolve_8angle_view_from_azimuth,
         )
 
-        # 1. Continuous 0..360 deg azimuth -> 8 canonical views
+        # 1. Continuous -90..+90 deg frontal yaw -> 8 generated directions + 0 deg origin (<= 11.25 deg max error)
         expected_compass = [
+            (-90.0, "left_90"),
+            (-67.5, "left_67"),
+            (-45.0, "left_45"),
+            (-22.5, "left_22"),
+            (-8.0, "front"),
             (0.0, "front"),
-            (18.0, "front"),
-            (45.0, "three_quarter_left"),
-            (90.0, "left_profile"),
-            (135.0, "back_left_3q"),
-            (180.0, "back"),
-            (225.0, "back_right_3q"),
-            (270.0, "right_profile"),
-            (315.0, "three_quarter_right"),
-            (350.0, "front"),
+            (9.0, "front"),
+            (22.5, "right_22"),
+            (45.0, "right_45"),
+            (67.5, "right_67"),
+            (90.0, "right_90"),
         ]
-        for az, exp_view in expected_compass:
-            self.assertEqual(resolve_8angle_view_from_azimuth(az), exp_view)
+        for yaw, exp_view in expected_compass:
+            self.assertEqual(resolve_8angle_view_from_azimuth(yaw), exp_view)
 
         pipe = ModelGenerationPipeline(self.config)
         with tempfile.TemporaryDirectory() as td:
@@ -676,7 +678,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             canon_path, _ = pipe.turnaround.prepare_canonical_identity_anchor(
                 self.ref_face, tmp / "canon_0.jpg", target_size=(600, 750)
             )
-            bank = {}
+            bank = {"front": canon_path}
             for v in TURNAROUND_8_VIEWS:
                 p = tmp / f"{v}.jpg"
                 p.write_bytes(canon_path.read_bytes())
@@ -684,19 +686,18 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
             subj = SubjectProfile(subject_identity_label="Universal subject")
             plans8 = pipe.turnaround.plan_progressive_8angle_turnaround(canon_path, subj, existing_angles=bank)
-            self.assertEqual(set(plans8.keys()), set(TURNAROUND_8_VIEWS))
-            self.assertEqual(plans8["three_quarter_left"]["hop"], 1)
-            self.assertEqual(plans8["left_profile"]["hop"], 2)
-            self.assertEqual(plans8["back_left_3q"]["hop"], 3)
-            self.assertEqual(plans8["back"]["hop"], 3)
+            self.assertEqual(set(plans8.keys()), set(TURNAROUND_FULL_SWEEP))
+            self.assertEqual(plans8["left_22"]["hop"], 1)
+            self.assertEqual(plans8["left_45"]["hop"], 2)
+            self.assertEqual(plans8["left_67"]["hop"], 3)
+            self.assertEqual(plans8["left_90"]["hop"], 4)
             for v in TURNAROUND_8_VIEWS:
-                if v != "front":
-                    PromptFirewall.validate_prompt(str(plans8[v]["prompt"]))
+                PromptFirewall.validate_prompt(str(plans8[v]["prompt"]))
 
-            sheet8 = pipe.turnaround.assemble_master_turnaround_sheet(
-                bank, tmp / "sheet_8.jpg", cell_size=(200, 250), include_labels=True, columns=4
+            sheet9 = pipe.turnaround.assemble_master_turnaround_sheet(
+                bank, tmp / "sheet_9.jpg", cell_size=(200, 250), include_labels=True, columns=9
             )
-            self.assertTrue(sheet8.exists())
+            self.assertTrue(sheet9.exists())
 
             # 2. Foreign-face grey masking on reference images containing another human face
             ref_bgr = cv2.imread(str(self.ref_face))
@@ -709,13 +710,13 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             # 3. 3D Previz Pose Renderer + joint overrides
             pose = PosePrevizSpec(
                 preset_id="seated_armchair",
-                head_azimuth_deg=225.0,
-                torso_azimuth_deg=210.0,
+                head_azimuth_deg=-67.5,
+                torso_azimuth_deg=-55.0,
                 camera_elevation_deg=-12.0,
                 focal_length_mm=50,
                 joints_override={"r_wrist": (0.18, 0.35, 0.22)},
             )
-            self.assertEqual(pose.matched_8angle_view, "back_right_3q")
+            self.assertEqual(pose.matched_8angle_view, "left_67")
             previz_img = Previz3DRenderer.render_pose_guide(pose, canvas_size=(640, 360), output_path=tmp / "previz.jpg")
             self.assertEqual(previz_img.shape, (360, 640, 3))
             self.assertTrue((tmp / "previz.jpg").exists())
@@ -738,8 +739,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             canon_path, _ = pipe.turnaround.prepare_canonical_identity_anchor(
                 self.ref_face, tmp / "front.jpg", target_size=(600, 750)
             )
-            fake_270 = tmp / "right_profile.jpg"
-            fake_270.write_bytes(canon_path.read_bytes())
+            fake_r67 = tmp / "right_67.jpg"
+            fake_r67.write_bytes(canon_path.read_bytes())
 
             # Create dummy product & location images (including one with a foreign face to verify auto-masking)
             solid_item = np.full((320, 320, 3), (180, 140, 110), dtype=np.uint8)
@@ -763,8 +764,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                     SceneLocationInput(name="gallery", image_path=loc2_p, scope="style_mood_only"),
                     SceneLocationInput(name="terrace", mood_or_place_prompt="sunlit stone terrace"),
                 ],
-                poses=[PosePrevizSpec(preset_id="walking_stride", head_azimuth_deg=270.0, torso_azimuth_deg=260.0)],
-                angle_bank={"front": canon_path, "right_profile": fake_270},
+                poses=[PosePrevizSpec(preset_id="hand_in_pocket", head_azimuth_deg=67.5, torso_azimuth_deg=55.0)],
+                angle_bank={"front": canon_path, "right_67": fake_r67},
                 items=[
                     AttachmentItem(category="garment", image_path=garment_p, sub_role="outerwear", description="linen jacket"),
                     AttachmentItem(category="accessory", image_path=acc_p, sub_role="watch", description="chronograph watch"),
@@ -776,11 +777,11 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             # 3 locations -> 3 independent jobs!
             self.assertEqual(len(jobs), 3)
             for j in jobs:
-                self.assertEqual(j.matched_8angle_view, "right_profile")
+                self.assertEqual(j.matched_8angle_view, "right_67")
                 PromptFirewall.validate_prompt(j.prompt)
                 roles = [r["role"] for r in j.ordered_reference_images]
                 self.assertIn("identity_primary_front", roles)
-                self.assertIn("identity_angle_right_profile", roles)
+                self.assertIn("identity_angle_right_67", roles)
                 self.assertIn("item_garment", roles)
                 self.assertIn("item_accessory", roles)
                 self.assertIn("item_bag", roles)
@@ -798,7 +799,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
             r_st = client.get("/api/status")
             self.assertEqual(r_st.status_code, 200)
-            self.assertEqual(len(r_st.json()["turnaround_views"]), 8)
+            # 9 slots = 8 generated frontal-arc directions (-90..-22.5, +22.5..+90) + 1 center origin (0)
+            self.assertEqual(len(r_st.json()["turnaround_views"]), 9)
 
             with open(self.ref_face, "rb") as fh:
                 r_sub = client.post(
@@ -811,7 +813,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
             r_8p = client.post(f"/api/subjects/{sid}/generate-8angles", json={"provider": "manifest"})
             self.assertEqual(r_8p.status_code, 200)
-            self.assertEqual(len(r_8p.json()["plans"]), 8)
+            self.assertEqual(len(r_8p.json()["plans"]), 9)
 
             with open(garment_p, "rb") as fg:
                 r_up_g = client.post(
@@ -837,10 +839,10 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
             r_pv = client.post(
                 "/api/previz/render",
-                json={"preset_id": "standing_left_45", "head_azimuth_deg": 45, "torso_azimuth_deg": 45},
+                json={"preset_id": "standing_left_45", "head_azimuth_deg": -22.5, "torso_azimuth_deg": -22.5},
             )
             self.assertEqual(r_pv.status_code, 200)
-            self.assertEqual(r_pv.json()["matched_8angle_view"], "three_quarter_left")
+            self.assertEqual(r_pv.json()["matched_8angle_view"], "left_22")
 
             r_bat = client.post(
                 "/api/batches",
@@ -851,7 +853,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                     "text_locations": ["sunlit travertine courtyard"],
                     "shared_mood_prompt": "warm architectural daylight",
                     "provider": "manifest",
-                    "pose": {"preset_id": "standing_left_45", "head_azimuth_deg": 45, "torso_azimuth_deg": 45},
+                    "pose": {"preset_id": "standing_left_45", "head_azimuth_deg": -45, "torso_azimuth_deg": -45},
                 },
             )
             self.assertEqual(r_bat.status_code, 200)

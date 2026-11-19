@@ -31,9 +31,11 @@ from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
 from .identity_turnaround import (
     TURNAROUND_5_VIEWS,
     TURNAROUND_8_VIEWS,
+    TURNAROUND_FULL_SWEEP,
     TURNAROUND_VIEWS,
     AnatomicalBlueprint,
     RealPersonTurnaroundEngine,
+    normalize_frontal_yaw_deg,
     resolve_8angle_view_from_azimuth,
 )
 from .previz_pose import POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
@@ -76,9 +78,11 @@ __all__ = [
     "HeadRedrawCompositor",
     "TURNAROUND_5_VIEWS",
     "TURNAROUND_8_VIEWS",
+    "TURNAROUND_FULL_SWEEP",
     "TURNAROUND_VIEWS",
     "AnatomicalBlueprint",
     "RealPersonTurnaroundEngine",
+    "normalize_frontal_yaw_deg",
     "resolve_8angle_view_from_azimuth",
     "POSE_PRESETS",
     "PosePrevizSpec",

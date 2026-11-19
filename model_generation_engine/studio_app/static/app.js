@@ -71,12 +71,18 @@
     return resp.json();
   }
 
+  function formatDeg(val) {
+    const n = Number(val);
+    const s = Number.isInteger(n) ? String(n) : n.toFixed(1);
+    return (n > 0 ? "+" : "") + s + "°";
+  }
+
   function resolveClosest8Angle(azDeg) {
-    const norm = ((Number(azDeg) % 360) + 360) % 360;
-    let best = { view: "front", label: "① 정면 (0°)", azimuth_deg: 0 };
+    const clamped = Math.max(-90, Math.min(90, Number(azDeg) || 0));
+    let best = { view: "front", label: "기준 원본 (0°)", azimuth_deg: 0 };
     let bestDist = 999;
     for (const v of state.turnaroundViews) {
-      const diff = Math.abs((((norm - v.azimuth_deg + 180) % 360 + 360) % 360) - 180);
+      const diff = Math.abs(clamped - v.azimuth_deg);
       if (diff < bestDist) {
         bestDist = diff;
         best = v;
@@ -90,7 +96,8 @@
     const r = (deg * Math.PI) / 180;
     const c = Math.cos(r);
     const s = Math.sin(r);
-    return [-s * pt[2] + c * pt[0], pt[1], c * pt[2] + s * pt[0]];
+    // Negative deg (-90..0) turns toward image-left (-X), positive deg (0..+90) turns toward image-right (+X)
+    return [c * pt[0] + s * pt[2], pt[1], -s * pt[0] + c * pt[2]];
   }
 
   function rotX(pt, deg) {
@@ -300,9 +307,9 @@
       const dx = pt.x - state.drag.startX;
       const dy = pt.y - state.drag.startY;
       if (state.drag.mode === "orbit") {
-        const deltaDeg = Math.round(dx * 0.55);
-        state.pose.torso_azimuth_deg = ((state.drag.origTorso + deltaDeg) % 360 + 360) % 360;
-        state.pose.head_azimuth_deg = ((state.drag.origHead + deltaDeg) % 360 + 360) % 360;
+        const deltaDeg = Math.round(dx * 0.45 * 2) / 2;
+        state.pose.torso_azimuth_deg = Math.max(-90, Math.min(90, state.drag.origTorso + deltaDeg));
+        state.pose.head_azimuth_deg = Math.max(-90, Math.min(90, state.drag.origHead + deltaDeg));
         syncPoseControlsFromState();
       } else if (state.drag.joint) {
         const { fovScale, camDist } = state.projectedJoints;
@@ -326,10 +333,10 @@
   }
 
   function syncPoseControlsFromState() {
-    $("rngHeadAz").value = Math.round(state.pose.head_azimuth_deg);
-    $("valHeadAz").textContent = Math.round(state.pose.head_azimuth_deg) + "°";
-    $("rngTorsoAz").value = Math.round(state.pose.torso_azimuth_deg);
-    $("valTorsoAz").textContent = Math.round(state.pose.torso_azimuth_deg) + "°";
+    $("rngHeadAz").value = state.pose.head_azimuth_deg;
+    $("valHeadAz").textContent = formatDeg(state.pose.head_azimuth_deg);
+    $("rngTorsoAz").value = state.pose.torso_azimuth_deg;
+    $("valTorsoAz").textContent = formatDeg(state.pose.torso_azimuth_deg);
     $("rngHeadPitch").value = Math.round(state.pose.head_pitch_deg);
     $("valHeadPitch").textContent = Math.round(state.pose.head_pitch_deg) + "°";
     $("rngCamElev").value = Math.round(state.pose.camera_elevation_deg);
@@ -363,7 +370,9 @@
     for (const s of state.subjects) {
       const btn = document.createElement("div");
       btn.className = "subj-chip" + (s.id === state.selectedSubjectId ? " active" : "");
-      const readyCnt = Object.values(s.angles || {}).filter((a) => a.status === "ready").length;
+      const readyGenCnt = Object.entries(s.angles || {}).filter(
+        ([k, a]) => k !== "front" && a.status === "ready"
+      ).length;
       btn.innerHTML =
         '<img src="' +
         s.canonical_front_url +
@@ -371,8 +380,8 @@
         "<span>" +
         escapeHtml(s.name) +
         " (" +
-        readyCnt +
-        "/8각도)</span>";
+        readyGenCnt +
+        "/8방향)</span>";
       btn.addEventListener("click", () => {
         state.selectedSubjectId = s.id;
         renderSubjects();
@@ -414,7 +423,10 @@
 
     for (const v of state.turnaroundViews) {
       const slot = document.createElement("div");
-      slot.className = "angle-slot" + (v.view === matched.view ? " matched-active" : "");
+      slot.className =
+        "angle-slot" +
+        (v.is_origin ? " origin-slot" : "") +
+        (v.view === matched.view ? " matched-active" : "");
       slot.dataset.view = v.view;
 
       const info = subj && subj.angles ? subj.angles[v.view] : null;

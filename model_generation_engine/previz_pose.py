@@ -15,11 +15,11 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .identity_turnaround import resolve_8angle_view_from_azimuth
+from .identity_turnaround import normalize_frontal_yaw_deg, resolve_8angle_view_from_azimuth
 
 POSE_PRESETS: Dict[str, Dict[str, object]] = {
     "standing_editorial": {
-        "label_ko": "스탠딩 에디토리얼 (정면·여유)",
+        "label_ko": "스탠딩 에디토리얼 (0° 정면)",
         "shot_scale": "three-quarter portrait shot",
         "pose_text": "standing naturally with relaxed balanced shoulders and calm composed posture",
         "torso_azimuth_deg": 0.0,
@@ -43,11 +43,11 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
         },
     },
     "seated_armchair": {
-        "label_ko": "라운지 체어 착석 (우측 여백·지적 무드)",
+        "label_ko": "라운지 체어 착석 (-22.5° 좌 미세)",
         "shot_scale": "three-quarter seated portrait shot",
         "pose_text": "seated comfortably in an armchair with torso gently angled, hands resting calmly on lap/knee",
-        "torso_azimuth_deg": 20.0,
-        "head_azimuth_deg": 0.0,
+        "torso_azimuth_deg": -22.5,
+        "head_azimuth_deg": -22.5,
         "joints": {
             "pelvis": (0.0, -0.10, 0.0),
             "neck": (0.0, 0.44, -0.03),
@@ -67,11 +67,11 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
         },
     },
     "standing_left_45": {
-        "label_ko": "좌 45° 회전 스탠딩 화보",
+        "label_ko": "좌 표준 ¾ (-45° 스탠딩)",
         "shot_scale": "medium three-quarter standing portrait shot",
         "pose_text": "standing in a composed 45-degree left-facing three-quarter turn with calm forward-left gaze",
-        "torso_azimuth_deg": 45.0,
-        "head_azimuth_deg": 45.0,
+        "torso_azimuth_deg": -45.0,
+        "head_azimuth_deg": -45.0,
         "joints": {
             "pelvis": (0.0, 0.0, 0.0),
             "neck": (0.0, 0.56, 0.0),
@@ -91,11 +91,11 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
         },
     },
     "standing_right_45": {
-        "label_ko": "우 45° 회전 스탠딩 화보",
+        "label_ko": "우 표준 ¾ (+45° 스탠딩)",
         "shot_scale": "medium three-quarter standing portrait shot",
         "pose_text": "standing in a composed 45-degree right-facing three-quarter turn with calm forward-right gaze",
-        "torso_azimuth_deg": 315.0,
-        "head_azimuth_deg": 315.0,
+        "torso_azimuth_deg": 45.0,
+        "head_azimuth_deg": 45.0,
         "joints": {
             "pelvis": (0.0, 0.0, 0.0),
             "neck": (0.0, 0.56, 0.0),
@@ -115,11 +115,11 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
         },
     },
     "walking_stride": {
-        "label_ko": "풀바디 워킹 스트라이드 (전신 도보)",
+        "label_ko": "풀바디 워킹 (+22.5° 우 미세)",
         "shot_scale": "full-body editorial walking shot",
         "pose_text": "walking forward in a confident mid-stride with natural arm swing and balanced posture",
-        "torso_azimuth_deg": 12.0,
-        "head_azimuth_deg": 0.0,
+        "torso_azimuth_deg": 22.5,
+        "head_azimuth_deg": 22.5,
         "joints": {
             "pelvis": (0.0, 0.0, 0.0),
             "neck": (0.0, 0.56, 0.02),
@@ -139,11 +139,11 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
         },
     },
     "arms_crossed": {
-        "label_ko": "팔짱 프로필 (전문가·권위 무드)",
+        "label_ko": "팔짱 프로필 (-67.5° 좌 깊은¾)",
         "shot_scale": "medium three-quarter portrait shot",
         "pose_text": "standing with arms neatly folded across chest, relaxed confident shoulders",
-        "torso_azimuth_deg": 20.0,
-        "head_azimuth_deg": 0.0,
+        "torso_azimuth_deg": -55.0,
+        "head_azimuth_deg": -67.5,
         "joints": {
             "pelvis": (0.0, 0.0, 0.0),
             "neck": (0.0, 0.56, 0.0),
@@ -163,11 +163,11 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
         },
     },
     "hand_in_pocket": {
-        "label_ko": "한손 포켓 캐주얼 테일러드",
+        "label_ko": "한손 포켓 (+67.5° 우 깊은¾)",
         "shot_scale": "three-quarter standing portrait shot",
         "pose_text": "standing with one hand tucked casually into trouser pocket and the other arm relaxed",
-        "torso_azimuth_deg": 335.0,
-        "head_azimuth_deg": 345.0,
+        "torso_azimuth_deg": 55.0,
+        "head_azimuth_deg": 67.5,
         "joints": {
             "pelvis": (0.0, 0.0, 0.0),
             "neck": (0.0, 0.56, 0.0),
@@ -186,12 +186,12 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
             "r_ankle": (0.15, -0.86, -0.02),
         },
     },
-    "over_shoulder_back": {
-        "label_ko": "오버숄더 백뷰 (135° 후방 시선)",
-        "shot_scale": "medium three-quarter rear-angle editorial shot",
-        "pose_text": "turned 135 degrees away showing back-three-quarter silhouette with subtle over-the-shoulder head angle",
-        "torso_azimuth_deg": 135.0,
-        "head_azimuth_deg": 115.0,
+    "full_profile_editorial": {
+        "label_ko": "완전 측면 실루엣 (-90° / +90°)",
+        "shot_scale": "medium side-profile editorial shot",
+        "pose_text": "standing in a clean side-profile silhouette with composed horizontal gaze",
+        "torso_azimuth_deg": -90.0,
+        "head_azimuth_deg": -90.0,
         "joints": {
             "pelvis": (0.0, 0.0, 0.0),
             "neck": (0.0, 0.56, 0.0),
@@ -279,10 +279,10 @@ class Previz3DRenderer:
 
     @staticmethod
     def _rotate_y(pt: np.ndarray, deg: float) -> np.ndarray:
-        rad = math.radians(deg)
+        rad = math.radians(normalize_frontal_yaw_deg(deg))
         c, s = math.cos(rad), math.sin(rad)
-        # Positive azimuth = turning toward image-left (-X)
-        return np.array([-s * pt[2] + c * pt[0], pt[1], c * pt[2] + s * pt[0]], dtype=np.float32)
+        # Signed frontal yaw: negative (-90..0) turns toward image-left (-X), positive (0..+90) turns toward image-right (+X)
+        return np.array([c * pt[0] + s * pt[2], pt[1], -s * pt[0] + c * pt[2]], dtype=np.float32)
 
     @staticmethod
     def _rotate_x(pt: np.ndarray, deg: float) -> np.ndarray:
