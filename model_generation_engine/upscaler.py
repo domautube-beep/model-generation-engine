@@ -33,9 +33,31 @@ class SuperResolutionEngine:
         config.resolve_model_path(f"{config.upscale_model_name}.param")
         config.resolve_model_path(f"{config.upscale_model_name}.bin")
         self.codeformer_path = config.resolve_model_path("codeformer.onnx")
-        self._cf_session = ort.InferenceSession(
-            str(self.codeformer_path), providers=["CPUExecutionProvider"]
-        )
+        self._cf_session_lazy: ort.InferenceSession | None = None
+
+    @property
+    def _cf_session(self) -> ort.InferenceSession:
+        if self._cf_session_lazy is None:
+            self._cf_session_lazy = ort.InferenceSession(
+                str(self.codeformer_path), providers=["CPUExecutionProvider"]
+            )
+        return self._cf_session_lazy
+
+    def upscale_bgr_in_memory(self, src_bgr: np.ndarray, target_min_height: int = 0) -> np.ndarray:
+        """Zero-disk-IO in-memory Pure Optical Lanczos-4 upscale sized directly to target canvas height (zero 25MP JPEG round-trip!)."""
+        sh, sw = src_bgr.shape[:2]
+        if target_min_height > 0:
+            scale = max(1.0, float(target_min_height) / float(max(1, sh)))
+            uw, uh = int(round(sw * scale)), int(round(sh * scale))
+        else:
+            uw, uh = sw * self.config.upscale_factor, sh * self.config.upscale_factor
+
+        lanczos_bgr = cv2.resize(src_bgr, (uw, uh), interpolation=cv2.INTER_LANCZOS4) if (uw, uh) != (sw, sh) else src_bgr.copy()
+        lab = cv2.cvtColor(lanczos_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        L = lab[:, :, 0]
+        fine = L - cv2.GaussianBlur(L, (0, 0), 1.0)
+        lab[:, :, 0] = np.clip(L + 0.11 * np.clip(fine, -5.0, 5.0), 0.0, 255.0)
+        return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
 
     def upscale_image_file(self, input_path: Path, output_path: Path) -> Path:
         """Upscale via Pure Optical Lanczos-4 + gentle halo-free micro-clarity by default (`Real-ESRGAN` disabled to prevent rim corrosion & watercolor blur)."""
@@ -51,13 +73,7 @@ class SuperResolutionEngine:
         uw, uh = sw * self.config.upscale_factor, sh * self.config.upscale_factor
 
         if getattr(self.config, "upscale_mode", "optical_lanczos") != "esrgan":
-            # Pure optical Lanczos-4 + ultra-gentle 0.10 resampling MTF compensation (zero crunch, zero halo)
-            lanczos_bgr = cv2.resize(src_bgr, (uw, uh), interpolation=cv2.INTER_LANCZOS4)
-            lab = cv2.cvtColor(lanczos_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
-            L = lab[:, :, 0]
-            fine = L - cv2.GaussianBlur(L, (0, 0), 1.0)
-            lab[:, :, 0] = np.clip(L + 0.11 * np.clip(fine, -5.0, 5.0), 0.0, 255.0)
-            out_bgr = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+            out_bgr = self.upscale_bgr_in_memory(src_bgr, target_min_height=0)
             cv2.imwrite(str(output_path), out_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
             return output_path
 

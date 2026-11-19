@@ -70,19 +70,19 @@ class AppleVisionAnalyzer:
             return exe
 
     @staticmethod
-    def _write_rgb_png(raw_or_pil: bytes | Image.Image, dst: Path) -> None:
+    def _write_rgb_fast(raw_or_pil: bytes | Image.Image, dst: Path) -> None:
         if isinstance(raw_or_pil, Image.Image):
-            ImageOps.exif_transpose(raw_or_pil).convert("RGB").save(dst, "PNG")
+            ImageOps.exif_transpose(raw_or_pil).convert("RGB").save(dst, "JPEG", quality=98, subsampling=0)
         else:
             with Image.open(BytesIO(raw_or_pil)) as im:
-                ImageOps.exif_transpose(im).convert("RGB").save(dst, "PNG")
+                ImageOps.exif_transpose(im).convert("RGB").save(dst, "JPEG", quality=98, subsampling=0)
 
     def landmarks(self, raw_or_pil: bytes | Image.Image) -> Optional[Dict[str, List[List[float]]]]:
         """Return {'contour', 'leftPupil', 'rightPupil', 'leftEye', 'rightEye', 'nose'} or None if no face."""
         exe = self._binary_for("landmarks")
         with tempfile.TemporaryDirectory() as tmp:
-            img_path = Path(tmp) / "img.png"
-            self._write_rgb_png(raw_or_pil, img_path)
+            img_path = Path(tmp) / "img.jpg"
+            self._write_rgb_fast(raw_or_pil, img_path)
             done = subprocess.run([str(exe), str(img_path)], capture_output=True, text=True, timeout=60)
             if done.returncode != 0:
                 raise AppleVisionError(f"landmarks failed (code {done.returncode}): {done.stderr}")
@@ -113,9 +113,9 @@ class AppleVisionAnalyzer:
         """Return an L-mode person segmentation mask (255 = person, 0 = background) at image resolution."""
         exe = self._binary_for("person_mask")
         with tempfile.TemporaryDirectory() as tmp:
-            img_path = Path(tmp) / "img.png"
+            img_path = Path(tmp) / "img.jpg"
             out_path = Path(tmp) / "mask.png"
-            self._write_rgb_png(raw_or_pil, img_path)
+            self._write_rgb_fast(raw_or_pil, img_path)
             done = subprocess.run([str(exe), str(img_path), str(out_path)], capture_output=True, text=True, timeout=60)
             if done.returncode == 3 or not out_path.exists():
                 return None
@@ -128,8 +128,8 @@ class AppleVisionAnalyzer:
         """Detect graphic typography/brand overlay bounding boxes (normalized top-left x, y, w, h) via macOS Vision."""
         exe = self._binary_for("text_boxes")
         with tempfile.TemporaryDirectory() as tmp:
-            img_path = Path(tmp) / "img.png"
-            self._write_rgb_png(raw_or_pil, img_path)
+            img_path = Path(tmp) / "img.jpg"
+            self._write_rgb_fast(raw_or_pil, img_path)
             done = subprocess.run([str(exe), str(img_path)], capture_output=True, text=True, timeout=60)
             if done.returncode != 0:
                 return []

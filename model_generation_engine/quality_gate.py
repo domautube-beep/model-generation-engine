@@ -45,6 +45,7 @@ class QualityGateAuditor:
         self.apple_vision = AppleVisionAnalyzer(bin_dir=bin_dir)
         self._sface_rec = None
         self._sface_sess = None
+        self._ref_cache: dict = {}
         try:
             sface_path = config.resolve_model_path("sface.onnx")
             self._sface_rec = cv2.FaceRecognizerSF.create(str(sface_path), "")
@@ -56,24 +57,48 @@ class QualityGateAuditor:
         except Exception:
             pass
 
+    def _extract_sface_vec(self, img: np.ndarray, f) -> Optional[np.ndarray]:
+        if self._sface_rec is None or self._sface_sess is None:
+            return None
+        box15 = np.array(
+            list(f.bbox) + f.landmarks_5pt.ravel().tolist() + [f.confidence], dtype=np.float32
+        )
+        aligned = self._sface_rec.alignCrop(img, box15)
+        blob = aligned.transpose(2, 0, 1)[None, ...].astype(np.float32)
+        vec = self._sface_sess.run(None, {self._sface_sess.get_inputs()[0].name: blob})[0][0]
+        return vec / (float(np.linalg.norm(vec)) + 1e-8)
+
+    def _get_cached_reference_bundle(self, ref_bgr: np.ndarray) -> Tuple[object, Optional[np.ndarray], Optional[dict]]:
+        import hashlib
+
+        h_key = hashlib.blake2b(
+            ref_bgr.ravel()[:8192].tobytes() + str(ref_bgr.shape).encode("ascii"), digest_size=12
+        ).hexdigest()
+        cached = self._ref_cache.get(h_key)
+        if cached is not None:
+            return cached
+        ref_face = self.detector.detect(ref_bgr)
+        ref_vec = self._extract_sface_vec(ref_bgr, ref_face)
+        ref_sh = None
+        try:
+            ref_pil = Image.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB))
+            ref_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(ref_pil))
+        except Exception:
+            ref_sh = None
+        bundle = (ref_face, ref_vec, ref_sh)
+        if len(self._ref_cache) > 64:
+            self._ref_cache.clear()
+        self._ref_cache[h_key] = bundle
+        return bundle
+
     def measure_identity_similarity(
         self, ref_bgr: np.ndarray, dst_bgr: np.ndarray, ref_face, dst_face
     ) -> float:
         """Compute 128-D Neural Face Recognition Cosine Similarity via OpenCV SFace (`sface.onnx`)."""
-        if self._sface_rec is None or self._sface_sess is None:
+        v1 = self._extract_sface_vec(ref_bgr, ref_face)
+        v2 = self._extract_sface_vec(dst_bgr, dst_face)
+        if v1 is None or v2 is None:
             return 1.0
-
-        def _feat(img: np.ndarray, f) -> np.ndarray:
-            box15 = np.array(
-                list(f.bbox) + f.landmarks_5pt.ravel().tolist() + [f.confidence], dtype=np.float32
-            )
-            aligned = self._sface_rec.alignCrop(img, box15)
-            blob = aligned.transpose(2, 0, 1)[None, ...].astype(np.float32)
-            vec = self._sface_sess.run(None, {self._sface_sess.get_inputs()[0].name: blob})[0][0]
-            return vec / (float(np.linalg.norm(vec)) + 1e-8)
-
-        v1 = _feat(ref_bgr, ref_face)
-        v2 = _feat(dst_bgr, dst_face)
         return float(np.dot(v1, v2))
 
     @staticmethod
@@ -263,10 +288,11 @@ class QualityGateAuditor:
         id_sim: Optional[float] = None
         shape_note = ""
         if reference_face_bgr is not None:
-            ref_face = self.detector.detect(reference_face_bgr)
+            ref_face, ref_vec, ref_sh = self._get_cached_reference_bundle(reference_face_bgr)
             tilt_diff = abs(float(face.eye_tilt_degrees) - float(ref_face.eye_tilt_degrees))
             if abs(ref_face.yaw_asymmetry_ratio - face.yaw_asymmetry_ratio) <= 0.16:
-                id_sim = self.measure_identity_similarity(reference_face_bgr, patch, ref_face, face)
+                dst_vec = self._extract_sface_vec(patch, face)
+                id_sim = float(np.dot(ref_vec, dst_vec)) if (ref_vec is not None and dst_vec is not None) else 1.0
                 # Allow 0.06 cosine foreshortening margin when head has >= 8 deg 3-axis roll/bow downward gaze
                 eff_min_sim = (
                     max(0.58, self.config.min_identity_cosine_sim - 0.06)
@@ -278,10 +304,12 @@ class QualityGateAuditor:
                         f"Face identity similarity ({id_sim:.3f}) below min ({eff_min_sim:.3f}) — face drifted from reference"
                     )
             try:
-                ref_pil = Image.fromarray(cv2.cvtColor(reference_face_bgr, cv2.COLOR_BGR2RGB))
-                dst_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
-                ref_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(ref_pil))
-                dst_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(dst_pil))
+                # Skip spawning Swift Vision subprocess on angled references where frontal shape comparison is inapplicable
+                if ref_sh and ref_sh.get("frontal"):
+                    dst_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
+                    dst_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(dst_pil))
+                else:
+                    dst_sh = None
                 eff_shape_lim = self.config.max_face_shape_diff_pct + (8.0 if tilt_diff >= 8.0 else 0.0)
                 cmp = self.apple_vision.compare_face_shapes(
                     ref_sh, dst_sh, limit_pct=eff_shape_lim

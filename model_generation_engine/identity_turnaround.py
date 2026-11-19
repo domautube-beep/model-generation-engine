@@ -219,6 +219,13 @@ class RealPersonTurnaroundEngine:
         self.apple_vision = apple_vision
         self.upscaler = upscaler
 
+    @staticmethod
+    def requires_intermediate_turnaround_hop(
+        source_yaw_deg: float, target_yaw_deg: float, max_direct_delta_deg: float = 26.0
+    ) -> bool:
+        """Zero-Quality-Loss Speed Gate: skip generating an intermediate turnaround hop when |target - source| <= 26 deg."""
+        return abs(float(target_yaw_deg) - float(source_yaw_deg)) > float(max_direct_delta_deg)
+
     def mask_foreign_faces_in_reference(
         self,
         bgr_img: np.ndarray,

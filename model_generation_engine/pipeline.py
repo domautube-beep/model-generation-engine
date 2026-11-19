@@ -70,8 +70,16 @@ class ModelGenerationPipeline:
 
         with tempfile.TemporaryDirectory(prefix="single_pass_5k_") as tmp_dir:
             tmp = Path(tmp_dir)
-            up_path = self.upscaler.upscale_image_file(Path(pure_scratch_scene_path), tmp / "up_scene.jpg")
-            up_bgr = cv2.imread(str(up_path))
+            if getattr(self.config, "upscale_mode", "optical_lanczos") != "esrgan":
+                raw_bgr = cv2.imread(str(pure_scratch_scene_path))
+                if raw_bgr is None:
+                    raise FileNotFoundError(f"Cannot read scene image: {pure_scratch_scene_path}")
+                up_bgr = self.upscaler.upscale_bgr_in_memory(
+                    raw_bgr, target_min_height=self.config.canvas.target_height
+                )
+            else:
+                up_path = self.upscaler.upscale_image_file(Path(pure_scratch_scene_path), tmp / "up_scene.jpg")
+                up_bgr = cv2.imread(str(up_path))
             canvas_5k, _, _ = self.compositor.build_ultrawide_canvas(up_bgr)
 
             reattach_info: Dict[str, object] = {}
