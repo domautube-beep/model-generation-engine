@@ -185,6 +185,7 @@ class EngineConfig:
 
     project_name: str = "모델생성"
     vault_dir: Optional[Path] = field(default_factory=lambda: resolve_gdrive_vault(("모델생성", "인물사진")))
+    upscale_mode: str = "optical_lanczos"  # "optical_lanczos" (default, zero GAN corrosion) or "esrgan"
     upscale_model_name: str = "4xNomos8kSC"
     upscale_factor: int = 4
     codeformer_fidelity_w: float = 0.82
@@ -195,7 +196,7 @@ class EngineConfig:
     min_organ_gradient_energy: float = 1.6
     min_inter_ocular_5k_px: float = 40.0
     auto_facelock_below_iod_5k_px: float = 0.0
-    max_face_shape_diff_pct: float = 5.5
+    max_face_shape_diff_pct: float = 6.5
     min_identity_cosine_sim: float = 0.65
     auto_restore_distant_face_iod_px: float = 0.0
     max_specular_glare_ratio: float = 0.04

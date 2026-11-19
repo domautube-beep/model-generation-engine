@@ -30,11 +30,11 @@ class MatteSkinProcessor:
     def __init__(
         self,
         detector: DynamicFaceDetector,
-        percentile_knee: float = 88.0,
-        rolloff_range: float = 6.0,
-        rolloff_scale: float = 12.0,
-        micro_texture_amplitude: float = 1.35,
-        organ_crisp_strength: float = 0.28,
+        percentile_knee: float = 99.2,
+        rolloff_range: float = 3.0,
+        rolloff_scale: float = 8.0,
+        micro_texture_amplitude: float = 0.0,
+        organ_crisp_strength: float = 0.0,
     ) -> None:
         self.detector = detector
         self.percentile_knee = percentile_knee
@@ -235,30 +235,23 @@ class MatteSkinProcessor:
         )
 
         if len(skin_pixels) > 50:
-            a_med = float(np.median(A[core]))
-            b_med = float(np.median(B[core]))
-
+            # Roll off ONLY extreme blown white clipping (> P99.2) in luminance ONLY.
+            # NEVER shift A/B chrominance inside highlights (prevents orange/peach blotches near philtrum/eyelids).
             excess = np.maximum(0.0, L - p_knee)
             L_rolled = np.where(
                 L > p_knee,
                 p_knee + self.rolloff_range * np.tanh(excess / self.rolloff_scale),
                 L,
             )
-            shine_w = np.clip((L - L_rolled) / 14.0, 0.0, 1.0) * skin_mask
-
             L = (1.0 - skin_mask) * L + skin_mask * L_rolled
-            A = A + shine_w * np.clip(a_med - A, -8.0, 8.0)
-            B = B + shine_w * np.clip(b_med - B, -8.0, 8.0)
 
-        # Scale pore wavelength dynamically to face resolution (eye_d / 110.0 reference scale)
+        # Fine pixel-scale optical grain only (never coarse >1.5px blotchy haze)
         scale_factor = float(np.clip(eye_d / 110.0, 0.5, 3.0))
         if self.micro_texture_amplitude > 0.0:
-            sigma_low = 0.80 * scale_factor
-            sigma_high = 1.90 * scale_factor
             rng = np.random.default_rng(seed)
             n_fine = rng.normal(0.0, 1.0, (h, w)).astype(np.float32)
-            bp_fine = cv2.GaussianBlur(n_fine, (0, 0), sigma_low) - cv2.GaussianBlur(
-                n_fine, (0, 0), sigma_high
+            bp_fine = cv2.GaussianBlur(n_fine, (0, 0), 0.45) - cv2.GaussianBlur(
+                n_fine, (0, 0), 0.95
             )
             bp_fine /= float(np.std(bp_fine) + 1e-6)
             L = np.clip(L + self.micro_texture_amplitude * bp_fine * skin_mask, 0, 255)
@@ -290,11 +283,12 @@ class MatteSkinProcessor:
         if len(skin_L) < 50:
             return SkinQualityMetrics(0.0, 2.0, 180.0, int(len(skin_L)))
 
-        # Relative specular glare: pixels exceeding median skin L by > +38 while losing chroma (< 60% of median chroma)
+        # True blown specular glare: desaturated bright hotspots (L > max(228, l_med+52) & chroma < 0.55*c_med) or clipping (> 247)
         l_med = float(np.median(skin_L))
         chroma = np.hypot(A[core] - 128.0, B[core] - 128.0)
         c_med = float(np.median(chroma)) + 1e-5
-        glare_mask = ((skin_L > min(240.0, l_med + 38.0)) & (chroma < 0.60 * c_med)) | (skin_L > 246.0)
+        glare_thresh = min(242.0, max(228.0, l_med + 52.0))
+        glare_mask = ((skin_L > glare_thresh) & (chroma < 0.55 * c_med)) | (skin_L > 247.0)
         glare_ratio = float(np.mean(glare_mask))
 
         scale_factor = float(np.clip(det.inter_ocular_distance / 110.0, 0.5, 3.0))

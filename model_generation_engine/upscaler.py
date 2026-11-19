@@ -38,16 +38,35 @@ class SuperResolutionEngine:
         )
 
     def upscale_image_file(self, input_path: Path, output_path: Path) -> Path:
-        """Run Real-ESRGAN (4xNomos8kSC) GPU super-resolution on an image file."""
+        """Upscale via Pure Optical Lanczos-4 + gentle halo-free micro-clarity by default (`Real-ESRGAN` disabled to prevent rim corrosion & watercolor blur)."""
         if not Path(input_path).exists():
             raise FileNotFoundError(f"Upscale input file not found: {input_path}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        src_bgr = cv2.imread(str(input_path))
+        if src_bgr is None:
+            raise RuntimeError(f"Failed to read upscale input file: {input_path}")
+
+        sh, sw = src_bgr.shape[:2]
+        uw, uh = sw * self.config.upscale_factor, sh * self.config.upscale_factor
+
+        if getattr(self.config, "upscale_mode", "optical_lanczos") != "esrgan":
+            lanczos_bgr = cv2.resize(src_bgr, (uw, uh), interpolation=cv2.INTER_LANCZOS4)
+            lab = cv2.cvtColor(lanczos_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+            L = lab[:, :, 0]
+            fine = L - cv2.GaussianBlur(L, (0, 0), 1.1)
+            lab[:, :, 0] = np.clip(L + 0.28 * np.clip(fine, -7.0, 7.0), 0.0, 255.0)
+            out_bgr = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+            cv2.imwrite(str(output_path), out_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+            return output_path
+
+        raw_esrgan_path = output_path.parent / f".raw_esr_{output_path.name}"
         cmd = [
             str(self.esrgan_bin),
             "-i",
             str(input_path),
             "-o",
-            str(output_path),
+            str(raw_esrgan_path),
             "-m",
             str(self.models_dir),
             "-n",
@@ -56,8 +75,47 @@ class SuperResolutionEngine:
             str(self.config.upscale_factor),
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if not output_path.exists():
-            raise RuntimeError(f"realesrgan-ncnn-vulkan failed to produce {output_path}")
+        if not raw_esrgan_path.exists():
+            raise RuntimeError(f"realesrgan-ncnn-vulkan failed to produce {raw_esrgan_path}")
+
+        src_bgr = cv2.imread(str(input_path))
+        esr_bgr = cv2.imread(str(raw_esrgan_path))
+        raw_esrgan_path.unlink(missing_ok=True)
+        if src_bgr is None or esr_bgr is None:
+            raise RuntimeError(f"Failed to read upscaled tensors for {input_path}")
+
+        uh, uw = esr_bgr.shape[:2]
+        lanczos_bgr = cv2.resize(src_bgr, (uw, uh), interpolation=cv2.INTER_LANCZOS4)
+
+        # 1. Fuse 62% ESRGAN anti-aliased edge geometry with 38% Lanczos4 authentic micro-texture
+        #    so GAN smoothing never wipes out real skin/fabric grain into milky watercolor patches.
+        fused = (0.62 * esr_bgr.astype(np.float32) + 0.38 * lanczos_bgr.astype(np.float32))
+
+        # 2. Anti-Haze Black-Point & Tonal Curve Lock in CIE LAB Luminance:
+        #    Restore exact P2 black point and P98 highlight contrast from source so blacks never float grey.
+        src_lab = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        fus_lab = cv2.cvtColor(fused.clip(0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+        L = fus_lab[:, :, 0]
+
+        p2_src, p98_src = np.percentile(src_lab[:, :, 0], [2.0, 98.0])
+        p2_fus, p98_fus = np.percentile(L, [2.0, 98.0])
+        if p98_fus - p2_fus > 8.0:
+            target_low = max(0.0, min(p2_src, 16.0))
+            L = (L - p2_fus) * ((p98_src - target_low) / (p98_fus - p2_fus)) + target_low
+            L = np.clip(L, 0.0, 255.0)
+
+        # 3. Halo-Free Dual-Band Optical Deconvolution Crisping (fine eyelashes/pores + local micro-contrast)
+        l_fine = L - cv2.GaussianBlur(L, (0, 0), 0.95)
+        l_local = L - cv2.GaussianBlur(L, (0, 0), 2.60)
+        # Clamp overshoot to prevent bright white halos on high-contrast eyewear/collar edges
+        L_crisp = np.clip(
+            L + 0.68 * np.clip(l_fine, -14.0, 14.0) + 0.24 * np.clip(l_local, -10.0, 10.0),
+            0.0,
+            255.0,
+        )
+        fus_lab[:, :, 0] = L_crisp
+        crisp_bgr = cv2.cvtColor(fus_lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+        cv2.imwrite(str(output_path), crisp_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
         return output_path
 
     @staticmethod

@@ -187,25 +187,19 @@ class RealPersonTurnaroundEngine:
         x2 = min(w, int(round(x1 + crop_w)))
         y2 = min(h, int(round(y1 + crop_h)))
 
-        crop = bgr[y1:y2, x1:x2]
-        # If crop is lower resolution than target_size and upscaler is available, super-resolve first
-        if self.upscaler is not None and (crop.shape[1] < tw * 0.85 or crop.shape[0] < th * 0.85):
-            tmp_in = output_anchor_path.parent / f".tmp_canon_in_{output_anchor_path.stem}.jpg"
-            tmp_up = output_anchor_path.parent / f".tmp_canon_up_{output_anchor_path.stem}.jpg"
-            output_anchor_path.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(tmp_in), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
-            try:
-                self.upscaler.upscale_image_file(tmp_in, tmp_up)
-                up_bgr = cv2.imread(str(tmp_up))
-                if up_bgr is not None:
-                    crop = up_bgr
-            finally:
-                tmp_in.unlink(missing_ok=True)
-                tmp_up.unlink(missing_ok=True)
-
-        canonical = cv2.resize(crop, (tw, th), interpolation=cv2.INTER_LANCZOS4)
+        crop = bgr[y1:y2, x1:x2].copy()
+        # NEVER run GAN/Real-ESRGAN upscaling on the user's ground-truth reference photo:
+        # GAN pre-smoothing destroys real photographic grain and drops Tenengrad sharpness by >60% before generation.
+        if crop.shape[1] < tw or crop.shape[0] < th:
+            # Keep native resolution if already >= 480px wide; otherwise clean Lanczos4 only
+            if crop.shape[1] >= 480:
+                canonical = crop
+            else:
+                canonical = cv2.resize(crop, (tw, th), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            canonical = cv2.resize(crop, (tw, th), interpolation=cv2.INTER_LANCZOS4)
         output_anchor_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(output_anchor_path), canonical, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+        cv2.imwrite(str(output_anchor_path), canonical, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
         blueprint = self.extract_anatomical_blueprint(canonical)
         return output_anchor_path, blueprint
 

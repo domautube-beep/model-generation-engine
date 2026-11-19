@@ -70,16 +70,15 @@ description: Use this skill immediately whenever the user talks about creating, 
 ### Stage 4: Single-Pass From-Scratch Generation (`generation_depth == 0`)
 - Invoke `image-generator` in a **single pass from scratch**, passing ONLY the original identity reference image (`ref_person_face.jpg`). Never re-feed a generated image back into `image-generator`.
 
-### Stage 5: 4x Native Super-Resolution & Scale-Adaptive Anti-Smudge Focus Recovery (`SuperResolutionEngine`)
-- Upscale the single-pass raw image 4x using `realesrgan-ncnn-vulkan` (`4xNomos8kSC`).
-- **Scale-Adaptive Anti-Smudge Rescue**:
-  - For medium/close-up shots (`inter_ocular_distance >= 90px` on 5K and high per-organ edge energy), preserve the pure 4x Real-ESRGAN detail directly without down-warping through a `512x512` bottleneck.
-  - For distant/full-body wide shots (`inter_ocular_distance < 90px` on 5K or weak organ edge energy), automatically execute `restore_face_focus_5pt` with **Ultra-High-Frequency Residual Recovery (`warped_back + 0.65 * (patch - warped_orig_back)`)** so zero double-interpolation blur occurs.
-  - **3D Yaw Anti-Smudge Guard**: When head yaw is steep 3/4 or side-profile (`abs(yaw_asymmetry_ratio) > 0.28`), bypass frontal `FFHQ_TEMPLATE_512` warping (which stretches/crushes angled faces) and apply pose-invariant multi-scale anatomical crisping.
+### Stage 5: Pure Optical Lanczos-4 Super-Resolution (`upscale_mode="optical_lanczos"`, `Real-ESRGAN` Disabled by Default)
+- **HARD BAN ON `Real-ESRGAN` (`4xNomos8kSC`) FOR GLASSES & SKIN**:
+  - `Real-ESRGAN` corrodes `2px` tortoiseshell/metal glasses rims into moth-eaten artifacts and smears fine hair/skin grain (`Tenengrad` drops `-63% ~ -88%`), matching `AI모델스튜디오` Rule 26 (`Real-ESRGAN 금지`).
+  - Default `EngineConfig.upscale_mode = "optical_lanczos"` performs pure `INTER_LANCZOS4` scaling + gentle clamped `[-7, +7]` luminance micro-clarity with zero GAN hallucination.
 
-### Stage 6: Adaptive Halo-Free Matte Skin, Organ Exclusion & Organ Micro-Crisping (`MatteSkinProcessor.process`)
-- Dynamically sample the subject's skin CIE LAB profile (`sample_adaptive_skin_profile`), build a 3D-yaw-adaptive skin mask that **explicitly excludes eyes/eyelids/eyewear, eyebrow arches, nostrils/alar base, and lips** so 3D facial organ shading never flattens.
-- Apply scalar `P88` percentile soft-knee specular roll-off (preventing forehead/hairline shadow halos), recover warm chrominance, blend scale-adaptive pore micro-texture (`iod / 110.0`), and apply **Organ-Selective Micro-Crisping (`build_anatomical_organ_mask`)** strictly on the eyes, eyebrows, nostrils, and lip contour.
+### Stage 6: Zero-Blotch / Zero-Synthetic-Noise Optical Skin Preservation (`MatteSkinProcessor`)
+- **HARD BAN ON SYNTHETIC NOISE & LAB HIGHLIGHT CHROMINANCE INJECTION**:
+  - `micro_texture_amplitude = 0.0` (synthetic Gaussian noise creates sandpaper speckles on 5K faces) and `organ_crisp_strength = 0.0` (prevents white ringing halos on glasses rims).
+  - `percentile_knee = 99.2` rolls off ONLY extreme clipped white glare (`> P99.2`) in luminance `L` ONLY—never shifting `A/B` chrominance inside highlights (which previously caused orange/peach blotches beside the philtrum).
 
 ### Stage 7: Tone-Matched 3D In-Place Upper-Body Synthesis (`run_tonematched_5k_synthesis`), 5K (`5040x2160`) 21:9 Outpainting & 9 Quality Gates
 - **HARD BAN ON 2D OVAL PIXEL PASTING (`facelock` PROHIBITED)**:
