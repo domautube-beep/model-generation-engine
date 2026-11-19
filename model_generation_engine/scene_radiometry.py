@@ -435,6 +435,7 @@ class AutonomousDoPDirector:
         is_backlit: bool = False,
         median_luma: float = 110.0,
         b_shift: float = 0.0,
+        bg_chroma: float = 0.0,
         contrast_stops: float = 2.2,
         has_reference_photo: bool = False,
     ) -> Dict[str, object]:
@@ -464,6 +465,28 @@ class AutonomousDoPDirector:
                 ),
                 "color_cast_summary": "true silver-gelatin monochrome tonality with luminous unclipped highlights and rich midtone gradation",
                 "rationale": "monochrome_classic_leica_hp5",
+            }
+
+        # Saturated chromatic studio cyclorama (e.g., crimson, oxblood, cobalt, ochre, emerald campaign studio)
+        if has_reference_photo and not is_backlit and bg_chroma >= 26.0:
+            return {
+                "camera_id": "hasselblad_x2d",
+                "film_id": "digital_neutral_raw",
+                "aperture": "f/2.8",
+                "focal_length_mm": 85,
+                "kelvin_est": 5500,
+                "contrast_ratio_stops": 2.5,
+                "illuminance_lux": 920,
+                "illuminance_desc": "sculpted medium-format studio softbox illuminance (~920 lux directional overhead-side octabox key, ~220 lux soft cyclorama fill)",
+                "light_flow_desc": (
+                    "a large overhead-side studio octabox casts smooth, sculptural studio lighting across facial planes and fluidly draped "
+                    "suiting folds, grounding the chair and footwear with a soft-edged diagonal floor shadow across the seamless studio cyclorama"
+                ),
+                "color_cast_summary": (
+                    "grey-card calibrated 5500K neutral studio flash white balance—preserving the exact deep saturated cyclorama and furniture "
+                    "pigment from the reference while keeping human skin luminous porcelain-neutral with ZERO backdrop color bleed or yellow cast"
+                ),
+                "rationale": "chromatic_studio_hasselblad_hncs_f28",
             }
 
         if contradict_dark_bright or any(k in low for k in rain_night_kw) or (
@@ -623,8 +646,11 @@ class SceneRadiometryAnalyzer:
 
         lab = cv2.cvtColor(work, cv2.COLOR_BGR2LAB).astype(np.float32)
         l_ch = lab[:, :, 0]
-        a_shift = float(np.median(lab[:, :, 1]) - 128.0)
-        b_shift = float(np.median(lab[:, :, 2]) - 128.0)
+        a_arr = lab[:, :, 1] - 128.0
+        b_arr = lab[:, :, 2] - 128.0
+        a_shift = float(np.median(a_arr))
+        b_shift = float(np.median(b_arr))
+        bg_chroma = float(np.median(np.hypot(a_arr, b_arr)))
 
         p05, p15, p50, p85, p95 = [float(v) for v in np.percentile(l_ch, [5, 15, 50, 85, 95])]
         bright_frac = float(np.mean(l_ch >= 215.0))
@@ -672,11 +698,20 @@ class SceneRadiometryAnalyzer:
             regime = "directional_side_key"
             key_vec = f"soft directional {side_desc} daylight creating a smooth natural luminance falloff across face and outfit"
 
+        if not is_backlit and bg_chroma >= 26.0:
+            kelvin_measured = 5500
+            regime = "sculpted_chromatic_studio"
+            key_vec = (
+                f"sculpted overhead-{side_desc} medium-format studio softbox illumination casting smooth 3D tonal roll-off across "
+                "facial planes and fluid garment folds with a soft-edged diagonal floor shadow across the seamless colored cyclorama"
+            )
+
         dop = AutonomousDoPDirector.curate_rig(
             raw_text=raw_text,
             is_backlit=is_backlit,
             median_luma=p50,
             b_shift=b_shift,
+            bg_chroma=bg_chroma,
             contrast_stops=contrast_stops,
             has_reference_photo=True,
         )
@@ -685,7 +720,9 @@ class SceneRadiometryAnalyzer:
         if film_id == "off":
             eff_film = "off"
 
-        if b_shift >= 10.0:
+        if not is_backlit and bg_chroma >= 26.0:
+            color_summary = str(dop["color_cast_summary"])
+        elif b_shift >= 10.0:
             color_summary = (
                 "natural daylight white balance (5300K–5500K) preserving subtle warm wood/sunlight atmosphere ONLY on environmental "
                 "surfaces while keeping white shirts, highlights, and human skin clean and free of muddy yellow/orange cast"
@@ -890,12 +927,18 @@ class PostGenCohesionMasterer:
         de_yellow = float(cfg.get("de_yellow", 0.85))  # type: ignore[arg-type]
         tgt_l_floor = env_l_p05
 
+        is_chromatic_studio = bool(
+            target_spec is not None and target_spec.lighting_regime == "sculpted_chromatic_studio"
+        )
         # If a real reference scene is provided AND de_yellow allows partial scene warmth inheritance, blend gently (capped!)
         if reference_scene_bgr is not None and reference_scene_bgr.size > 0 and not bool(cfg.get("monochrome", False)):
             ref_s = cv2.resize(reference_scene_bgr, (160, 160), interpolation=cv2.INTER_AREA)
             ref_lab = cv2.cvtColor(ref_s, cv2.COLOR_BGR2LAB).astype(np.float32)
             rL = ref_lab[:, :, 0]
+            rA = ref_lab[:, :, 1] - 128.0
             rB = ref_lab[:, :, 2] - 128.0
+            if float(np.median(np.hypot(rA, rB))) >= 24.0:
+                is_chromatic_studio = True
             r_p05 = float(np.percentile(rL, 5))
             tgt_l_floor = 0.5 * tgt_l_floor + 0.5 * r_p05
             # Cap reference yellow inheritance strictly to <= +8.5 so even warm references stay clean & non-jaundiced!
@@ -908,6 +951,17 @@ class PostGenCohesionMasterer:
         if bool(cfg.get("monochrome", False)):
             A = A * (1.0 - strength)
             B = B * (1.0 - strength)
+        elif is_chromatic_studio:
+            # Intentional saturated colored studio cyclorama confirmed by reference/spec (e.g., crimson, cobalt, terracotta):
+            # NEVER strip the backdrop's pigment! Only guard skin against abnormal yellow (>16.5) or backdrop spill (>18.5).
+            if face_det is not None and np.any(skin_damper > 0.45):
+                sk_zone = skin_damper > 0.45
+                sk_b = float(np.median(B[sk_zone]))
+                sk_a = float(np.median(A[sk_zone]))
+                if sk_b > 16.5:
+                    B = B - 0.65 * (sk_b - 15.0) * skin_damper
+                if sk_a > 18.5:
+                    A = A - 0.55 * (sk_a - 16.5) * skin_damper
         else:
             hi_zone = L >= 170.0
             mid_zone = (L >= 65.0) & (L < 170.0)

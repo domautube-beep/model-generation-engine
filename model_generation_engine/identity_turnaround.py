@@ -220,9 +220,12 @@ class RealPersonTurnaroundEngine:
         self.upscaler = upscaler
 
     def mask_foreign_faces_in_reference(
-        self, bgr_img: np.ndarray, output_masked_path: Optional[Path] = None
+        self,
+        bgr_img: np.ndarray,
+        output_masked_path: Optional[Path] = None,
+        remove_overlay_text: bool = True,
     ) -> Tuple[np.ndarray, int]:
-        """Detect all human faces in a mood/garment/accessory/location reference photo and cover them with neutral grey (#8C8C8C)."""
+        """Mask foreign human faces AND seamlessly inpaint ad/magazine typography overlays in reference photos."""
         h, w = bgr_img.shape[:2]
         scale = min(1.0, 1280.0 / float(max(w, h)))
         sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
@@ -231,6 +234,26 @@ class RealPersonTurnaroundEngine:
         det = cv2.FaceDetectorYN.create(self.detector.yunet_path, "", (sw, sh), 0.42, 0.3, 5000)
         _, faces = det.detect(work)
         out = bgr_img.copy()
+
+        # Seamlessly inpaint graphic text / campaign logos (e.g., magazine mastheads or furniture brand captions)
+        if remove_overlay_text:
+            try:
+                pil_rgb = Image.fromarray(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
+                tboxes = self.apple_vision.text_boxes(pil_rgb)
+                if tboxes:
+                    txt_mask = np.zeros((h, w), dtype=np.uint8)
+                    for tb in tboxes:
+                        tx1 = max(0, int(round(float(tb["x"]) * w)) - 8)
+                        ty1 = max(0, int(round(float(tb["y"]) * h)) - 8)
+                        tx2 = min(w, int(round((float(tb["x"]) + float(tb["w"])) * w)) + 8)
+                        ty2 = min(h, int(round((float(tb["y"]) + float(tb["h"])) * h)) + 8)
+                        if tx2 > tx1 and ty2 > ty1:
+                            cv2.rectangle(txt_mask, (tx1, ty1), (tx2, ty2), 255, -1)
+                    if np.any(txt_mask > 0):
+                        out = cv2.inpaint(out, txt_mask, 9.0, cv2.INPAINT_TELEA)
+            except Exception:
+                pass
+
         count = 0
         if faces is not None and len(faces) > 0:
             inv_s = 1.0 / scale
@@ -242,19 +265,18 @@ class RealPersonTurnaroundEngine:
                 x2 = min(w, int(round(fx + fw + pad_x)))
                 y2 = min(h, int(round(fy + fh + pad_y * 0.6)))
                 if x2 > x1 and y2 > y1:
-                    # Sample local ambient scene border color so privacy mask preserves warm/cool lighting (zero cool-grey box bleed)
+                    # Sample local ambient scene border color so privacy mask preserves scene hue/lighting
                     bx1, by1 = max(0, x1 - 18), max(0, y1 - 18)
                     bx2, by2 = min(w, x2 + 18), min(h, y2 + 18)
                     ring = np.ones((by2 - by1, bx2 - bx1), dtype=bool)
                     ring[(y1 - by1) : (y2 - by1), (x1 - bx1) : (x2 - bx1)] = False
-                    patch_ring = bgr_img[by1:by2, bx1:bx2][ring]
+                    patch_ring = out[by1:by2, bx1:bx2][ring]
                     if patch_ring.size >= 3:
                         med_bgr = [int(round(float(v))) for v in np.median(patch_ring, axis=0)]
-                        # Damp slightly toward neutral midtone while keeping local scene warmth/coolness
                         fill_color = (
-                            int(round(0.65 * med_bgr[0] + 0.35 * 136)),
-                            int(round(0.65 * med_bgr[1] + 0.35 * 136)),
-                            int(round(0.65 * med_bgr[2] + 0.35 * 136)),
+                            int(round(0.82 * med_bgr[0] + 0.18 * 136)),
+                            int(round(0.82 * med_bgr[1] + 0.18 * 136)),
+                            int(round(0.82 * med_bgr[2] + 0.18 * 136)),
                         )
                     else:
                         fill_color = (140, 140, 140)

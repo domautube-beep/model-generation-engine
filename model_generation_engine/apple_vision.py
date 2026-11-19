@@ -124,6 +124,18 @@ class AppleVisionAnalyzer:
             with Image.open(out_path) as m:
                 return m.convert("L").copy()
 
+    def text_boxes(self, raw_or_pil: bytes | Image.Image) -> List[Dict[str, object]]:
+        """Detect graphic typography/brand overlay bounding boxes (normalized top-left x, y, w, h) via macOS Vision."""
+        exe = self._binary_for("text_boxes")
+        with tempfile.TemporaryDirectory() as tmp:
+            img_path = Path(tmp) / "img.png"
+            self._write_rgb_png(raw_or_pil, img_path)
+            done = subprocess.run([str(exe), str(img_path)], capture_output=True, text=True, timeout=60)
+            if done.returncode != 0:
+                return []
+            data = json.loads(done.stdout)
+            return list(data.get("boxes") or [])
+
     @staticmethod
     def compute_face_shape(marks: Optional[Dict[str, List[List[float]]]]) -> Optional[Dict[str, object]]:
         """Compute normalized eye-to-chin length and width-to-length facial proportions (`vision.face_shape`)."""
