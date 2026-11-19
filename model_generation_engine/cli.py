@@ -14,7 +14,9 @@ from .config import (
     SubjectProfile,
     WardrobeSpec,
 )
+from .multi_asset_composer import AttachmentItem, SceneLocationInput
 from .pipeline import ModelGenerationPipeline
+from .previz_pose import POSE_PRESETS, PosePrevizSpec
 from .prompt_builder import PromptFirewall
 from .workflow import SinglePassGenerationGuard, UniversalVariationPlanner
 
@@ -151,10 +153,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_prompt.add_argument("--negative-space-side", type=str, default="left")
     p_prompt.add_argument("--aspect-ratio-label", type=str, default="16:9")
 
-    # 5. plan-turnaround (Real-Person 2-Hop 5-Angle 3D Turnaround Registration)
+    # 5. plan-turnaround (Real-Person 3-Hop 8-Angle 360° Turnaround Registration)
     p_turn = sub.add_parser(
         "plan-turnaround",
-        help="Normalize a real photo into a canonical 85mm anchor and emit 2-Hop 5-Angle 3D turnaround prompts",
+        help="Normalize a real photo into a pure optical 85mm anchor and emit 8-Angle (or 5-Angle) 3D turnaround prompts",
     )
     p_turn.add_argument("--ref-face", type=Path, required=True)
     p_turn.add_argument("--output-canonical", type=Path, required=True)
@@ -167,8 +169,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     p_turn.add_argument("--hairstyle", type=str, default=None)
     p_turn.add_argument("--eyewear", type=str, default=None)
+    p_turn.add_argument("--angles", type=int, choices=[5, 8], default=8)
     p_turn.add_argument("--approved-3q-left", type=Path, default=None)
     p_turn.add_argument("--approved-3q-right", type=Path, default=None)
+    p_turn.add_argument("--approved-left-profile", type=Path, default=None)
+    p_turn.add_argument("--approved-right-profile", type=Path, default=None)
+
+    # 6. compose-batch (Multi-Asset × Multi-Location × 3D Previz Batch Composer)
+    p_batch = sub.add_parser(
+        "compose-batch",
+        help="Compose N parallel jobs from 8-angle subject + garments/accessories/bags/shoes + multiple locations + 3D Previz pose",
+    )
+    p_batch.add_argument("--canonical-front", type=Path, required=True)
+    p_batch.add_argument("--subject-label", type=str, default="human subject in the reference portrait")
+    p_batch.add_argument("--garment", type=Path, action="append", default=[])
+    p_batch.add_argument("--accessory", type=Path, action="append", default=[])
+    p_batch.add_argument("--bag", type=Path, action="append", default=[])
+    p_batch.add_argument("--shoe", type=Path, action="append", default=[])
+    p_batch.add_argument("--location-image", type=Path, action="append", default=[])
+    p_batch.add_argument("--location-prompt", type=str, action="append", default=[])
+    p_batch.add_argument("--pose-preset", type=str, default="standing_editorial", choices=list(POSE_PRESETS.keys()))
+    p_batch.add_argument("--head-azimuth", type=float, default=0.0)
+    p_batch.add_argument("--torso-azimuth", type=float, default=0.0)
+    p_batch.add_argument("--work-dir", type=Path, default=None)
+
+    # 7. studio (Launch Standalone Studio Web App)
+    p_studio = sub.add_parser("studio", help="Launch 모델생성 스튜디오 v3.0 web application")
+    p_studio.add_argument("--host", type=str, default="127.0.0.1")
+    p_studio.add_argument("--port", type=int, default=18830)
+    p_studio.add_argument("--workspace", type=Path, default=None)
 
     args = parser.parse_args(argv)
 
@@ -318,12 +347,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             hairstyle=args.hairstyle,
             eyewear=args.eyewear,
         )
-        plans = pipe.turnaround.plan_progressive_5angle_turnaround(
-            canon_path,
-            subj,
-            approved_3q_left_path=args.approved_3q_left,
-            approved_3q_right_path=args.approved_3q_right,
-        )
+        bank = {}
+        if args.approved_3q_left:
+            bank["three_quarter_left"] = args.approved_3q_left
+        if args.approved_3q_right:
+            bank["three_quarter_right"] = args.approved_3q_right
+        if args.approved_left_profile:
+            bank["left_profile"] = args.approved_left_profile
+        if args.approved_right_profile:
+            bank["right_profile"] = args.approved_right_profile
+
+        if args.angles == 8:
+            plans = pipe.turnaround.plan_progressive_8angle_turnaround(canon_path, subj, existing_angles=bank)
+        else:
+            plans = pipe.turnaround.plan_progressive_5angle_turnaround(
+                canon_path,
+                subj,
+                approved_3q_left_path=args.approved_3q_left,
+                approved_3q_right_path=args.approved_3q_right,
+            )
         print(
             json.dumps(
                 {
@@ -335,6 +377,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 indent=2,
             )
         )
+        return 0
+
+    if args.command == "compose-batch":
+        pipe = ModelGenerationPipeline()
+        subj = SubjectProfile(subject_identity_label=args.subject_label)
+        items = []
+        for cat, plist in (
+            ("garment", args.garment),
+            ("accessory", args.accessory),
+            ("bag", args.bag),
+            ("shoe", args.shoe),
+        ):
+            for p in plist:
+                items.append(AttachmentItem(category=cat, image_path=p))
+        locs = [SceneLocationInput(name=p.stem, image_path=p) for p in args.location_image]
+        for idx, lp in enumerate(args.location_prompt, 1):
+            locs.append(SceneLocationInput(name=f"text_loc_{idx:02d}", mood_or_place_prompt=lp))
+        if not locs:
+            locs.append(SceneLocationInput(name="default_editorial", mood_or_place_prompt="clean architectural studio"))
+        pose = PosePrevizSpec(
+            preset_id=args.pose_preset,
+            head_azimuth_deg=args.head_azimuth,
+            torso_azimuth_deg=args.torso_azimuth,
+        )
+        jobs = pipe.batch_composer.compose_batch(
+            canonical_front_path=args.canonical_front,
+            subject=subj,
+            locations=locs,
+            poses=[pose],
+            items=items,
+            work_dir=args.work_dir,
+        )
+        print(json.dumps([asdict(j) for j in jobs], ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "studio":
+        import uvicorn
+        from .studio_app.server import create_studio_app
+
+        app = create_studio_app(workspace_dir=args.workspace)
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
         return 0
 
     return 1

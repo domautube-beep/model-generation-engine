@@ -480,8 +480,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         import re
 
         pkg_dir = Path(__file__).resolve().parent.parent / "model_generation_engine"
-        py_files = sorted(pkg_dir.glob("*.py"))
-        self.assertGreaterEqual(len(py_files), 10)
+        py_files = sorted(pkg_dir.rglob("*.py"))
+        self.assertGreaterEqual(len(py_files), 14)
 
         forbidden_code_regexes = [
             (r"Korean\s+male", "Hardcoded 'Korean male' subject label"),
@@ -642,6 +642,221 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             )
             self.assertEqual(resolved, "three_quarter_left")
             self.assertEqual(refs_3q, [canon_path, fake_3q_l])
+
+    def test_16_8angle_360_compass_foreign_face_masking_and_3d_previz(self) -> None:
+        """Verify 3-hop 8-Angle (0..315 deg) turnaround, continuous azimuth compass, foreign-face grey masking, and 3D Previz."""
+        import tempfile
+        from model_generation_engine import (
+            ModelGenerationPipeline,
+            PosePrevizSpec,
+            Previz3DRenderer,
+            TURNAROUND_8_VIEWS,
+            resolve_8angle_view_from_azimuth,
+        )
+
+        # 1. Continuous 0..360 deg azimuth -> 8 canonical views
+        expected_compass = [
+            (0.0, "front"),
+            (18.0, "front"),
+            (45.0, "three_quarter_left"),
+            (90.0, "left_profile"),
+            (135.0, "back_left_3q"),
+            (180.0, "back"),
+            (225.0, "back_right_3q"),
+            (270.0, "right_profile"),
+            (315.0, "three_quarter_right"),
+            (350.0, "front"),
+        ]
+        for az, exp_view in expected_compass:
+            self.assertEqual(resolve_8angle_view_from_azimuth(az), exp_view)
+
+        pipe = ModelGenerationPipeline(self.config)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            canon_path, _ = pipe.turnaround.prepare_canonical_identity_anchor(
+                self.ref_face, tmp / "canon_0.jpg", target_size=(600, 750)
+            )
+            bank = {}
+            for v in TURNAROUND_8_VIEWS:
+                p = tmp / f"{v}.jpg"
+                p.write_bytes(canon_path.read_bytes())
+                bank[v] = p
+
+            subj = SubjectProfile(subject_identity_label="Universal subject")
+            plans8 = pipe.turnaround.plan_progressive_8angle_turnaround(canon_path, subj, existing_angles=bank)
+            self.assertEqual(set(plans8.keys()), set(TURNAROUND_8_VIEWS))
+            self.assertEqual(plans8["three_quarter_left"]["hop"], 1)
+            self.assertEqual(plans8["left_profile"]["hop"], 2)
+            self.assertEqual(plans8["back_left_3q"]["hop"], 3)
+            self.assertEqual(plans8["back"]["hop"], 3)
+            for v in TURNAROUND_8_VIEWS:
+                if v != "front":
+                    PromptFirewall.validate_prompt(str(plans8[v]["prompt"]))
+
+            sheet8 = pipe.turnaround.assemble_master_turnaround_sheet(
+                bank, tmp / "sheet_8.jpg", cell_size=(200, 250), include_labels=True, columns=4
+            )
+            self.assertTrue(sheet8.exists())
+
+            # 2. Foreign-face grey masking on reference images containing another human face
+            ref_bgr = cv2.imread(str(self.ref_face))
+            masked_bgr, masked_cnt = pipe.turnaround.mask_foreign_faces_in_reference(
+                ref_bgr, output_masked_path=tmp / "masked_ref.jpg"
+            )
+            self.assertGreaterEqual(masked_cnt, 1)
+            self.assertFalse(np.array_equal(ref_bgr, masked_bgr))
+
+            # 3. 3D Previz Pose Renderer + joint overrides
+            pose = PosePrevizSpec(
+                preset_id="seated_armchair",
+                head_azimuth_deg=225.0,
+                torso_azimuth_deg=210.0,
+                camera_elevation_deg=-12.0,
+                focal_length_mm=50,
+                joints_override={"r_wrist": (0.18, 0.35, 0.22)},
+            )
+            self.assertEqual(pose.matched_8angle_view, "back_right_3q")
+            previz_img = Previz3DRenderer.render_pose_guide(pose, canvas_size=(640, 360), output_path=tmp / "previz.jpg")
+            self.assertEqual(previz_img.shape, (360, 640, 3))
+            self.assertTrue((tmp / "previz.jpg").exists())
+
+    def test_17_multi_item_multi_location_batch_composer_and_studio_app_api(self) -> None:
+        """Verify MultiSceneBatchComposer (clothes+accessories+bag+shoes x N locations x 3D Previz) and Studio FastAPI endpoints."""
+        import tempfile
+        from fastapi.testclient import TestClient
+        from model_generation_engine import (
+            AttachmentItem,
+            ModelGenerationPipeline,
+            PosePrevizSpec,
+            SceneLocationInput,
+        )
+        from model_generation_engine.studio_app import StudioImageRuntime, create_studio_app
+
+        pipe = ModelGenerationPipeline(self.config)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            canon_path, _ = pipe.turnaround.prepare_canonical_identity_anchor(
+                self.ref_face, tmp / "front.jpg", target_size=(600, 750)
+            )
+            fake_270 = tmp / "right_profile.jpg"
+            fake_270.write_bytes(canon_path.read_bytes())
+
+            # Create dummy product & location images (including one with a foreign face to verify auto-masking)
+            solid_item = np.full((320, 320, 3), (180, 140, 110), dtype=np.uint8)
+            garment_p = tmp / "jacket.jpg"
+            acc_p = tmp / "watch.jpg"
+            bag_p = tmp / "briefcase.jpg"
+            shoe_p = tmp / "loafers.jpg"
+            for p in (garment_p, acc_p, bag_p, shoe_p):
+                cv2.imwrite(str(p), solid_item)
+
+            loc1_p = tmp / "loc_with_foreign_model.jpg"
+            loc1_p.write_bytes(self.ref_face.read_bytes())
+            loc2_p = tmp / "loc_gallery.jpg"
+            cv2.imwrite(str(loc2_p), np.full((360, 640, 3), (210, 205, 198), dtype=np.uint8))
+
+            jobs = pipe.batch_composer.compose_batch(
+                canonical_front_path=canon_path,
+                subject=SubjectProfile(subject_identity_label="Editorial subject"),
+                locations=[
+                    SceneLocationInput(name="lounge", image_path=loc1_p, mood_or_place_prompt="warm walnut lounge"),
+                    SceneLocationInput(name="gallery", image_path=loc2_p, scope="style_mood_only"),
+                    SceneLocationInput(name="terrace", mood_or_place_prompt="sunlit stone terrace"),
+                ],
+                poses=[PosePrevizSpec(preset_id="walking_stride", head_azimuth_deg=270.0, torso_azimuth_deg=260.0)],
+                angle_bank={"front": canon_path, "right_profile": fake_270},
+                items=[
+                    AttachmentItem(category="garment", image_path=garment_p, sub_role="outerwear", description="linen jacket"),
+                    AttachmentItem(category="accessory", image_path=acc_p, sub_role="watch", description="chronograph watch"),
+                    AttachmentItem(category="bag", image_path=bag_p, description="leather tote bag"),
+                    AttachmentItem(category="shoe", image_path=shoe_p, description="suede loafers"),
+                ],
+                work_dir=tmp / "staging",
+            )
+            # 3 locations -> 3 independent jobs!
+            self.assertEqual(len(jobs), 3)
+            for j in jobs:
+                self.assertEqual(j.matched_8angle_view, "right_profile")
+                PromptFirewall.validate_prompt(j.prompt)
+                roles = [r["role"] for r in j.ordered_reference_images]
+                self.assertIn("identity_primary_front", roles)
+                self.assertIn("identity_angle_right_profile", roles)
+                self.assertIn("item_garment", roles)
+                self.assertIn("item_accessory", roles)
+                self.assertIn("item_bag", roles)
+                self.assertIn("item_shoe", roles)
+                self.assertIn("pose_previz_guide", roles)
+
+            # Test Studio Web App FastAPI Server end-to-end
+            ws_dir = tmp / "studio_ws"
+            app = create_studio_app(workspace_dir=ws_dir, runtime=StudioImageRuntime())
+            client = TestClient(app)
+
+            r_idx = client.get("/")
+            self.assertEqual(r_idx.status_code, 200)
+            self.assertIn("모델생성 스튜디오", r_idx.text)
+
+            r_st = client.get("/api/status")
+            self.assertEqual(r_st.status_code, 200)
+            self.assertEqual(len(r_st.json()["turnaround_views"]), 8)
+
+            with open(self.ref_face, "rb") as fh:
+                r_sub = client.post(
+                    "/api/subjects",
+                    data={"name": "테스트 인물", "identity_label": "adult subject"},
+                    files={"photo": ("face.jpg", fh, "image/jpeg")},
+                )
+            self.assertEqual(r_sub.status_code, 200)
+            sid = r_sub.json()["id"]
+
+            r_8p = client.post(f"/api/subjects/{sid}/generate-8angles", json={"provider": "manifest"})
+            self.assertEqual(r_8p.status_code, 200)
+            self.assertEqual(len(r_8p.json()["plans"]), 8)
+
+            with open(garment_p, "rb") as fg:
+                r_up_g = client.post(
+                    "/api/assets/upload",
+                    data={"category": "garment", "sub_role": "jacket", "description": "olive blazer"},
+                    files=[("files", ("jacket.jpg", fg, "image/jpeg"))],
+                )
+            self.assertEqual(r_up_g.status_code, 200)
+            gid = r_up_g.json()["uploaded"][0]["id"]
+
+            with open(loc1_p, "rb") as fl1, open(loc2_p, "rb") as fl2:
+                r_up_l = client.post(
+                    "/api/assets/upload",
+                    data={"category": "location"},
+                    files=[
+                        ("files", ("loc1.jpg", fl1, "image/jpeg")),
+                        ("files", ("loc2.jpg", fl2, "image/jpeg")),
+                    ],
+                )
+            self.assertEqual(r_up_l.status_code, 200)
+            self.assertGreaterEqual(r_up_l.json()["uploaded"][0]["foreign_faces_masked"], 1)
+            loc_ids = [u["id"] for u in r_up_l.json()["uploaded"]]
+
+            r_pv = client.post(
+                "/api/previz/render",
+                json={"preset_id": "standing_left_45", "head_azimuth_deg": 45, "torso_azimuth_deg": 45},
+            )
+            self.assertEqual(r_pv.status_code, 200)
+            self.assertEqual(r_pv.json()["matched_8angle_view"], "three_quarter_left")
+
+            r_bat = client.post(
+                "/api/batches",
+                json={
+                    "subject_id": sid,
+                    "item_asset_ids": [gid],
+                    "location_asset_ids": loc_ids,
+                    "text_locations": ["sunlit travertine courtyard"],
+                    "shared_mood_prompt": "warm architectural daylight",
+                    "provider": "manifest",
+                    "pose": {"preset_id": "standing_left_45", "head_azimuth_deg": 45, "torso_azimuth_deg": 45},
+                },
+            )
+            self.assertEqual(r_bat.status_code, 200)
+            # 2 uploaded location images + 1 text location = 3 jobs!
+            self.assertEqual(r_bat.json()["total_jobs"], 3)
 
 
 if __name__ == "__main__":

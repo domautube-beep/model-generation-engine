@@ -1,68 +1,56 @@
-# 모델생성 (`model-generation-engine` v2.0)
+# 모델생성 (`model-generation-engine` v3.0 & `모델생성 스튜디오`)
 
-> **100% Universal, Zero-Hardcoding Model Synthesis & 5K Editorial Hero Engine**  
-> Designed to work seamlessly for **any new model (`SubjectProfile`)**, **any new outfit (`WardrobeSpec`)**, **any new location (`LocationSpec`)**, and **any new camera angle & framing (`CameraRigSpec`)**.
-
----
-
-## 1. Core Design Philosophy (Zero Hardcoding Across 5 Axes)
-
-| Axis | Legacy Hardcoding Pitfall | Universal `모델생성` v2.0 Architecture |
-| :--- | :--- | :--- |
-| **1. Model (`SubjectProfile`)** | Hardcoded gender (`"Korean male"`, `"his"`), hardcoded glasses (`"browline glasses"`), or fixed `175cm / 80kg` build | Gender-neutral default (`"human subject in the reference portrait"`), optional `height_cm` / `weight_kg`, dynamic BMI-based physique descriptor, and 1:1 reference inheritance for eyewear & hairstyle unless explicitly overridden |
-| **2. Outfit (`WardrobeSpec`)** | Hardcoded `"black jacket"` or single preset dictionary | Composable `WardrobeSpec` supporting arbitrary custom outfits or multi-category wardrobe catalogs (`tailored_editorial`, `smart_casual`, `architectural_outerwear`) |
-| **3. Location (`LocationSpec`)** | Hardcoded `"doorway"` or `"terracotta wall"` | Composable `LocationSpec` supporting any indoor/outdoor environment, props, lighting, and surface textures (`studio_editorial`, `architectural_interior`, `outdoor_natural`, `urban_cinematic`, or custom) |
-| **4. Camera & Angle (`CameraRigSpec`)** | Fixed frontal three-quarter seated framing | Composable `CameraRigSpec` supporting any camera angle (eye-level, low-angle, high-angle, 3/4 profile, side-profile), shot scale, pose, and lens focal length |
-| **5. Skin & Canvas (`AdaptiveSkinToneProfile` & `Seamless5KCompositor`)** | Hardcoded LAB skin thresholds (`L>125, A>131, B>133`) and fixed `pad_left_ratio=0.65` | Dynamic landmark-sampled CIE LAB skin tone distribution (`sample_adaptive_skin_profile`), 3D head-yaw-aware skin masking, scale-adaptive pore micro-texture (`iod / 110.0`), and auto-detected horizontal padding (`pad_left_ratio=None`) |
+> **100% Universal, Zero-Hardcoding Real-Person 8-Angle Identity, Multi-Styling, Multi-Location & 3D Previz Studio Engine**  
+> Built for **all projects** without a single hardcoded gender, eyewear, height/weight, outfit, location, pixel coordinate, or LAB skin threshold.
 
 ---
 
-## 2. The 7-Stage Universal Progression Workflow
+## 1. Quick Launch — Standalone Web Studio (`모델생성 스튜디오 v3.0`)
 
-1. **Stage 1 — Reference Isolation (`SinglePassGenerationGuard.validate_reference_lineage`)**:
-   - Inspects the input identity reference photo via `YuNet` (`DynamicFaceDetector`).
-   - Blocks any mood/style reference photo containing another person's face from being passed alongside the identity reference (`ReferenceIsolationError`).
-   - Blocks any AI-generated output from being re-fed into generation (`GenerationalDegradationError`, `generation_depth == 0`).
-2. **Stage 2 — Universal Multi-Axis Matrix Planning (`UniversalVariationPlanner.plan_variations`)**:
-   - Generates a structured matrix of `VariationBrief` objects combining any `SubjectProfile` with any custom or catalog `WardrobeSpec`, `LocationSpec`, and `CameraRigSpec`.
-3. **Stage 3 — Universal Prompt Firewall (`PromptFirewall.build_universal_single_pass_prompt`)**:
-   - Dynamically constructs a single-pass from-scratch prompt from the 4 axes (`subject`, `wardrobe`, `location`, `camera`) with zero hardcoded gender, glasses, outfit, or location assumptions.
-   - Enforces the **Body-vs-Face Separation Firewall** (physique specs apply strictly to torso/shoulders, never widening cheeks/jawline) and **Natural Matte Skin Expression Firewall** (eliminates plastic/oily specular gloss while preserving subtle studio pore micro-texture without forced wrinkles).
-4. **Stage 4 — Single-Pass From-Scratch Generation**:
-   - Invokes the image generator in a single pass from scratch (`generation_depth == 0`) using ONLY the original identity reference image.
-5. **Stage 5 — 4x Native Super-Resolution (`SuperResolutionEngine`)**:
-   - Runs `realesrgan-ncnn-vulkan` with `4xNomos8kSC` at 4x native scale without intermediate JPEG re-encoding.
-6. **Stage 6 — Adaptive Halo-Free Matte Skin & Scale-Adaptive Pore Micro-Texture (`MatteSkinProcessor`)**:
-   - Samples the subject's actual skin CIE LAB distribution from the detected cheek and nose-bridge landmarks (`AdaptiveSkinToneProfile`).
-   - Builds a 3D-yaw-adaptive skin mask excluding glasses/eyes, mouth, hair, and background.
-   - Applies a **halo-free scalar percentile (`P88`) soft-knee specular roll-off** (preventing dark boundary halos near dark hairlines or collars), recovers warm skin chrominance on de-glossed highlights, and injects subtle scale-adaptive pore micro-texture (`inter_ocular_distance / 110.0`).
-7. **Stage 7 — Auto-Balanced 5K (`5040x2160`) 21:9 Outpainting & 6 Quality Gates (`Seamless5KCompositor` & `QualityGateAuditor`)**:
-   - Auto-detects the subject's horizontal placement via `YuNet` when `pad_left_ratio=None` and expands the canvas to `5040x2160` (`21:9`) with a 240px smooth cosine vignette ramp.
-   - Verifies all 6 automated quality gates (`Resolution 5040x2160`, `Face Landmarks`, `Sharpness`, `Seam Continuity`, `Natural Skin Texture`, `Zero Plastic Gloss`).
+- **macOS One-Click**: Double-click `모델생성 스튜디오 실행.command`
+- **Terminal Launch (`http://127.0.0.1:18830`)**:
+  ```bash
+  PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project \
+    --with fastapi --with uvicorn --with python-multipart --with httpx \
+    --with opencv-python-headless --with onnxruntime --with pillow \
+    python3 launch_studio.py
+  ```
+
+### What You Can Do in `모델생성 스튜디오 v3.0`
+1. **STEP 01 — Real-Person 8-Angle Master Registration (`0° · 45° · 90° · 135° · 180° · 225° · 270° · 315°`)**:
+   - Upload a real person's face photo -> extracts an untouched pure optical `85mm` canonical anchor (`Gen-0`), measures 3D craniofacial ratios (`Apple Vision` + `YuNet`), and generates/manages all **8 compass turnaround views** via 3-Hop progressive bridging (`0° -> ±45° -> ±90° -> ±135° & 180°`) + `4×2` Master Sheet.
+2. **STEP 02 — Clothes, Accessories, Bags & Shoes Multi-Slot Attachments**:
+   - Attach multiple photos across `옷 (garment)`, `악세사리 (accessory)`, `가방 (bag)`, and `신발 (shoe)` as needed.
+   - Automatic `YuNet` **Foreign-Face Neutral-Grey Masking (`#8C8C8C`)** ensures models inside product/lookbook photos never contaminate the subject's identity.
+3. **STEP 03 — Interactive 3D Previz Pose Director**:
+   - Drag 3D mannequin joints (`head, neck, shoulders, elbows, wrists, hips, knees, ankles`) directly on the canvas, choose from 8 editorial presets, or adjust `0°..360°` head/torso azimuth, camera elevation, focal length (`35/50/85/105mm`), and frame placement—automatically routing the matching angle from the 8-Angle Turnaround Bank!
+4. **STEP 04 — Multi-Location & Reference Style Parallel Batching (`N장 첨부 → N장 동시 생성`)**:
+   - Upload **N** location/style reference images (or enter **M** text mood lines) to launch **N + M** parallel scene jobs with 16-Point Scene Tone & Manner Harmony.
+5. **STEP 05 — Pure Optical `Lanczos-4` 5K Output & 9 Automated Quality Gates**:
+   - `Real-ESRGAN`, synthetic skin noise, highlight chrominance shifts, and 2D oval `facelock` pixel pasting are **disabled by default** to guarantee crisp glasses rims, true iris color, and natural matte skin at 400% zoom.
+   - Every 5K (`5040x2160`) / 4K (`3840x2160`) output is audited by 9 Quality Gates (`YuNet`, `SFace >= 0.65`, `Apple Vision 3D Proportion Lock`, `Per-Organ Anti-Smudge`, `Seam L1 <= 6.0`, `Zero Specular Glare`).
 
 ---
 
-## 3. CLI Usage Examples
+## 2. CLI Subcommands
 
 ```bash
-# 1. Plan variations across any model, outfit, location, and camera angle
-PYTHONPATH=. uv run --no-project --with opencv-python-headless --with onnxruntime \
-  python3 -m model_generation_engine.cli plan \
-  --reference-face "/Users/doma/Library/CloudStorage/GoogleDrive-domautube@gmail.com/내 드라이브/Antigravity_Assets/모델생성/resources/ref_person_face.jpg" \
-  --identity-tag "Female model in her late 20s" \
-  --height-cm 168 --weight-kg 52 \
-  --hairstyle "sleek shoulder-length dark brown hair" \
-  --eyewear "no glasses, bare eyes" \
-  --wardrobe-category smart_casual \
-  --location-category architectural_interior \
-  --camera-category multi_angle_portfolio \
-  --count 4
+# 1. Plan 3-Hop 8-Angle Turnaround from any real face photo
+PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
+  python3 -m model_generation_engine.cli plan-turnaround \
+  --ref-face /path/to/person.jpg \
+  --output-canonical /path/to/canonical_front.jpg \
+  --angles 8
 
-# 2. Run the full post-generation 5K pipeline on a single-pass raw image
-PYTHONPATH=. uv run --no-project --with opencv-python-headless --with onnxruntime \
-  python3 -m model_generation_engine.cli run \
-  --input raw_single_pass.jpg \
-  --output "/Users/doma/Library/CloudStorage/GoogleDrive-domautube@gmail.com/내 드라이브/Antigravity_Assets/모델생성/outputs/hero_5k.jpg" \
-  --verify-crop "/Users/doma/Library/CloudStorage/GoogleDrive-domautube@gmail.com/내 드라이브/Antigravity_Assets/모델생성/outputs/closeup_verify.jpg" \
-  --reference-face "/Users/doma/Library/CloudStorage/GoogleDrive-domautube@gmail.com/내 드라이브/Antigravity_Assets/모델생성/resources/ref_person_face.jpg"
+# 2. Compose N parallel jobs from 8-angle anchor + clothes/accessories/bag/shoes + multiple locations + 3D Previz pose
+PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
+  python3 -m model_generation_engine.cli compose-batch \
+  --canonical-front /path/to/canonical_front.jpg \
+  --garment /path/to/jacket.jpg \
+  --accessory /path/to/watch.jpg \
+  --bag /path/to/bag.jpg \
+  --shoe /path/to/shoes.jpg \
+  --location-image /path/to/place1.jpg \
+  --location-image /path/to/place2.jpg \
+  --pose-preset seated_armchair --head-azimuth 45 --torso-azimuth 30
 ```

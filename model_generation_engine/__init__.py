@@ -29,9 +29,19 @@ from .compositor import Seamless5KCompositor
 from .apple_vision import AppleVisionAnalyzer, AppleVisionError
 from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
 from .identity_turnaround import (
+    TURNAROUND_5_VIEWS,
+    TURNAROUND_8_VIEWS,
     TURNAROUND_VIEWS,
     AnatomicalBlueprint,
     RealPersonTurnaroundEngine,
+    resolve_8angle_view_from_azimuth,
+)
+from .previz_pose import POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
+from .multi_asset_composer import (
+    AttachmentItem,
+    ComposedSceneJob,
+    MultiSceneBatchComposer,
+    SceneLocationInput,
 )
 from .quality_gate import QualityGateAuditor, QualityReport
 from .pipeline import ModelGenerationPipeline, PortraitIdentityPipeline
@@ -64,9 +74,19 @@ __all__ = [
     "AppleVisionError",
     "FaceLockCompositor",
     "HeadRedrawCompositor",
+    "TURNAROUND_5_VIEWS",
+    "TURNAROUND_8_VIEWS",
     "TURNAROUND_VIEWS",
     "AnatomicalBlueprint",
     "RealPersonTurnaroundEngine",
+    "resolve_8angle_view_from_azimuth",
+    "POSE_PRESETS",
+    "PosePrevizSpec",
+    "Previz3DRenderer",
+    "AttachmentItem",
+    "SceneLocationInput",
+    "ComposedSceneJob",
+    "MultiSceneBatchComposer",
     "QualityGateAuditor",
     "QualityReport",
     "ModelGenerationPipeline",

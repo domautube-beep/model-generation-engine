@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>모델생성 스튜디오 v3.0 — 8각도 실존인물 · 멀티 스타일링 · 다중 장소 · 3D 프리비즈</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-badge">UNIVERSAL ENGINE v3.0</span>
+      <h1>모델생성 스튜디오</h1>
+      <p class="subtitle">실존 인물 8각도 마스터 앵커 · 의상/악세사리/가방/신발 멀티 첨부 · 다중 장소 N장 병렬 대입 · 인터랙티브 3D 프리비즈 포즈 디렉터</p>
+    </div>
+    <div class="topbar-meta">
+      <div id="runtimePill" class="pill pill-info">엔진 확인 중...</div>
+      <div class="pill pill-outline">Optical Lanczos-4 · Zero Hardcoding · 9-Gate Audit</div>
+    </div>
+  </header>
+
+  <main class="workspace-grid">
+    <!-- STEP 1: Subject & 8-Angle Turnaround -->
+    <section class="panel span-full" id="panelSubject">
+      <div class="panel-header">
+        <div>
+          <span class="step-tag">STEP 01</span>
+          <h2>실제 인물 등록 &amp; 360° 8각도 마스터 앵커 시트</h2>
+          <p class="panel-desc">원본 사진(Gen-0)의 광학 선예도·동공 색상을 100% 보존하고, 3-Hop 점진 회전으로 8각도(0°~315°) 입체 기준점을 구축합니다.</p>
+        </div>
+        <div class="header-actions">
+          <button type="button" id="btnGenerate8Angles" class="btn btn-primary" disabled>선택 인물 8각도 자동 생성</button>
+          <a id="btnOpenMasterSheet" class="btn btn-ghost hidden" href="#" target="_blank" rel="noopener">8각도 마스터 시트 원본 열기</a>
+        </div>
+      </div>
+
+      <div class="subject-layout">
+        <!-- New Subject Registration Form -->
+        <form id="subjectForm" class="card subform">
+          <h3>새 인물 얼굴 사진 등록</h3>
+          <label class="dropzone compact-drop" id="faceDropzone">
+            <input type="file" id="faceInput" accept="image/*" required />
+            <div class="drop-label" id="faceDropLabel">
+              <strong>얼굴/상반신 원본 사진 클릭 또는 드래그</strong>
+              <span>정면 사진 1장 → 순수 광학 85mm 표준 앵커 자동 정렬</span>
+            </div>
+          </label>
+          <div class="form-row-2">
+            <label>인물 이름
+              <input type="text" id="subjName" placeholder="예: 김변리사 / 모델 A" value="" />
+            </label>
+            <label>유니버설 인물 설명 (성별·연령 등 자유 입력)
+              <input type="text" id="subjLabel" placeholder="예: adult person in the reference portrait" value="human subject in the reference portrait" />
+            </label>
+          </div>
+          <div class="form-row-4">
+            <label>키 cm (선택)
+              <input type="number" id="subjHeight" placeholder="미입력 시 자연 비율" step="0.5" />
+            </label>
+            <label>몸무게 kg (선택)
+              <input type="number" id="subjWeight" placeholder="미입력 시 자연 체형" step="0.5" />
+            </label>
+            <label>안경 (선택)
+              <input type="text" id="subjEyewear" placeholder="비워두면 원본 1:1 상속" />
+            </label>
+            <label>헤어스타일 (선택)
+              <input type="text" id="subjHair" placeholder="비워두면 원본 1:1 상속" />
+            </label>
+          </div>
+          <button type="submit" class="btn btn-accent full-w" id="btnRegisterSubject">원본 앵커 등록 및 골격 계측</button>
+        </form>
+
+        <!-- Registered Subjects + 8-Angle Compass Grid -->
+        <div class="subject-bank">
+          <div class="subject-list-bar">
+            <span class="mini-label">등록된 인물 선택:</span>
+            <div id="subjectChips" class="chip-row"></div>
+          </div>
+
+          <div id="blueprintBar" class="blueprint-bar">인물을 선택하거나 새로 등록하면 3D 두개안면 계측치와 8각도 슬롯이 표시됩니다.</div>
+
+          <div id="angleGrid" class="angle-grid">
+            <!-- Populated dynamically with the 8 turnaround views -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2: Wardrobe, Accessories, Bags, Shoes -->
+    <section class="panel" id="panelStyling">
+      <div class="panel-header">
+        <div>
+          <span class="step-tag">STEP 02</span>
+          <h2>의상 · 악세사리 · 가방 · 신발 멀티 첨부 <small>(필요 항목만 자유 첨부)</small></h2>
+          <p class="panel-desc">착용 컷에 다른 모델의 얼굴이 있어도 자동으로 중립 그레이(#8C8C8C) 마스킹 처리하여 얼굴 오염을 원천 차단합니다.</p>
+        </div>
+      </div>
+
+      <div class="category-tabs">
+        <button type="button" class="cat-tab active" data-cat="garment">옷 / 착장 <span class="badge-cnt" id="cnt-garment">0</span></button>
+        <button type="button" class="cat-tab" data-cat="accessory">악세사리 <span class="badge-cnt" id="cnt-accessory">0</span></button>
+        <button type="button" class="cat-tab" data-cat="bag">가방 <span class="badge-cnt" id="cnt-bag">0</span></button>
+        <button type="button" class="cat-tab" data-cat="shoe">신발 <span class="badge-cnt" id="cnt-shoe">0</span></button>
+      </div>
+
+      <div class="upload-bar">
+        <input type="text" id="itemSubRole" placeholder="세부 구분 (예: 아우터, 셔츠, 손목시계, 안경, 토트백, 로퍼)" />
+        <input type="text" id="itemDesc" placeholder="재질·핏·컬러 메모 (선택)" />
+        <label class="btn btn-secondary file-btn">
+          + 사진 여러 장 첨부
+          <input type="file" id="itemFilesInput" accept="image/*" multiple hidden />
+        </label>
+      </div>
+
+      <div id="stylingAssetGrid" class="asset-grid"></div>
+
+      <div class="text-item-box">
+        <span class="mini-label">사진 없이 텍스트로 착장/소품 추가 (선택):</span>
+        <div class="form-row-2">
+          <input type="text" id="txtGarmentNote" placeholder="예: 테라코타 린넨 블레이저와 아이보리 니트 폴로" />
+          <input type="text" id="txtAccessoryNote" placeholder="예: 가죽 스트랩 크로노그래프 시계, 브라운 로퍼" />
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 3: Interactive 3D Previz Pose Rig -->
+    <section class="panel" id="panelPreviz">
+      <div class="panel-header">
+        <div>
+          <span class="step-tag">STEP 03</span>
+          <h2>인터랙티브 3D 프리비즈 포즈 디렉터</h2>
+          <p class="panel-desc">마우스로 관절(손·팔꿈치·어깨·무릎·머리)을 직접 드래그하거나 각도를 돌리면, 가장 가까운 8각도 얼굴 앵커가 자동 매칭됩니다.</p>
+        </div>
+        <div id="matchedAngleBadge" class="pill pill-match">자동 매칭: ① 정면 (0°)</div>
+      </div>
+
+      <div class="previz-stage-wrap">
+        <canvas id="previzCanvas" width="640" height="360"></canvas>
+        <div class="canvas-overlay-hint">관절 점 드래그: 포즈 직접 수정 · 빈 공간 좌우 드래그: 몸통/머리 회전</div>
+      </div>
+
+      <div class="preset-row" id="posePresetButtons"></div>
+
+      <div class="sliders-grid">
+        <label>머리 방향 (Azimuth): <strong id="valHeadAz">0°</strong>
+          <input type="range" id="rngHeadAz" min="0" max="359" step="1" value="0" />
+        </label>
+        <label>몸통 방향 (Torso): <strong id="valTorsoAz">0°</strong>
+          <input type="range" id="rngTorsoAz" min="0" max="359" step="1" value="0" />
+        </label>
+        <label>고개 상하 (Pitch): <strong id="valHeadPitch">0°</strong>
+          <input type="range" id="rngHeadPitch" min="-25" max="25" step="1" value="0" />
+        </label>
+        <label>카메라 높이 (Angle): <strong id="valCamElev">0°</strong>
+          <input type="range" id="rngCamElev" min="-25" max="25" step="1" value="0" />
+        </label>
+        <label>화면 내 좌우 위치: <strong id="valSubjX">58%</strong>
+          <input type="range" id="rngSubjX" min="20" max="80" step="1" value="58" />
+        </label>
+        <div class="inline-selects">
+          <label>렌즈
+            <select id="selLens">
+              <option value="35">35mm 광각</option>
+              <option value="50">50mm 표준</option>
+              <option value="85" selected>85mm 인물</option>
+              <option value="105">105mm 망원</option>
+            </select>
+          </label>
+          <label>샷 스케일
+            <select id="selShotScale">
+              <option value="medium upper-body portrait shot">상반신 미디엄 샷</option>
+              <option value="three-quarter portrait shot" selected>3/4 무릎위 화보 샷</option>
+              <option value="three-quarter seated portrait shot">3/4 착석 화보 샷</option>
+              <option value="full-body editorial shot">전신 풀바디 샷</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="previz-footer">
+        <input type="text" id="customPoseNote" placeholder="세부 손동작/시선 추가 지시 (예: 오른손으로 안경테를 가볍게 잡은 자세)" />
+        <label class="chk-inline">
+          <input type="checkbox" id="chkAttachPreviz" checked />
+          3D 프리비즈 골격 가이드를 생성 엔진에 함께 전달
+        </label>
+        <button type="button" id="btnResetJoints" class="btn btn-ghost">관절 초기화</button>
+      </div>
+    </section>
+
+    <!-- STEP 4: Multi-Location & Style Reference Batch Launcher -->
+    <section class="panel span-full" id="panelLocations">
+      <div class="panel-header">
+        <div>
+          <span class="step-tag">STEP 04</span>
+          <h2>다중 장소 &amp; 레퍼런스 스타일 일괄 대입 <small>(장소 N장 첨부 → N장 동시 병렬 생성)</small></h2>
+          <p class="panel-desc">배경/레퍼런스 사진을 여러 장 올리거나 원하는 분위기를 여러 줄 적으면, 각 장소의 조명·색온도·톤앤매너에 맞춰 한 번에 여러 장을 병렬 생성합니다.</p>
+        </div>
+        <div class="batch-controls">
+          <select id="selCanvasPreset">
+            <option value="5k_21x9">5K 울트라와이드 21:9 (5040×2160)</option>
+            <option value="4k_16x9">4K 시네마 16:9 (3840×2160)</option>
+            <option value="4k_9x16">4K 버티컬 9:16 (2160×3840)</option>
+            <option value="3x4_editorial">에디토리얼 3:4 (2400×3200)</option>
+            <option value="1x1_square">스퀘어 1:1 (2048×2048)</option>
+          </select>
+          <select id="selProvider">
+            <option value="auto">실행 엔진: 자동 감지 (GTI 우선)</option>
+            <option value="gti">GTI 로컬 생성 엔진</option>
+            <option value="gemini">Gemini API 엔진</option>
+            <option value="manifest">프롬프트·3D프리비즈 번들만 생성</option>
+          </select>
+          <button type="button" id="btnLaunchBatch" class="btn btn-launch">총 1장 동시 생성 시작</button>
+        </div>
+      </div>
+
+      <div class="location-layout">
+        <div class="loc-upload-col">
+          <div class="upload-bar">
+            <select id="selLocationScope">
+              <option value="scene_and_mood">공간 구조 + 16항목 톤앤매너 모두 대입</option>
+              <option value="style_mood_only">레퍼런스 색감·조명·분위기 무드만 추출 대입</option>
+            </select>
+            <label class="btn btn-secondary file-btn">
+              + 장소 / 레퍼런스 스타일 사진 여러 장 추가
+              <input type="file" id="locationFilesInput" accept="image/*" multiple hidden />
+            </label>
+          </div>
+          <div id="locationAssetGrid" class="asset-grid loc-grid"></div>
+        </div>
+
+        <div class="loc-prompt-col card">
+          <h3>내가 말하는 분위기 / 텍스트 다중 장소 지시</h3>
+          <label>공통 분위기 · 조명 · 톤앤매너 지시 (선택된 모든 장소에 공통 반영)
+            <input type="text" id="sharedMoodPrompt" placeholder="예: 따스한 오후 자연광이 측면으로 스며드는 차분하고 지적인 하이엔드 에디토리얼 무드" />
+          </label>
+          <label>조명 / 색감 디테일 메모 (선택)
+            <input type="text" id="sharedLightingNote" placeholder="예: 부드러운 키라이트, 번들거림 없는 매트 스킨, 깊이감 있는 암부 대비" />
+          </label>
+          <label>텍스트만으로 장소 여러 개 추가 (한 줄에 1장씩 독립 장면으로 추가 생성됩니다)
+            <textarea id="textLocationsInput" rows="4" placeholder="예시 (여러 줄 입력 시 줄 수만큼 생성):&#10;우드 루버와 황동 스탠드가 있는 프라이빗 서재 라운지&#10;미니멀한 트래버틴 석재 아트리움 갤러리 복도"></textarea>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 5: Live Parallel Batch Queue & 5K Gallery -->
+    <section class="panel span-full" id="panelResults">
+      <div class="panel-header">
+        <div>
+          <span class="step-tag">STEP 05</span>
+          <h2>실시간 병렬 생성 큐 &amp; 순수 광학 5K 결과 갤러리</h2>
+          <p class="panel-desc">각 장면별로 매칭된 8각도 앵커, 3D 프리비즈 가이드, 방화벽 검증 프롬프트, 5K 결과물 및 얼굴 확대 검수 컷을 확인합니다.</p>
+        </div>
+        <button type="button" id="btnRefreshStatus" class="btn btn-ghost">새로고침</button>
+      </div>
+      <div id="batchesContainer" class="batches-container"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
