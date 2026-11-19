@@ -188,8 +188,13 @@ class MatteSkinProcessor:
         core = feathered > 0.5
         return feathered, core
 
-    def process(self, bgr_img: np.ndarray, seed: int = 42) -> Tuple[np.ndarray, SkinQualityMetrics]:
-        """Apply halo-free plastic gloss suppression and scale-adaptive natural skin pore micro-texture."""
+    def process(
+        self,
+        bgr_img: np.ndarray,
+        seed: int = 42,
+        reference_skin_profile=None,
+    ) -> Tuple[np.ndarray, SkinQualityMetrics]:
+        """Apply halo-free plastic gloss suppression, optional reference skin tone/color lock, and natural skin micro-texture."""
         det = self.detector.detect(bgr_img)
         h, w = bgr_img.shape[:2]
         eye_d = max(8.0, det.inter_ocular_distance)
@@ -198,7 +203,31 @@ class MatteSkinProcessor:
         lab = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB).astype(np.float32)
         L, A, B = lab[:, :, 0], lab[:, :, 1], lab[:, :, 2]
 
+        # Exclude background wall color from skin_mask to prevent any boundary halo
+        bg_samples = np.concatenate(
+            [lab[: max(4, h // 16), : max(4, w // 12)].reshape(-1, 3), lab[: max(4, h // 16), -max(4, w // 12) :].reshape(-1, 3)],
+            axis=0,
+        )
+        bg_med = np.median(bg_samples, axis=0)
+        bg_dist = np.sqrt((L - bg_med[0]) ** 2 + (A - bg_med[1]) ** 2 + (B - bg_med[2]) ** 2)
+        not_bg = np.clip((bg_dist - 18.0) / 10.0, 0.0, 1.0)
+        skin_mask = skin_mask * not_bg
+        core = skin_mask > 0.5
+
         skin_pixels = L[core]
+        if len(skin_pixels) > 50 and reference_skin_profile is not None:
+            # Gently remove background color cast (A, B) and dark shadow shift (L) to match reference skin tone & color
+            cur_l_med = float(np.median(L[core]))
+            cur_a_med = float(np.median(A[core]))
+            cur_b_med = float(np.median(B[core]))
+            dl = float(np.clip((reference_skin_profile.l_median - cur_l_med) * 0.45, -10.0, 14.0))
+            da = float(np.clip((reference_skin_profile.a_median - cur_a_med) * 0.65, -8.0, 8.0))
+            db = float(np.clip((reference_skin_profile.b_median - cur_b_med) * 0.75, -10.0, 10.0))
+            L = np.clip(L + skin_mask * dl, 0, 255)
+            A = np.clip(A + skin_mask * da, 0, 255)
+            B = np.clip(B + skin_mask * db, 0, 255)
+            skin_pixels = L[core]
+
         p_knee = (
             float(np.percentile(skin_pixels, self.percentile_knee))
             if len(skin_pixels) > 50

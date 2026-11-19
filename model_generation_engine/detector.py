@@ -199,3 +199,37 @@ class DynamicFaceDetector:
         hy1 = int(round(np.clip(fy - 0.58 * fh, margin_top, ch - margin_bot - 2)))
         hy2 = int(round(np.clip(fy + fh + 0.35 * fh, hy1 + 2, ch - margin_bot)))
         return (hx1, hy1, hx2, hy2)
+
+    def extract_pure_head_identity_reference(
+        self,
+        bgr_img: np.ndarray,
+        target_size: Tuple[int, int] = (768, 820),
+    ) -> np.ndarray:
+        """Crop a tight head-and-collar ID reference portrait (face filling ~65% of frame) from any half/full-body photo.
+
+        Ensures the image generator devotes maximum visual tokens strictly to the subject's true face shape,
+        eyes, nose, and mouth instead of the original photo's body/chair/background.
+        """
+        h, w = bgr_img.shape[:2]
+        face = self.detect(bgr_img)
+        fx, fy, fw, fh = face.bbox
+        cx = fx + 0.5 * fw
+
+        # If the input image is already a tight head crop (face height >= 36% of image height), keep its framing
+        if fh / float(max(1, h)) >= 0.36:
+            return bgr_img.copy()
+
+        # Compute a tight ID-portrait box around the head, hair, ears, and upper collar
+        box_h = int(round(fh * 2.35))
+        box_w = int(round(box_h * (target_size[0] / float(target_size[1]))))
+        x1 = int(round(cx - 0.50 * box_w))
+        y1 = int(round(fy - 0.58 * fh))
+        x1 = max(0, min(w - box_w, x1))
+        y1 = max(0, min(h - box_h, y1))
+        x2 = min(w, x1 + box_w)
+        y2 = min(h, y1 + box_h)
+
+        crop = bgr_img[y1:y2, x1:x2]
+        if crop.shape[1] < target_size[0]:
+            crop = cv2.resize(crop, target_size, interpolation=cv2.INTER_LANCZOS4)
+        return crop

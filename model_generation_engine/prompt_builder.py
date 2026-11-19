@@ -28,8 +28,14 @@ class PromptFirewall:
         r"stocky\s+face",
         r"bloated\s+face",
         r"double\s+chin",
-        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?:stocky|heavy|thick|chubby|bloated|puffy|plump|fat|bulky|broad|wide|square|fleshy|beefy)\s+(?:(?:\w+\s+){0,2})?(?:face|cheeks?|jaw(?:line)?|chin|jowls?|neck)\b",
-        r"\b(?:face|cheeks?|jaw(?:line)?|chin|jowls?)\s+(?:is|are|looking|with)?\s*(?:stocky|heavy|chubby|bloated|puffy|plump|fat|bulky|wide|square|fleshy)\b",
+        r"slender\s+oval\s+face",
+        r"slim\s+oval\s+face",
+        r"v[-\s]?line\s+jaw",
+        r"chiseled\s+jaw",
+        r"narrow\s+face",
+        r"small\s+face",
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?:stocky|heavy|thick|chubby|bloated|puffy|plump|fat|bulky|broad|wide|square|fleshy|beefy|slender|slim|narrow|chiseled|v[-\s]?line)\s+(?:(?:\w+\s+){0,2})?(?:face|cheeks?|jaw(?:line)?|chin|jowls?|neck)\b",
+        r"\b(?:face|cheeks?|jaw(?:line)?|chin|jowls?)\s+(?:is|are|looking|with)?\s*(?:stocky|heavy|chubby|bloated|puffy|plump|fat|bulky|wide|square|fleshy|slender|slim|narrow|chiseled)\b",
     )
 
     FORBIDDEN_BLUR_PATTERNS: Sequence[str] = (
@@ -80,18 +86,23 @@ class PromptFirewall:
         camera: CameraRigSpec,
         reference_filename: str = "reference_portrait",
     ) -> str:
-        """Compose a universal, zero-hardcoding single-pass prompt for ANY model, outfit, location, and camera angle."""
+        """Compose a universal, zero-hardcoding single-pass prompt with Hard Immutable Face Lock for ANY model, outfit, location, and camera angle."""
         prompt = (
-            f"Create a photorealistic {camera.to_prompt_clause()} featuring the exact {subject.subject_identity_label} "
+            "CRITICAL MANDATORY RULE — ZERO FACIAL & SKIN DEFORMATION (절대 얼굴·눈코입·얼굴형·피부질감·피부톤·피부색감 변형 금지): "
+            f"You MUST copy and preserve the exact 1:1 unmodified face AND the exact original skin texture, skin tone, and skin color of the {subject.subject_identity_label} "
             f"from the reference image ({reference_filename}). "
+            "NEVER alter, reshape, slim, widen, beautify, idealize, or deform the subject's face shape, lower cheek contour, "
+            "jawline, chin, eyes, eyelid shape, eye corners, inter-ocular distance, nose bridge, nose tip, nostril width, "
+            "philtrum, mouth shape, lip thickness, ears, eyewear frame, or hairstyle by even 1%, "
+            "and NEVER darken, tint, yellow, muddy, or alter the subject's original skin texture, skin brightness, or skin color with background color cast. "
+            "The subject's head, face shape, eyes/nose/mouth, and skin tone/texture/color must remain 100% identical to the reference photo as if the exact same head were placed unchanged into the scene. "
+            f"Scene & Framing: create a photorealistic {camera.to_prompt_clause()}. "
             f"Identity Lock: preserve {subject.facial_identity_descriptor()}. "
-            "Anatomical Anti-Smudge Lock: render razor-sharp, anatomically distinct upper and lower eyelids, "
-            "clear circular iris and pupil edges, well-defined nasal bridge and nostrils, and crisp lip contour "
-            "with zero melted, smudged, asymmetrical, or collapsed facial features; lock critical camera focus directly on the subject's eyes. "
+            "Anatomical Focus Lock: keep critical camera focus on the subject's exact reference eyes, nose, and mouth with zero melting or smudging. "
             "Skin Expression: soft, even, natural MATTE skin texture with realistic subtle pores, "
             "ZERO plastic/oily shine, ZERO dewy gloss, ZERO specular glare on the forehead, nose, or cheeks, and ZERO artificial wrinkles. "
             f"Physical Build: {subject.body_frame_descriptor()}. "
-            "Do NOT widen, bloat, distort, or age the subject's face; keep head-to-body proportions natural. "
+            "Do NOT widen, slim, bloat, distort, or age the subject's face; keep the exact face contour of the reference photo. "
             f"Wardrobe: wearing {wardrobe.to_prompt_clause()}. "
             f"Environment & Props: set in {location.to_prompt_clause()}. "
             "Zero text, zero typography, zero watermarks."

@@ -37,8 +37,16 @@ class ModelGenerationPipeline:
         output_hero_path: Path,
         output_closeup_path: Optional[Path] = None,
         seed: int = 42,
+        reference_face_path: Optional[Path] = None,
     ) -> Dict[str, object]:
-        """Execute Single-Pass Pure From-Scratch 5K Pipeline (Zero re-feeding, 4xNomos8kSC + MatteSkinProcessor + 6-Gate Audit)."""
+        """Execute Single-Pass Pure From-Scratch 5K Pipeline (Zero re-feeding, 4xNomos8kSC + Reference Skin Tone/Texture Lock + 7-Gate Audit)."""
+        ref_skin_profile = None
+        if reference_face_path is not None and Path(reference_face_path).exists():
+            ref_bgr = cv2.imread(str(reference_face_path))
+            if ref_bgr is not None:
+                ref_det = self.detector.detect(ref_bgr)
+                ref_skin_profile = self.detector.sample_adaptive_skin_profile(ref_bgr, ref_det)
+
         with tempfile.TemporaryDirectory(prefix="single_pass_5k_") as tmp_dir:
             tmp = Path(tmp_dir)
             up_path = self.upscaler.upscale_image_file(Path(pure_scratch_scene_path), tmp / "up_scene.jpg")
@@ -59,12 +67,14 @@ class ModelGenerationPipeline:
             roi_face = self.detector.detect(roi)
             min_org_grad, _ = self.auditor.measure_per_organ_sharpness(roi, roi_face)
             if (
-                roi_face.inter_ocular_distance < self.config.auto_restore_distant_face_iod_px
-                or min_org_grad < self.config.min_organ_gradient_energy
-            ):
+                self.config.auto_restore_distant_face_iod_px > 0.0
+                and roi_face.inter_ocular_distance < self.config.auto_restore_distant_face_iod_px
+            ) or min_org_grad < self.config.min_organ_gradient_energy:
                 roi, _ = self.upscaler.restore_face_focus_5pt(roi)
 
-            roi_matte, skin_metrics = self.skin_processor.process(roi, seed=seed)
+            roi_matte, skin_metrics = self.skin_processor.process(
+                roi, seed=seed, reference_skin_profile=ref_skin_profile
+            )
             canvas_5k[vy1:vy2, vx1:vx2] = roi_matte
 
             report = self.auditor.audit(canvas_5k, crop_box_5k, seam_l1_diff=0.0)
