@@ -39,7 +39,15 @@ from .identity_turnaround import (
     resolve_8angle_view_from_azimuth,
 )
 from .origin_guard import OriginLineageViolationError, OriginOnlyOneShotGuard
-from .previz_pose import POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
+from .previz_pose import GAZE_MODES, POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
+from .scene_radiometry import (
+    APERTURE_MODES,
+    COHESION_MASTERING_MODES,
+    LIGHTING_MODES,
+    PostGenCohesionMasterer,
+    SceneRadiometryAnalyzer,
+    SingleLensRadiometricSpec,
+)
 from .multi_asset_composer import (
     AttachmentItem,
     ComposedSceneJob,
@@ -87,9 +95,16 @@ __all__ = [
     "resolve_8angle_view_from_azimuth",
     "OriginOnlyOneShotGuard",
     "OriginLineageViolationError",
+    "GAZE_MODES",
     "POSE_PRESETS",
     "PosePrevizSpec",
     "Previz3DRenderer",
+    "LIGHTING_MODES",
+    "APERTURE_MODES",
+    "COHESION_MASTERING_MODES",
+    "SingleLensRadiometricSpec",
+    "SceneRadiometryAnalyzer",
+    "PostGenCohesionMasterer",
     "AttachmentItem",
     "SceneLocationInput",
     "ComposedSceneJob",

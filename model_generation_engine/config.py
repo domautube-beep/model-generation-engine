@@ -43,7 +43,7 @@ class SubjectProfile:
     weight_kg: Optional[float] = None
     hairstyle: Optional[str] = None
     eyewear: Optional[str] = None
-    expression: str = "natural composed expression matching the reference portrait 1:1"
+    expression: str = "natural relaxed micro-expression harmonizing with the scene"
     facial_traits: Tuple[str, ...] = ()
 
     @property
@@ -76,7 +76,7 @@ class SubjectProfile:
     def facial_identity_descriptor(self) -> str:
         """Return a universal 1:1 facial identity lock descriptor without hardcoded gender or glasses."""
         parts = [
-            "exact 1:1 facial identity, bone structure, eye shape, iris gaze, nose bridge and tip, "
+            "exact 1:1 facial identity, bone structure, eye shape, authentic iris color, nose bridge and tip, "
             "mouth contour, and jawline of the reference portrait",
             self.expression,
         ]

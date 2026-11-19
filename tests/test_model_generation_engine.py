@@ -1021,6 +1021,106 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             )
             self.assertEqual(json.loads(proc_good.stdout)["decision"], "allow")
 
+    def test_20_real_editorial_radiometry_3axis_gaze_and_post_cohesion(self) -> None:
+        """Verify SceneRadiometryAnalyzer, 3-axis gaze kinematics, zero-smear 16:9 compositor, and PostGenCohesionMasterer."""
+        import tempfile
+        from fastapi.testclient import TestClient
+        from model_generation_engine import (
+            CanvasSpec,
+            EngineConfig,
+            ModelGenerationPipeline,
+            PosePrevizSpec,
+            PostGenCohesionMasterer,
+            PromptFirewall,
+            SceneLocationInput,
+            SceneRadiometryAnalyzer,
+            Seamless5KCompositor,
+            SubjectProfile,
+        )
+        from model_generation_engine.studio_app import StudioImageRuntime, create_studio_app
+
+        # 1. Warm backlit window scene radiometry detection
+        warm_scene = np.zeros((360, 640, 3), dtype=np.uint8)
+        warm_scene[:, :] = (24, 46, 84)  # Warm mid-dark umber interior (BGR)
+        warm_scene[220:, :] = (8, 16, 30)  # Deep shadow floor under desk/chair
+        warm_scene[:120, :240] = (175, 225, 250)  # Bright golden-amber upper-left window slats
+        spec_warm = SceneRadiometryAnalyzer.analyze(scene_bgr=warm_scene)
+        self.assertEqual(spec_warm.lighting_regime, "backlit_chiaroscuro")
+        self.assertLess(spec_warm.kelvin_est, 4500)
+        self.assertGreater(spec_warm.contrast_ratio_stops, 2.2)
+
+        # 2. 3-Axis Head Pose (Yaw + Pitch + Roll) + Downward Task Focus Gaze
+        pose_desk = PosePrevizSpec(
+            preset_id="seated_desk_focus",
+            head_azimuth_deg=45.0,
+            head_pitch_deg=-32.0,
+            head_roll_deg=14.0,
+            gaze_mode="auto",
+            focal_length_mm=50,
+        )
+        self.assertEqual(pose_desk.resolved_gaze_mode(), "downward_task_focus")
+        clause = pose_desk.to_prompt_clause()
+        self.assertIn("head bowed naturally downward 32 deg", clause)
+        self.assertIn("head tilt +14 deg", clause)
+        self.assertIn("downward gaze", clause)
+
+        # 3. Verify 1672x941 -> 3840x2160 (16:9) compositor produces ZERO edge padding and ZERO 240px strip smear
+        cfg_4k = EngineConfig(canvas=CanvasSpec(target_width=3840, target_height=2160))
+        comp_4k = Seamless5KCompositor(cfg_4k, self.detector)
+        checker = np.indices((941, 1672)).sum(axis=0) % 17
+        src_16x9 = np.stack([checker * 14, checker * 12, checker * 10], axis=-1).astype(np.uint8)
+        out_4k, pad_left, eff_w = comp_4k.build_ultrawide_canvas(src_16x9)
+        self.assertEqual(out_4k.shape, (2160, 3840, 3))
+        self.assertEqual(pad_left, 0)
+        self.assertEqual(eff_w, 3840)
+        # Rightmost 30 columns must preserve real horizontal variation (NOT smeared flat strips!)
+        right_dx = float(np.mean(np.abs(np.diff(out_4k[:, -30:, :].astype(np.float32), axis=1))))
+        self.assertGreater(right_dx, 2.0)
+
+        # 4. Verify PostGenCohesionMasterer shifts sterile #F5F5F5 catalog whites toward warm scene chromaticity
+        synth_frame = cv2.imread(str(self.outputs_dir / "21x9_studio_seated_01_terracotta_cane.jpg"))
+        synth_small = cv2.resize(synth_frame, (1280, 720), interpolation=cv2.INTER_AREA)
+        # Inject a sterile neutral-white catalog patch in the chest area
+        synth_small[480:580, 600:720] = (244, 244, 244)
+        f_det = self.detector.detect(synth_small)
+        mastered, meta = PostGenCohesionMasterer.master(
+            synth_small,
+            face_det=f_det,
+            reference_scene_bgr=warm_scene,
+            mode="warm_cinema_amber",
+        )
+        self.assertTrue(meta["applied"])
+        lab_before = cv2.cvtColor(synth_small[490:570, 610:710], cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab_after = cv2.cvtColor(mastered[490:570, 610:710], cv2.COLOR_BGR2LAB).astype(np.float32)
+        # Warm b* channel must increase significantly on the neutral catalog patch!
+        self.assertGreater(float(np.median(lab_after[:, :, 2])), float(np.median(lab_before[:, :, 2])) + 4.0)
+
+        # 5. Verify full compose_batch + Studio API exposes lighting_modes & cohesion_modes
+        pipe = ModelGenerationPipeline(cfg_4k)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            canon_p, _ = pipe.turnaround.prepare_canonical_identity_anchor(self.ref_face, tmp / "front.jpg", (600, 750))
+            jobs = pipe.batch_composer.compose_batch(
+                canonical_front_path=canon_p,
+                subject=SubjectProfile(),
+                locations=[SceneLocationInput(name="warm_room", mood_or_place_prompt="sunlit walnut louver interior")],
+                poses=[pose_desk],
+                lighting_mode="natural_window_backlight",
+                aperture_mode="f1_8",
+                cohesion_mode="warm_cinema_amber",
+                work_dir=tmp / "stg",
+            )
+            self.assertEqual(len(jobs), 1)
+            PromptFirewall.validate_prompt(jobs[0].prompt)
+            self.assertIn("f/1.8", jobs[0].prompt)
+            self.assertIn("THREE-PLANE SPATIAL DEPTH", jobs[0].prompt)
+
+            app = create_studio_app(workspace_dir=tmp / "ws", runtime=StudioImageRuntime())
+            client = TestClient(app)
+            st = client.get("/api/status").json()
+            self.assertGreaterEqual(len(st["lighting_modes"]), 5)
+            self.assertGreaterEqual(len(st["cohesion_modes"]), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

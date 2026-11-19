@@ -16,6 +16,8 @@
       preset_id: "standing_editorial",
       head_azimuth_deg: 0,
       head_pitch_deg: 0,
+      head_roll_deg: 0,
+      gaze_mode: "auto",
       torso_azimuth_deg: 0,
       camera_elevation_deg: 0,
       focal_length_mm: 85,
@@ -574,6 +576,13 @@
     $("valTorsoAz").textContent = formatDeg(state.pose.torso_azimuth_deg);
     $("rngHeadPitch").value = Math.round(state.pose.head_pitch_deg);
     $("valHeadPitch").textContent = Math.round(state.pose.head_pitch_deg) + "°";
+    if ($("rngHeadRoll")) {
+      $("rngHeadRoll").value = Math.round(state.pose.head_roll_deg || 0);
+      $("valHeadRoll").textContent = formatDeg(Math.round(state.pose.head_roll_deg || 0));
+    }
+    if ($("selGazeMode")) {
+      $("selGazeMode").value = state.pose.gaze_mode || "auto";
+    }
     $("rngCamElev").value = Math.round(state.pose.camera_elevation_deg);
     $("valCamElev").textContent = Math.round(state.pose.camera_elevation_deg) + "°";
     $("rngSubjX").value = Math.round(state.pose.subject_x_norm * 100);
@@ -1019,15 +1028,57 @@
         card.appendChild(media);
 
         if (j.quality) {
+          const passed = Boolean(j.quality.passed || j.quality.passed_all_gates);
+          const sharp = Number(j.quality.face_laplacian_variance || j.quality.laplacian_variance || 0).toFixed(1);
+          const sface =
+            j.quality.identity_cosine_sim !== null && j.quality.identity_cosine_sim !== undefined
+              ? " · SFace " + Number(j.quality.identity_cosine_sim).toFixed(3)
+              : "";
           const qDiv = document.createElement("div");
           qDiv.className = "mini-label";
-          qDiv.style.color = j.quality.passed_all_gates ? "#2fd6a2" : "#f5b342";
-          qDiv.textContent =
-            "9-Gate 검수: " +
-            (j.quality.passed_all_gates ? "PASS" : "CHECK") +
-            " · Sharpness " +
-            Number(j.quality.laplacian_variance || 0).toFixed(1);
+          qDiv.style.color = passed ? "#2fd6a2" : "#f5b342";
+          qDiv.textContent = "9-Gate 검수: " + (passed ? "PASS" : "CHECK") + sface + " · Sharpness " + sharp;
           card.appendChild(qDiv);
+        }
+        if (j.status === "done") {
+          const remRow = document.createElement("div");
+          remRow.style.display = "flex";
+          remRow.style.gap = "6px";
+          remRow.style.alignItems = "center";
+          remRow.style.marginTop = "6px";
+          const remSel = document.createElement("select");
+          remSel.style.fontSize = "11px";
+          remSel.style.flex = "1";
+          const modes = [
+            ["auto", "후처리: 자동 광학 일체화"],
+            ["warm_cinema_amber", "후처리: 웜 시네마 앰버"],
+            ["deep_chiaroscuro", "후처리: 시네마틱 딥 명암"],
+            ["soft_editorial_natural", "후처리: 소프트 내추럴 필름"],
+            ["off", "후처리: 생성 원본 그대로"],
+          ];
+          for (const [mv, ml] of modes) {
+            const opt = document.createElement("option");
+            opt.value = mv;
+            opt.textContent = ml;
+            if ((j.cohesion_mode || "auto") === mv) opt.selected = true;
+            remSel.appendChild(opt);
+          }
+          remSel.addEventListener("change", async () => {
+            try {
+              showToast("무드·톤·명암·색감 즉시 재마스터링 중 (재생성 없음)...");
+              await apiFetch("/api/batches/" + b.id + "/jobs/" + j.job_index + "/remaster", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ cohesion_mode: remSel.value }),
+              });
+              await loadStatus();
+              showToast("후처리 광학 재마스터링 적용 완료!");
+            } catch (err) {
+              showToast("재마스터링 오류: " + err.message);
+            }
+          });
+          remRow.appendChild(remSel);
+          card.appendChild(remRow);
         }
         if (j.error) {
           const eDiv = document.createElement("div");
@@ -1089,6 +1140,9 @@
         b.addEventListener("click", () => {
           state.pose.preset_id = p.id;
           state.pose.head_azimuth_deg = p.head_azimuth_deg;
+          state.pose.head_pitch_deg = p.head_pitch_deg || 0;
+          state.pose.head_roll_deg = p.head_roll_deg || 0;
+          state.pose.gaze_mode = p.gaze_mode || "auto";
           state.pose.torso_azimuth_deg = p.torso_azimuth_deg;
           state.pose.shot_scale = p.shot_scale;
           state.pose.joints_override = {};
@@ -1305,6 +1359,18 @@
       state.pose.head_pitch_deg = Number(e.target.value);
       syncPoseControlsFromState();
     });
+    if ($("rngHeadRoll")) {
+      $("rngHeadRoll").addEventListener("input", (e) => {
+        state.pose.head_roll_deg = Number(e.target.value);
+        syncPoseControlsFromState();
+      });
+    }
+    if ($("selGazeMode")) {
+      $("selGazeMode").addEventListener("change", (e) => {
+        state.pose.gaze_mode = e.target.value;
+        drawPrevizCanvas();
+      });
+    }
     $("rngCamElev").addEventListener("input", (e) => {
       state.pose.camera_elevation_deg = Number(e.target.value);
       syncPoseControlsFromState();
@@ -1351,6 +1417,9 @@
         location_scope: $("selLocationScope").value,
         canvas_preset: $("selCanvasPreset").value,
         provider: $("selProvider").value,
+        lighting_mode: $("selLightingMode") ? $("selLightingMode").value : "auto",
+        aperture_mode: $("selApertureMode") ? $("selApertureMode").value : "auto",
+        cohesion_mode: $("selCohesionMode") ? $("selCohesionMode").value : "auto",
         face_direction_mode: state.faceDirectionMode,
         attach_previz_image: false,
         pose: Object.assign({}, state.pose, {

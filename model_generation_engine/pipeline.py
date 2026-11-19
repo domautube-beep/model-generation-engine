@@ -14,6 +14,7 @@ from .detector import DynamicFaceDetector
 from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
 from .identity_turnaround import RealPersonTurnaroundEngine
 from .multi_asset_composer import MultiSceneBatchComposer
+from .scene_radiometry import PostGenCohesionMasterer, SingleLensRadiometricSpec
 from .skin_processor import MatteSkinProcessor
 from .upscaler import SuperResolutionEngine
 from .compositor import Seamless5KCompositor
@@ -54,15 +55,18 @@ class ModelGenerationPipeline:
         reference_face_path: Optional[Path] = None,
         reattach_mode: str = "none",
         redrawn_head_path: Optional[Path] = None,
+        cohesion_mode: str = "auto",
+        reference_scene_path: Optional[Path] = None,
+        radiometric_spec: Optional[SingleLensRadiometricSpec] = None,
     ) -> Dict[str, object]:
-        """Execute Single-Pass Pure From-Scratch 5K Pipeline with optional Face Re-Attachment (`facelock`, `head_redraw`, `hybrid`) & 9-Gate Audit."""
+        """Execute Single-Pass Pure From-Scratch 5K Pipeline with Post-Gen Optical Cohesion Mastering & 9-Gate Audit."""
         ref_bgr: Optional[np.ndarray] = None
-        ref_skin_profile = None
         if reference_face_path is not None and Path(reference_face_path).exists():
             ref_bgr = cv2.imread(str(reference_face_path))
-            if ref_bgr is not None:
-                ref_det = self.detector.detect(ref_bgr)
-                ref_skin_profile = self.detector.sample_adaptive_skin_profile(ref_bgr, ref_det)
+
+        ref_scene_bgr: Optional[np.ndarray] = None
+        if reference_scene_path is not None and Path(reference_scene_path).exists():
+            ref_scene_bgr = cv2.imread(str(reference_scene_path))
 
         with tempfile.TemporaryDirectory(prefix="single_pass_5k_") as tmp_dir:
             tmp = Path(tmp_dir)
@@ -103,11 +107,25 @@ class ModelGenerationPipeline:
             ) or min_org_grad < self.config.min_organ_gradient_energy:
                 roi, _ = self.upscaler.restore_face_focus_5pt(roi)
 
+            # CRITICAL: NEVER pass studio `reference_skin_profile` here — keep scene lighting 100% intact!
             roi_matte, skin_metrics = self.skin_processor.process(
-                roi, seed=seed, reference_skin_profile=ref_skin_profile
+                roi, seed=seed, reference_skin_profile=None
             )
             canvas_5k[vy1:vy2, vx1:vx2] = roi_matte
 
+            # Post-Generation Single-Camera Optical & Radiometric Mastering (`무드·톤·명암·색감 전 프레임 일체화`)
+            cohesion_meta: Dict[str, object] = {"mode": cohesion_mode, "applied": False}
+            if cohesion_mode != "off":
+                canvas_5k, cohesion_meta = PostGenCohesionMasterer.master(
+                    canvas_5k,
+                    face_det=face_5k,
+                    reference_scene_bgr=ref_scene_bgr,
+                    target_spec=radiometric_spec,
+                    mode=cohesion_mode,
+                    seed=seed,
+                )
+
+            final_roi = canvas_5k[vy1:vy2, vx1:vx2].copy()
             report = self.auditor.audit(
                 canvas_5k, crop_box_5k, seam_l1_diff=0.0, reference_face_bgr=ref_bgr
             )
@@ -118,15 +136,62 @@ class ModelGenerationPipeline:
             output_hero_path.parent.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(output_hero_path), canvas_5k, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
             if output_closeup_path:
-                cv2.imwrite(str(output_closeup_path), roi_matte, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+                cv2.imwrite(str(output_closeup_path), final_roi, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
 
             return {
                 "output_hero_path": str(output_hero_path),
                 "crop_box_5k": crop_box_5k,
                 "skin_metrics": skin_metrics,
+                "cohesion_meta": cohesion_meta,
                 "reattach_info": reattach_info,
                 "quality_report": report,
             }
+
+    def remaster_scene_cohesion(
+        self,
+        input_scene_path: Path,
+        output_hero_path: Path,
+        output_closeup_path: Optional[Path] = None,
+        reference_scene_path: Optional[Path] = None,
+        mode: str = "auto",
+        seed: int = 42,
+    ) -> Dict[str, object]:
+        """Instant (<0.3s) zero-regeneration optical mood/tone/contrast/color remastering on any existing output."""
+        src = cv2.imread(str(input_scene_path))
+        if src is None:
+            raise FileNotFoundError(f"Cannot read input scene: {input_scene_path}")
+        ref_scene = (
+            cv2.imread(str(reference_scene_path))
+            if (reference_scene_path is not None and Path(reference_scene_path).exists())
+            else None
+        )
+        face_det = None
+        try:
+            face_det = self.detector.detect(src)
+        except Exception:
+            pass
+
+        mastered, meta = PostGenCohesionMasterer.master(
+            src,
+            face_det=face_det,
+            reference_scene_bgr=ref_scene,
+            mode=mode,
+            seed=seed,
+        )
+        output_hero_path = Path(output_hero_path)
+        output_hero_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_hero_path), mastered, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+
+        if output_closeup_path and face_det is not None:
+            crop_box = self.detector.compute_upper_body_crop_box(
+                mastered.shape[:2], face_det, aspect_ratio=self.config.canvas.crop_aspect_ratio
+            )
+            X1, Y1, X2, Y2 = crop_box
+            vx1, vy1 = max(0, X1 - 120), max(0, Y1 - 60)
+            vx2, vy2 = min(mastered.shape[1], X2 + 120), min(mastered.shape[0], Y2 + 160)
+            cv2.imwrite(str(output_closeup_path), mastered[vy1:vy2, vx1:vx2], [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+
+        return {"output_hero_path": str(output_hero_path), "cohesion_meta": meta}
 
     def extract_dynamic_upper_body_crop(
         self, fullbody_scene_path: Path, output_crop_path: Path

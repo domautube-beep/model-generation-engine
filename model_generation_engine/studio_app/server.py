@@ -35,7 +35,13 @@ from ..identity_turnaround import (
 )
 from ..multi_asset_composer import AttachmentItem, SceneLocationInput
 from ..pipeline import ModelGenerationPipeline
-from ..previz_pose import POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
+from ..previz_pose import GAZE_MODES, POSE_PRESETS, PosePrevizSpec, Previz3DRenderer
+from ..scene_radiometry import (
+    APERTURE_MODES,
+    COHESION_MASTERING_MODES,
+    LIGHTING_MODES,
+    SceneRadiometryAnalyzer,
+)
 from .runtime import StudioImageRuntime
 
 STUDIO_PORT = 18830
@@ -139,9 +145,18 @@ def create_studio_app(
                     "shot_scale": v["shot_scale"],
                     "torso_azimuth_deg": v["torso_azimuth_deg"],
                     "head_azimuth_deg": v["head_azimuth_deg"],
+                    "head_pitch_deg": v.get("head_pitch_deg", 0.0),
+                    "head_roll_deg": v.get("head_roll_deg", 0.0),
+                    "gaze_mode": v.get("gaze_mode", "auto"),
                     "joints": v["joints"],
                 }
                 for k, v in POSE_PRESETS.items()
+            ],
+            "lighting_modes": [
+                {"id": k, "label": str(v["label_ko"])} for k, v in LIGHTING_MODES.items()
+            ],
+            "cohesion_modes": [
+                {"id": k, "label": str(v["label_ko"])} for k, v in COHESION_MASTERING_MODES.items()
             ],
             "canvas_presets": [
                 {"id": k, "width": v[0], "height": v[1], "aspect": v[2]}
@@ -357,8 +372,16 @@ def create_studio_app(
                 continue
 
             auto_pose_info = None
+            auto_radiometry = None
             if category == "location":
                 auto_pose_info = pipe.turnaround.analyze_reference_pose_before_masking(bgr)
+                rad = SceneRadiometryAnalyzer.analyze(scene_bgr=bgr)
+                auto_radiometry = {
+                    "kelvin_est": rad.kelvin_est,
+                    "lighting_regime": rad.lighting_regime,
+                    "contrast_ratio_stops": rad.contrast_ratio_stops,
+                    "recommended_aperture": rad.recommended_aperture,
+                }
 
             masked_p = adir / f"{aid}_masked.jpg"
             _, masked_faces = pipe.turnaround.mask_foreign_faces_in_reference(bgr, output_masked_path=masked_p)
@@ -380,6 +403,7 @@ def create_studio_app(
                 "carry_mode": carry_mode.strip() or "hand_right",
                 "override_yaw_deg": None,
                 "auto_pose_info": auto_pose_info,
+                "auto_radiometry": auto_radiometry,
                 "raw_path": str(raw_p),
                 "active_path": str(active_p),
                 "preview_url": rel_url(raw_p),
@@ -549,6 +573,8 @@ def create_studio_app(
             preset_id=str(pose_raw.get("preset_id") or "standing_editorial"),
             head_azimuth_deg=float(pose_raw.get("head_azimuth_deg", 0.0)),
             head_pitch_deg=float(pose_raw.get("head_pitch_deg", 0.0)),
+            head_roll_deg=float(pose_raw.get("head_roll_deg", 0.0)),
+            gaze_mode=str(pose_raw.get("gaze_mode") or "auto"),
             torso_azimuth_deg=float(pose_raw.get("torso_azimuth_deg", 0.0)),
             camera_elevation_deg=float(pose_raw.get("camera_elevation_deg", 0.0)),
             focal_length_mm=int(pose_raw.get("focal_length_mm", 85)),
@@ -562,9 +588,12 @@ def create_studio_app(
             or None,
         )
 
-        canvas_key = str(data.get("canvas_preset") or "5k_21x9")
-        tw, th, aspect_lbl, gen_size = CANVAS_PRESETS.get(canvas_key, CANVAS_PRESETS["5k_21x9"])
+        canvas_key = str(data.get("canvas_preset") or "4k_16x9")
+        tw, th, aspect_lbl, gen_size = CANVAS_PRESETS.get(canvas_key, CANVAS_PRESETS["4k_16x9"])
         provider = str(data.get("provider") or "auto")
+        lighting_mode = str(data.get("lighting_mode") or "auto")
+        aperture_mode = str(data.get("aperture_mode") or "auto")
+        cohesion_mode = str(data.get("cohesion_mode") or "auto")
 
         bid = f"batch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         bdir = base_dir / "batches" / bid
@@ -585,6 +614,9 @@ def create_studio_app(
             work_dir=bdir / "staging",
             aspect_ratio_label=aspect_lbl,
             face_direction_mode=face_dir_mode,
+            lighting_mode=lighting_mode,
+            aperture_mode=aperture_mode,
+            cohesion_mode=cohesion_mode,
             attach_previz_image=False,  # Strict `1원본들 → 1생성`: ONLY 8-dir faces + raw original assets!
         )
 
@@ -598,6 +630,9 @@ def create_studio_app(
             "canvas_preset": canvas_key,
             "target_size": [tw, th],
             "provider": eff_provider,
+            "lighting_mode": lighting_mode,
+            "aperture_mode": aperture_mode,
+            "cohesion_mode": cohesion_mode,
             "total_jobs": len(composed_jobs),
             "status": "manifest_ready" if eff_provider == "manifest" else "running",
             "created_at": time.time(),
@@ -609,10 +644,17 @@ def create_studio_app(
                     "matched_8angle_view": j.matched_8angle_view,
                     "matched_8angle_label": VIEW_LABELS_KO.get(j.matched_8angle_view, j.matched_8angle_view),
                     "head_azimuth_deg": j.head_azimuth_deg,
+                    "head_pitch_deg": j.head_pitch_deg,
+                    "head_roll_deg": j.head_roll_deg,
+                    "gaze_mode": j.gaze_mode,
+                    "cohesion_mode": j.cohesion_mode,
+                    "reference_scene_path": j.reference_scene_path,
+                    "radiometry": asdict(j.radiometric_spec) if j.radiometric_spec else None,
                     "prompt": j.prompt,
                     "reference_images": j.ordered_reference_images,
                     "previz_url": rel_url(Path(j.previz_guide_path)) if j.previz_guide_path else None,
                     "status": "manifest_saved" if eff_provider == "manifest" else "queued",
+                    "raw_path": None,
                     "hero_url": None,
                     "closeup_url": None,
                     "quality": None,
@@ -649,6 +691,7 @@ def create_studio_app(
                             provider=eff_provider,
                             job_id=f"{bid}_{j_obj.job_tag}",
                         )
+                        j_dict["raw_path"] = str(raw_out)
                         res = await asyncio.to_thread(
                             custom_pipe.run_single_pass_5k,
                             raw_out,
@@ -656,14 +699,19 @@ def create_studio_app(
                             cu_out,
                             42,
                             Path(subj_rec["canonical_front_path"]),
+                            "none",
+                            None,
+                            j_obj.cohesion_mode,
+                            Path(j_obj.reference_scene_path) if j_obj.reference_scene_path else None,
+                            j_obj.radiometric_spec,
                         )
                         if pipe.config.vault_dir:
                             v_out = pipe.config.vault_dir / "outputs"
                             v_out.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(hero_out, v_out / f"{bid}_{hero_out.name}")
                         rep = res["quality_report"]
-                        j_dict["hero_url"] = rel_url(hero_out)
-                        j_dict["closeup_url"] = rel_url(cu_out)
+                        j_dict["hero_url"] = rel_url(hero_out) + f"?t={int(time.time())}"
+                        j_dict["closeup_url"] = rel_url(cu_out) + f"?t={int(time.time())}"
                         j_dict["quality"] = asdict(rep)
                         j_dict["status"] = "done"
                     except Exception as exc:
@@ -684,6 +732,50 @@ def create_studio_app(
             task.add_done_callback(bg_tasks.discard)
 
         return batch_rec
+
+    @app.post("/api/batches/{batch_id}/jobs/{job_index}/remaster")
+    async def remaster_job_cohesion(batch_id: str, job_index: int, data: dict):
+        """Instant zero-regeneration post-optical mood/tone/contrast/color remastering on an existing batch shot."""
+        batch_rec = db_state["batches"].get(batch_id)
+        if not batch_rec:
+            raise HTTPException(status_code=404, detail="배치를 찾을 수 없습니다.")
+        target_job = next((j for j in batch_rec.get("jobs", []) if int(j["job_index"]) == int(job_index)), None)
+        if not target_job:
+            raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+
+        bdir = base_dir / "batches" / batch_id
+        raw_p = Path(target_job.get("raw_path") or (bdir / f"raw_{target_job['job_tag']}.png"))
+        if not raw_p.exists():
+            raise HTTPException(status_code=400, detail="원본 생성 파일이 없어 재마스터링할 수 없습니다.")
+
+        new_mode = str(data.get("cohesion_mode") or "auto")
+        tw, th = batch_rec["target_size"]
+        hero_out = bdir / f"hero_{tw}x{th}_{target_job['job_tag']}.jpg"
+        cu_out = bdir / f"closeup_{target_job['job_tag']}.jpg"
+        subj_rec = db_state["subjects"].get(batch_rec["subject_id"])
+        ref_face_p = Path(subj_rec["canonical_front_path"]) if subj_rec else None
+        ref_scene_p = Path(target_job["reference_scene_path"]) if target_job.get("reference_scene_path") else None
+
+        custom_pipe = ModelGenerationPipeline(EngineConfig(canvas=CanvasSpec(target_width=tw, target_height=th)))
+        res = await asyncio.to_thread(
+            custom_pipe.run_single_pass_5k,
+            raw_p,
+            hero_out,
+            cu_out,
+            42,
+            ref_face_p,
+            "none",
+            None,
+            new_mode,
+            ref_scene_p,
+            None,
+        )
+        target_job["cohesion_mode"] = new_mode
+        target_job["hero_url"] = rel_url(hero_out) + f"?t={int(time.time() * 1000)}"
+        target_job["closeup_url"] = rel_url(cu_out) + f"?t={int(time.time() * 1000)}"
+        target_job["quality"] = asdict(res["quality_report"])
+        save_state()
+        return target_job
 
     @app.get("/api/batches/{batch_id}")
     def get_batch(batch_id: str):

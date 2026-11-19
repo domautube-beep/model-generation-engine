@@ -210,6 +210,58 @@ POSE_PRESETS: Dict[str, Dict[str, object]] = {
             "r_ankle": (0.14, -0.86, 0.0),
         },
     },
+    "seated_desk_focus": {
+        "label_ko": "데스크·태블릿 몰입 착석 (+45° 우¾ · 하방 시선)",
+        "shot_scale": "medium waist-up seated candid editorial shot",
+        "pose_text": (
+            "seated at a table leaning naturally forward from the waist with forearms resting comfortably on the tabletop, "
+            "one hand holding a pen/stylus in active focus while the other hand steadies a tablet/notebook on the surface, "
+            "shoulders relaxed with authentic weight grounded onto the table"
+        ),
+        "torso_azimuth_deg": 35.0,
+        "head_azimuth_deg": 45.0,
+        "head_pitch_deg": -32.0,
+        "head_roll_deg": 12.0,
+        "gaze_mode": "downward_task_focus",
+        "joints": {
+            "pelvis": (0.0, -0.14, -0.04),
+            "neck": (0.04, 0.42, 0.10),
+            "head": (0.08, 0.61, 0.18),
+            "l_shoulder": (-0.18, 0.39, 0.08),
+            "r_shoulder": (0.24, 0.37, 0.08),
+            "l_elbow": (-0.12, 0.14, 0.24),
+            "r_elbow": (0.28, 0.12, 0.22),
+            "l_wrist": (0.04, 0.06, 0.36),
+            "r_wrist": (0.24, 0.05, 0.36),
+            "l_hip": (-0.12, -0.16, -0.04),
+            "r_hip": (0.12, -0.16, -0.04),
+            "l_knee": (-0.10, -0.20, 0.34),
+            "r_knee": (0.14, -0.20, 0.34),
+            "l_ankle": (-0.10, -0.64, 0.34),
+            "r_ankle": (0.14, -0.64, 0.34),
+        },
+    },
+}
+
+GAZE_MODES: Dict[str, str] = {
+    "auto": "",
+    "downward_task_focus": (
+        "natural candid downward gaze directed at the hands/tablet/object below with relaxed semi-lowered upper eyelids "
+        "and calm unposed concentration—ZERO camera eye contact, ZERO stiff horizontal stare"
+    ),
+    "off_camera_natural": (
+        "relaxed off-camera candid gaze looking naturally along the head's turn direction toward the side/distance "
+        "with unforced eyelids—not staring into the camera lens"
+    ),
+    "camera_eye_contact": (
+        "calm, lifelike direct eye contact toward the camera lens with natural relaxed eyelids and subtle presence"
+    ),
+    "side_window_contemplative": (
+        "quiet contemplative gaze directed toward the natural window light source with serene relaxed expression"
+    ),
+    "upward_contemplative": (
+        "gentle upward-angled thoughtful gaze with natural neck extension and relaxed brow"
+    ),
 }
 
 BONE_EDGES: Tuple[Tuple[str, str, Tuple[int, int, int]], ...] = (
@@ -237,6 +289,8 @@ class PosePrevizSpec:
     preset_id: str = "standing_editorial"
     head_azimuth_deg: float = 0.0
     head_pitch_deg: float = 0.0
+    head_roll_deg: float = 0.0
+    gaze_mode: str = "auto"  # "auto" | "downward_task_focus" | "off_camera_natural" | "camera_eye_contact" | "side_window_contemplative" | "upward_contemplative"
     torso_azimuth_deg: float = 0.0
     camera_elevation_deg: float = 0.0
     focal_length_mm: int = 85
@@ -250,6 +304,20 @@ class PosePrevizSpec:
     @property
     def matched_8angle_view(self) -> str:
         return resolve_8angle_view_from_azimuth(self.head_azimuth_deg)
+
+    def resolved_gaze_mode(self) -> str:
+        if self.gaze_mode in GAZE_MODES and self.gaze_mode != "auto":
+            return self.gaze_mode
+        preset = POSE_PRESETS.get(self.preset_id, {})
+        if preset.get("gaze_mode") and self.head_pitch_deg <= -12.0:
+            return str(preset["gaze_mode"])
+        if self.head_pitch_deg <= -14.0:
+            return "downward_task_focus"
+        if self.head_pitch_deg >= 14.0:
+            return "upward_contemplative"
+        if abs(self.head_azimuth_deg) >= 20.0:
+            return "off_camera_natural"
+        return "camera_eye_contact"
 
     def camera_angle_clause(self) -> str:
         if self.camera_elevation_deg <= -10.0:
@@ -269,10 +337,21 @@ class PosePrevizSpec:
         preset = POSE_PRESETS.get(self.preset_id, POSE_PRESETS["standing_editorial"])
         base_pose = self.custom_pose_note.strip() or str(preset["pose_text"])
         scale_txt = self.shot_scale or str(preset["shot_scale"])
+        pitch_note = ""
+        if self.head_pitch_deg <= -12.0:
+            pitch_note = f", head bowed naturally downward {abs(self.head_pitch_deg):.0f} deg from the cervical neck"
+        elif self.head_pitch_deg >= 12.0:
+            pitch_note = f", chin tilted gently upward {self.head_pitch_deg:.0f} deg"
+        roll_note = (
+            f", subtle natural head tilt {self.head_roll_deg:+.0f} deg"
+            if abs(self.head_roll_deg) >= 4.0
+            else ""
+        )
+        gaze_txt = GAZE_MODES.get(self.resolved_gaze_mode(), GAZE_MODES["camera_eye_contact"])
         return (
             f"{scale_txt} captured from an {self.camera_angle_clause()} with an {self.focal_length_mm}mm prime lens; "
-            f"pose: {base_pose} (torso azimuth {self.torso_azimuth_deg:.0f} deg, head azimuth {self.head_azimuth_deg:.0f} deg, "
-            f"head pitch {self.head_pitch_deg:+.0f} deg); composition: {self.placement_clause()}"
+            f"pose: {base_pose} (torso azimuth {self.torso_azimuth_deg:.0f} deg, head azimuth {self.head_azimuth_deg:.0f} deg"
+            f"{pitch_note}{roll_note}); gaze & eyelid kinematics: {gaze_txt}; composition: {self.placement_clause()}"
         )
 
 

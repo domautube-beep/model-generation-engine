@@ -44,6 +44,20 @@ class Seamless5KCompositor:
         """
         spec = self.config.canvas
         uh, uw = upscaled_scene_bgr.shape[:2]
+        src_aspect = float(uw) / float(max(1, uh))
+        tgt_aspect = float(spec.target_width) / float(max(1, spec.target_height))
+
+        # If source aspect ratio already matches target within 3% (e.g., 1672x941 = 1.7768 vs 16:9 = 1.7778),
+        # cover-scale with pure Lanczos-4 and crop 1-2px cleanly — ZERO edge-strip replication or 240px border smear!
+        if abs(src_aspect - tgt_aspect) / max(1e-4, tgt_aspect) <= 0.03:
+            cover_scale = max(float(spec.target_width) / float(uw), float(spec.target_height) / float(uh))
+            cw = max(spec.target_width, int(round(uw * cover_scale)))
+            ch = max(spec.target_height, int(round(uh * cover_scale)))
+            covered = cv2.resize(upscaled_scene_bgr, (cw, ch), interpolation=cv2.INTER_LANCZOS4)
+            x0 = (cw - spec.target_width) // 2
+            y0 = (ch - spec.target_height) // 2
+            return covered[y0 : y0 + spec.target_height, x0 : x0 + spec.target_width].copy(), 0, spec.target_width
+
         scale = float(spec.target_height) / float(uh)
         new_w = int(round(uw * scale))
         resized = cv2.resize(
@@ -90,16 +104,18 @@ class Seamless5KCompositor:
 
         canvas = np.concatenate([left_pad, resized, right_pad], axis=1)
 
-        blend_w = min(240, new_w // 3, max(spec.seam_blend_width_px, pad_left // 2, pad_right // 2))
-        for i in range(blend_w):
-            t = 0.5 - 0.5 * np.cos(np.pi * (i / float(max(1, blend_w))))
-            if pad_left > 0 and i < new_w:
-                canvas[:, pad_left + i] = (
-                    (1.0 - t) * left_strip[:, 0, :].astype(np.float32)
-                    + t * resized[:, i, :].astype(np.float32)
-                ).clip(0, 255).astype(np.uint8)
-            xr_idx = new_w - blend_w + i
-            if pad_right > 0 and 0 <= xr_idx < new_w:
+        blend_l = min(spec.seam_blend_width_px, new_w // 4, pad_left) if pad_left > 0 else 0
+        blend_r = min(spec.seam_blend_width_px, new_w // 4, pad_right) if pad_right > 0 else 0
+        for i in range(blend_l):
+            t = 0.5 - 0.5 * np.cos(np.pi * (i / float(max(1, blend_l))))
+            canvas[:, pad_left + i] = (
+                (1.0 - t) * left_strip[:, 0, :].astype(np.float32)
+                + t * resized[:, i, :].astype(np.float32)
+            ).clip(0, 255).astype(np.uint8)
+        for i in range(blend_r):
+            t = 0.5 - 0.5 * np.cos(np.pi * (i / float(max(1, blend_r))))
+            xr_idx = new_w - blend_r + i
+            if 0 <= xr_idx < new_w:
                 canvas[:, pad_left + xr_idx] = (
                     (1.0 - t) * resized[:, xr_idx, :].astype(np.float32)
                     + t * right_strip[:, 0, :].astype(np.float32)

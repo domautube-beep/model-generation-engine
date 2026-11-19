@@ -245,7 +245,7 @@ class QualityGateAuditor:
             )
         if not anat_ok:
             failures.append(anat_msg)
-        if abs(face.eye_tilt_degrees) > 20.0:
+        if abs(face.eye_tilt_degrees) > 48.0:
             failures.append(f"Abnormal eye tilt ({face.eye_tilt_degrees:.1f} deg) indicates distortion")
         if face.inter_ocular_distance < self.config.min_inter_ocular_5k_px:
             failures.append(

@@ -35,6 +35,7 @@ from .identity_turnaround import (
 from .origin_guard import OriginOnlyOneShotGuard
 from .previz_pose import PosePrevizSpec, Previz3DRenderer
 from .prompt_builder import PromptFirewall
+from .scene_radiometry import SceneRadiometryAnalyzer, SingleLensRadiometricSpec
 
 ITEM_CATEGORIES: Tuple[str, ...] = ("garment", "accessory", "bag", "shoe")
 
@@ -177,6 +178,12 @@ class ComposedSceneJob:
     ordered_reference_images: List[Dict[str, str]] = field(default_factory=list)
     previz_ui_preview_path: Optional[str] = None  # For UI display ONLY — NEVER passed into image generator!
     location_name: str = ""
+    head_pitch_deg: float = 0.0
+    head_roll_deg: float = 0.0
+    gaze_mode: str = "auto"
+    radiometric_spec: Optional[SingleLensRadiometricSpec] = None
+    cohesion_mode: str = "auto"
+    reference_scene_path: Optional[str] = None
 
     @property
     def previz_guide_path(self) -> Optional[str]:
@@ -308,6 +315,9 @@ class MultiSceneBatchComposer:
         work_dir: Optional[Path] = None,
         aspect_ratio_label: str = "16:9",
         face_direction_mode: str = "manual",  # Studio UI passes "auto" by default or "manual" when user chooses an angle
+        lighting_mode: str = "auto",
+        aperture_mode: str = "auto",
+        cohesion_mode: str = "auto",
         attach_previz_image: bool = False,  # HARD DEFAULT FALSE (`1원본들 → 1생성`: never pollute `--image` with synthetic wireframes)
     ) -> List[ComposedSceneJob]:
         """Compose `len(locations) * len(poses)` pure `1원본들 → 1생성` scene jobs attaching 8-Direction Face + Raw Original Assets."""
@@ -365,12 +375,21 @@ class MultiSceneBatchComposer:
             loc_img_prepared: Optional[Path] = None
             loc_masked_cnt = 0
             loc_auto_info: Optional[Dict[str, object]] = None
+            raw_loc_bgr = None
 
             src_for_analysis = loc.raw_unmasked_path or loc.image_path
             if src_for_analysis is not None and Path(src_for_analysis).exists():
                 raw_loc_bgr = cv2.imread(str(src_for_analysis))
                 if raw_loc_bgr is not None:
                     loc_auto_info = self.turnaround.analyze_reference_pose_before_masking(raw_loc_bgr)
+
+            rad_spec = SceneRadiometryAnalyzer.analyze(
+                scene_bgr=raw_loc_bgr,
+                mood_prompt=loc.mood_or_place_prompt,
+                lighting_note=loc.lighting_note,
+                lighting_mode=lighting_mode,
+                aperture_mode=aperture_mode,
+            )
 
             if loc.image_path is not None and Path(loc.image_path).exists():
                 loc_img_prepared, loc_masked_cnt = self._prepare_masked_copy(
@@ -382,7 +401,12 @@ class MultiSceneBatchComposer:
                 job_counter += 1
                 job_tag = f"scene_{loc_idx + 1:02d}_pose_{pose_idx + 1:02d}"
 
-                # Resolve Head & Torso Direction: Auto (from location reference pose / light) vs Manual Override
+                # Resolve 3-Axis Head Pose (Yaw, Pitch, Roll) & Gaze Mode: Auto vs Manual Override
+                eff_head_pitch = orig_pose.head_pitch_deg
+                eff_head_roll = orig_pose.head_roll_deg
+                eff_gaze = orig_pose.gaze_mode
+                eff_preset_id = orig_pose.preset_id
+
                 if loc.override_yaw_deg is not None:
                     eff_head_yaw = float(loc.override_yaw_deg)
                     eff_torso_yaw = eff_head_yaw * 0.85
@@ -393,6 +417,19 @@ class MultiSceneBatchComposer:
                         eff_head_yaw = float(loc_auto_info["auto_yaw_deg"])  # type: ignore[arg-type]
                         eff_torso_yaw = eff_head_yaw * 0.80
                         eff_x_norm = float(loc_auto_info["auto_subject_x_norm"])  # type: ignore[arg-type]
+                        if abs(orig_pose.head_pitch_deg) < 1.0:
+                            eff_head_pitch = float(loc_auto_info.get("auto_pitch_deg", 0.0))  # type: ignore[arg-type]
+                        if abs(orig_pose.head_roll_deg) < 1.0:
+                            eff_head_roll = float(loc_auto_info.get("auto_roll_deg", 0.0))  # type: ignore[arg-type]
+                        if orig_pose.gaze_mode == "auto":
+                            eff_gaze = str(loc_auto_info.get("auto_gaze_mode", "auto"))
+                        if (
+                            eff_head_pitch <= -16.0
+                            and orig_pose.preset_id == "standing_editorial"
+                            and not orig_pose.custom_pose_note.strip()
+                            and loc.scope == "scene_and_mood"
+                        ):
+                            eff_preset_id = "seated_desk_focus"
                         dir_source = f"auto_{loc_auto_info['auto_source']}"
                     else:
                         eff_head_yaw = 0.0
@@ -406,9 +443,11 @@ class MultiSceneBatchComposer:
                     dir_source = "manual_override"
 
                 pose = PosePrevizSpec(
-                    preset_id=orig_pose.preset_id,
+                    preset_id=eff_preset_id,
                     head_azimuth_deg=eff_head_yaw,
-                    head_pitch_deg=orig_pose.head_pitch_deg,
+                    head_pitch_deg=eff_head_pitch,
+                    head_roll_deg=eff_head_roll,
+                    gaze_mode=eff_gaze,
                     torso_azimuth_deg=eff_torso_yaw,
                     camera_elevation_deg=orig_pose.camera_elevation_deg,
                     focal_length_mm=orig_pose.focal_length_mm,
@@ -435,7 +474,6 @@ class MultiSceneBatchComposer:
 
                 # ── FACE ANCHORS (8-Direction Angle-Matched Primary + 0° Origin + Full 8-Direction Master Sheet) ──
                 if len(id_refs) > 1:
-                    # Put the exact angle-matched 8-direction portrait FIRST for 1:1 angle lock, paired with untouched 0° front!
                     ordered_imgs.append(
                         {
                             "path": str(id_refs[1]),
@@ -445,9 +483,9 @@ class MultiSceneBatchComposer:
                     )
                     role_clauses.append(
                         f"Image 1 (TARGET-ANGLE-8DIR-FACE — {matched_view.upper()}, {pose.head_azimuth_deg:+.1f} deg): "
-                        "approved target-angle portrait of the subject from the 8-Direction Turnaround Bank—copy this EXACT facial "
-                        "structure, eye/nose/mouth/jawline geometry, hair parting, and eyewear temple silhouette at this head angle "
-                        "(ignore its studio background and dark studio suit)"
+                        "approved target-angle portrait of the subject from the 8-Direction Turnaround Bank—extract ONLY exact 3D "
+                        "craniofacial bone structure, eye/nose/mouth/jawline geometry, hair parting, and eyewear silhouette at this "
+                        "horizontal angle (100% DISCARD its flat white studio lighting, cool white balance, studio backdrop, and suit)"
                     )
                     ordered_imgs.append(
                         {
@@ -458,7 +496,8 @@ class MultiSceneBatchComposer:
                     )
                     role_clauses.append(
                         "Image 2 (IDENTITY-ORIGIN-0DEG): untouched 0-degree original photograph of the exact same person—"
-                        "ground-truth authority for authentic iris color, real skin pore texture, and exact facial likeness"
+                        "ground-truth authority for authentic iris color, real skin pore structure, and exact facial likeness "
+                        "(discard its studio flash illumination)"
                     )
                 else:
                     ordered_imgs.append(
@@ -470,7 +509,8 @@ class MultiSceneBatchComposer:
                     )
                     role_clauses.append(
                         "Image 1 (IDENTITY-ORIGIN-0DEG): untouched 0-degree original photograph of the target subject—"
-                        "sole authority for exact 1:1 facial likeness, authentic iris color, real skin texture, and eyewear"
+                        "sole authority for exact 1:1 facial likeness, authentic iris color, real skin pore structure, and eyewear "
+                        "(discard its studio flash illumination)"
                     )
 
                 if resolved_sheet_path is not None:
@@ -484,12 +524,14 @@ class MultiSceneBatchComposer:
                     role_clauses.append(
                         f"Image {len(ordered_imgs)} (8-DIRECTION-MASTER-TURNAROUND-SHEET): full -90 deg to +90 deg 8-direction "
                         "reference sheet of this exact person confirming 3D craniofacial consistency across all angles "
-                        "(render ONE single person in the scene, never a multi-panel grid)"
+                        "(render ONE single person in the scene, never a multi-panel grid, and discard its white studio backdrop)"
                     )
 
                 # ── RAW ORIGINAL STYLING ASSETS (`1원본들 → 1생성`: pass every raw item original directly!) ──
+                has_catalog_items = False
                 for it, m_path, m_cnt in prepared_items:
                     if m_path is not None:
+                        has_catalog_items = True
                         cat_title = {
                             "garment": f"ORIGINAL-GARMENT-{it.sub_role.upper() if it.sub_role else 'ITEM'}",
                             "accessory": f"ORIGINAL-ACCESSORY-{it.sub_role.upper() if it.sub_role else 'ITEM'}",
@@ -503,10 +545,11 @@ class MultiSceneBatchComposer:
                                 "label": f"{cat_title}: {it.description}".strip(": "),
                             }
                         )
-                        mask_hint = " (ignore grey box masking original model's face)" if m_cnt > 0 else ""
+                        mask_hint = " (ignore solid privacy block masking original wearer's face)" if m_cnt > 0 else ""
                         role_clauses.append(
-                            f"Image {len(ordered_imgs)} ({cat_title}): raw original product photo—reproduce its exact material, "
-                            f"color, weave, stitching, and hardware{mask_hint}"
+                            f"Image {len(ordered_imgs)} ({cat_title}): raw original product reference—preserve its exact weave, "
+                            "seam construction, pattern, and hardware, while relighting its brightness, shadows, and white balance "
+                            f"100% into the target scene's camera light (do NOT copy its white studio table exposure){mask_hint}"
                         )
 
                 # ── RAW ORIGINAL LOCATION / STYLE ASSET ──
@@ -519,18 +562,23 @@ class MultiSceneBatchComposer:
                             "label": f"Original Location / Style Reference ({loc.name})",
                         }
                     )
-                    mask_hint = " (ignore grey box masking any foreign person's face)" if loc_masked_cnt > 0 else ""
+                    mask_hint = (
+                        " (a solid ambient-colored privacy rectangle covers a foreign person's face in this reference—NEVER render "
+                        "any rectangle/box; place our subject from Image 1 naturally in that space)"
+                        if loc_masked_cnt > 0
+                        else ""
+                    )
                     if loc.scope == "style_mood_only":
                         role_clauses.append(
-                            f"Image {len(ordered_imgs)} (STYLE-MOOD-ORIGIN): extract its exact 16-point tone & manner—brightness, "
-                            "key-light direction, shadow softness, color temperature, color grading, and editorial mood—into a fresh spatial composition"
-                            + mask_hint
+                            f"Image {len(ordered_imgs)} (STYLE-MOOD-ORIGIN): primary authority for living lighting direction, "
+                            "chiaroscuro shadow depth, Kelvin color palette, shallow lens bokeh, and real-photo editorial atmosphere "
+                            "in a fresh spatial composition" + mask_hint
                         )
                     else:
                         role_clauses.append(
-                            f"Image {len(ordered_imgs)} (LOCATION-AND-TONE-ORIGIN): place the subject naturally inside this environment's "
-                            "architecture, spatial depth, directional lighting, shadow falloff, color temperature, and overall tone & manner"
-                            + mask_hint
+                            f"Image {len(ordered_imgs)} (LOCATION-AND-LIGHTING-AUTHORITY): primary authority for architecture, "
+                            "3-plane spatial depth, directional window/ambient light, chiaroscuro shadow ratio, color temperature, "
+                            "surface bounce light, and shallow prime-lens bokeh" + mask_hint
                         )
 
                 if loc.mood_or_place_prompt.strip():
@@ -538,7 +586,10 @@ class MultiSceneBatchComposer:
                 if loc.lighting_note.strip():
                     loc_clause += f" Lighting & Atmosphere: {loc.lighting_note.strip()}."
                 if not loc_clause and loc_img_prepared is None:
-                    loc_clause = " Environment & Mood Direction: clean contemporary architectural editorial setting with natural directional key light."
+                    loc_clause = (
+                        " Environment & Mood Direction: deep, multi-layered architectural editorial interior/exterior with "
+                        "subtle foreground framing depth, warm directional window sunlight, and dimensional background bokeh."
+                    )
 
                 # Render UI-only 3D Previz thumbnail (saved under `ui_preview_*` and NEVER added to `ordered_imgs`!)
                 ui_previz_p = stage_dir / f"ui_preview_{job_tag}.jpg"
@@ -547,25 +598,32 @@ class MultiSceneBatchComposer:
                 # Hard `1원본들 → 1생성` verification on all input image paths!
                 self.origin_guard.verify_one_shot_and_inputs([Path(r["path"]) for r in ordered_imgs])
 
+                has_placed_bag = (pose.bag_carry_mode == "placed_beside")
+                optical_header = rad_spec.to_single_lens_header(focal_length_mm=pose.focal_length_mm)
+                cohesion_law = rad_spec.to_relighting_and_cohesion_clause(
+                    has_catalog_items=has_catalog_items,
+                    has_placed_bag=has_placed_bag,
+                )
+
                 prompt = (
-                    "Editorial portrait. Shot on a medium-format 100MP camera with prime optics, tack-sharp optical micro-contrast, "
-                    "deep true blacks, and zero atmospheric haze or milky veil. "
+                    f"{optical_header} "
                     "CRITICAL MANDATORY RULE — 1-ORIGINALS-TO-1-GENERATION REAL IDENTITY LOCK + HIERARCHICAL LAYERING + SCALE LOCK: "
-                    f"Create ONE single photorealistic {aspect_ratio_label} photograph of the {subject.subject_identity_label} "
-                    "whose exact face at this angle is shown in Image 1 (and confirmed by the 0-degree original & 8-Direction Turnaround Sheet). "
+                    f"Create ONE single photorealistic {aspect_ratio_label} real-photo editorial image of the {subject.subject_identity_label} "
+                    "whose exact face at this angle is shown in Image 1 (confirmed by the 0-degree original & 8-Direction Turnaround Sheet). "
                     "Attached Original Reference Roles: " + "; ".join(role_clauses) + ". "
                     f"Identity & Eyewear Continuity: Preserve {subject.facial_identity_descriptor()}. "
                     "Do NOT invent a generic model face—lock 100% onto the exact person in Image 1 & Image 2 with authentic iris color "
-                    "(zero green or purple lens-coating tint), and if eyewear is worn, render both temple arms continuously over the ears. "
+                    "(zero green or purple lens-coating tint), natural 3D head pitch/tilt inclination from the neck, and if eyewear is worn, "
+                    "render both temple arms continuously over the ears. "
                     f"{blueprint.to_3d_invariance_clause()} "
                     f"Physical Build: {subject.body_frame_descriptor()}, maintaining balanced adult 7.5-to-8-head head-to-shoulder proportions. "
-                    f"Pose & Camera Rig: {pose.to_prompt_clause()}. "
+                    f"Pose, 3-Axis Head Kinematics, Natural Gaze & Camera Rig: {pose.to_prompt_clause()}. "
                     f"Layered Wardrobe, Scale-Locked Accessories, Bag Kinematics & Footwear: {styling_directive}. "
-                    f"16-Point Tone & Manner Integration:{loc_clause} Harmonize key-light direction, shadow softness, floor/furniture contact shadows, "
-                    "ambient wall color bounce, fabric surface reflectance, and depth of field so the subject, layered outfit, accessories, bag, "
-                    "and space read as one authentic single-camera photograph. "
-                    "Skin Expression: authentic natural real skin texture with subtle pores, zero plastic/oily shine, zero dewy gloss, "
-                    "zero specular glare, zero artificial wrinkles, zero text, and zero watermarks."
+                    f"Scene Architecture & Mood:{loc_clause} "
+                    f"{cohesion_law} "
+                    "Skin Expression: authentic tactile real skin micro-texture with natural pores illuminated by the scene's directional light "
+                    "and dimensional shadow side, zero plastic/oily shine, zero dewy gloss, zero specular glare, zero artificial wrinkles, "
+                    "zero text, and zero watermarks."
                 )
                 PromptFirewall.validate_prompt(prompt)
 
@@ -580,6 +638,12 @@ class MultiSceneBatchComposer:
                         ordered_reference_images=ordered_imgs,
                         previz_ui_preview_path=str(ui_previz_p),
                         location_name=loc.name,
+                        head_pitch_deg=pose.head_pitch_deg,
+                        head_roll_deg=pose.head_roll_deg,
+                        gaze_mode=pose.resolved_gaze_mode(),
+                        radiometric_spec=rad_spec,
+                        cohesion_mode=cohesion_mode,
+                        reference_scene_path=str(src_for_analysis) if (src_for_analysis and Path(src_for_analysis).exists()) else None,
                     )
                 )
 

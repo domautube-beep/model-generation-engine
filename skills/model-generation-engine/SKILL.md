@@ -1,6 +1,6 @@
 ---
 name: model-generation-engine
-description: Use this skill immediately whenever the user talks about creating, generating, editing, or upscaling model/portrait/editorial hero images ('모델생성' 프로젝트, /Volumes/DOMA/Project/모델생성 및 /Users/doma/Projects/모델생성, GitHub domautube-beep/model-generation-engine), launching '모델생성 스튜디오' (http://127.0.0.1:18830), or asks to generate a real person/model with 8 detailed frontal-arc turnaround directions (-90°..+90°), custom clothes, accessories, bags, shoes, multiple locations/style references, or 3D Previz poses. Enforces 100% Universal Zero-Hardcoding v3.1: Pure Optical Canonical Front (0°) + 4-Hop Detailed 8-Direction (-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°) Frontal-Arc Bank, Foreign-Face Grey Masking on Outfit/Location References, Interactive 3D Previz Pose Rig, Multi-Location N-to-N Parallel Batching, 16-Point Scene Tone & Manner Harmony, Pure Optical Lanczos-4 5K (Real-ESRGAN & 2D facelock disabled), and 9 Automated Quality Gates.
+description: Use this skill immediately whenever the user talks about creating, generating, editing, or upscaling model/portrait/editorial hero images ('모델생성' 프로젝트, /Volumes/DOMA/Project/모델생성 및 /Users/doma/Projects/모델생성, GitHub domautube-beep/model-generation-engine), launching '모델생성 스튜디오' (http://127.0.0.1:18830), or asks to generate a real person/model with 8 detailed frontal-arc turnaround directions (-90°..+90°), custom clothes, accessories, bags, shoes, multiple locations/style references, or 3D Previz poses. Enforces 100% Universal Zero-Hardcoding v3.4: Pure Optical Canonical Front (0°) + 4-Hop Detailed 8-Direction (-90°..+90°) Frontal-Arc Bank, Ironclad 1원본들→1생성 Hook & Guard, 3-Axis Pose + Natural Gaze Auto-Extraction, Pre-Gen Single-Lens Chiaroscuro Relighting + 3-Plane Shallow DOF (f/1.8) + Post-Gen Optical Cohesion Mastering (PostGenCohesionMasterer), Pure Optical Lanczos-4 4K/5K, and 9 Automated Quality Gates.
 ---
 
 # Universal Model Generation Engine & Studio (`모델생성` — `model-generation-engine` v3.0)
@@ -65,14 +65,20 @@ description: Use this skill immediately whenever the user talks about creating, 
   - Carry/Position modes: `hand_right`, `hand_left`, `crook_right`, `crook_left`, `shoulder_right`, `shoulder_left`, `crossbody_l2r`, `crossbody_r2l`, `underarm_clutch`, `backpack`, and **`placed_beside` (not held—grounded upright beside chair/feet)**—synchronized directly onto the 3D Previz Mannequin!
 - **Foreign-Face Grey Masking (`mask_foreign_faces_in_reference`)**: Every uploaded item or location photo is scanned with `YuNet` and any foreign human face is covered with `#8C8C8C` neutral grey.
 
-### Step 3: Interactive 3D Previz Pose Director (`previz_pose.py`)
-- `PosePrevizSpec` & `Previz3DRenderer.render_pose_guide`: Renders a 14-bone depth-sorted 3D articulated mannequin with perspective floor grid, camera focal-length projection (`35/50/85/105mm`), camera elevation (`low / eye / high`), horizontal composition placement, custom joint overrides, and a head gaze vector.
-- `resolve_8angle_view_from_azimuth(head_azimuth_deg)`: Automatically snaps any `0°..360°` Previz head angle to the closest of the 8 turnaround views and attaches `[Image 1: Gen-0 Front, Image 2: Matched 8-Angle View]`.
+### Step 3: 3-Axis Pose (`Yaw + Pitch + Roll`), Natural Gaze & Interactive 3D Previz (`previz_pose.py`)
+- `analyze_reference_pose_before_masking`: Automatically extracts 3-axis head orientation (`auto_yaw_deg`, `auto_pitch_deg` downward/upward bow, `auto_roll_deg` candid head tilt) and `auto_gaze_mode` (`downward_task_focus`, `off_camera_natural`, `camera_eye_contact`, `side_window_contemplative`) from any reference photo BEFORE privacy masking.
+- Never pre-bake dozens of gaze angles beyond the 8 horizontal frontal-arc anchors, and NEVER generate a face separately to stitch/composite onto a generated body afterward (`사후 얼굴 합성 금지`). All 3-axis neck/chin/eyelid kinematics + scene relighting happen in ONE atomic `1원본들 → 1생성` pass.
 
-### Step 4: Multi-Location & Reference Style N-to-N Parallel Batching (`MultiSceneBatchComposer`)
-- Uploading **N** location/style reference photos (and/or **M** text mood lines) automatically expands into **N + M** parallel scene jobs (`여러 장 넣으면 생성도 여러 장`).
-- Supports both `scene_and_mood` (place subject inside the uploaded architectural space + match lighting/tone) and `style_mood_only` (extract 16-point brightness, key-light direction, color temperature, shadow falloff, and editorial mood into a fresh space).
-- Every composed prompt is validated through `PromptFirewall.validate_prompt` (Body-vs-Face Firewall + Natural Matte Skin Firewall + Continuous Eyewear Temple Integrity + Authentic Iris Color Lock).
+### Step 4: Dual-Stage Real-Photo Editorial Depth, Chiaroscuro Light & Post-Gen Cohesion (`scene_radiometry.py` v3.4)
+- **Stage A — Pre-Generation Single-Lens Relighting & 3-Plane Spatial Depth (`SceneRadiometryAnalyzer` + `SingleLensRadiometricSpec`)**:
+  - Measures scene Kelvin temperature, CIE LAB shadow/highlight cast, key-to-fill contrast stops, window backlight/rim regime, and `f/1.8 ~ f/2.8` prime-lens Depth-of-Field.
+  - Explicitly strips flat `5600K` studio flash from Face Anchors (`Images 1–3`) and `#FFFFFF` catalog RGB locks from clothing/watch/bag photos—enforcing 3-plane spatial depth (soft foreground framing + razor-sharp subject focal plane + creamy receding background bokeh), living 3-stop chiaroscuro shadow sculpting, contact ambient occlusion, and environmental color spill.
+- **Stage B — Post-Generation Deterministic Optical Mastering (`PostGenCohesionMasterer`)**:
+  - Runs automatically inside `run_single_pass_5k` (and on-demand in `<0.3s` via `/api/batches/{id}/jobs/{idx}/remaster` with ZERO AI re-generation and ZERO `SFace` identity drift):
+    1. Neutral-white catalog spike suppression & room white-point tinting on shirts/watches/props
+    2. Foreground lifted-shadow grounding to match the environment's true shadow floor
+    3. 2D ambient irradiance coupling + optical light-wrap across sunlit/backlit silhouettes
+    4. Filmic S-curve contrast, 3-zone split-toning (`Shadows / Midtones / Highlights` with physiological skin guard), `cos⁴` peripheral lens falloff, subtle highlight bloom (masked off facial organs), and unified full-frame 35mm sensor grain.
 
-### Step 5: Pure Optical 5K Composition & 9 Automated Quality Gates (`auditor.py`)
-- Outputs `5040x2160` (`21:9`), `3840x2160` (`16:9`), `2160x3840` (`9:16`), `2400x3200` (`3:4`), or `2048x2048` (`1:1`) via `Seamless5KCompositor` + pure optical `Lanczos-4` + 9 Quality Gates (`Resolution`, `YuNet Face Detection`, `Global Sharpness`, `Seam L1 <= 6.0`, `Natural Skin Texture`, `Zero Specular Glare <= 0.04`, `Per-Organ Anti-Smudge`, `Min Face Scale`, and `SFace >= 0.65 + Apple Vision 3D Proportion Lock`).
+### Step 5: Pure Optical 4K/5K Composition & 9 Automated Quality Gates (`quality_gate.py`)
+- Outputs `3840x2160` (`16:9` default, pure Lanczos-4 cover-scale with zero side-strip smear), `5040x2160` (`21:9`), `2160x3840` (`9:16`), `2400x3200` (`3:4`), or `2048x2048` (`1:1`), verified against all 9 Quality Gates (`Resolution`, `YuNet Face Detection`, `Global Sharpness`, `Seam L1 <= 6.0`, `Natural Skin Texture`, `Zero Specular Glare <= 0.04`, `Per-Organ Anti-Smudge`, `Min Face Scale`, and `SFace >= 0.65 + Apple Vision 3D Proportion Lock`).

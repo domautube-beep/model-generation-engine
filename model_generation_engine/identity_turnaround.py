@@ -242,7 +242,23 @@ class RealPersonTurnaroundEngine:
                 x2 = min(w, int(round(fx + fw + pad_x)))
                 y2 = min(h, int(round(fy + fh + pad_y * 0.6)))
                 if x2 > x1 and y2 > y1:
-                    cv2.rectangle(out, (x1, y1), (x2, y2), (140, 140, 140), -1)
+                    # Sample local ambient scene border color so privacy mask preserves warm/cool lighting (zero cool-grey box bleed)
+                    bx1, by1 = max(0, x1 - 18), max(0, y1 - 18)
+                    bx2, by2 = min(w, x2 + 18), min(h, y2 + 18)
+                    ring = np.ones((by2 - by1, bx2 - bx1), dtype=bool)
+                    ring[(y1 - by1) : (y2 - by1), (x1 - bx1) : (x2 - bx1)] = False
+                    patch_ring = bgr_img[by1:by2, bx1:bx2][ring]
+                    if patch_ring.size >= 3:
+                        med_bgr = [int(round(float(v))) for v in np.median(patch_ring, axis=0)]
+                        # Damp slightly toward neutral midtone while keeping local scene warmth/coolness
+                        fill_color = (
+                            int(round(0.65 * med_bgr[0] + 0.35 * 136)),
+                            int(round(0.65 * med_bgr[1] + 0.35 * 136)),
+                            int(round(0.65 * med_bgr[2] + 0.35 * 136)),
+                        )
+                    else:
+                        fill_color = (140, 140, 140)
+                    cv2.rectangle(out, (x1, y1), (x2, y2), fill_color, -1)
                     count += 1
         if output_masked_path is not None:
             output_masked_path.parent.mkdir(parents=True, exist_ok=True)
@@ -250,27 +266,70 @@ class RealPersonTurnaroundEngine:
         return out, count
 
     def analyze_reference_pose_before_masking(self, bgr_img: np.ndarray) -> Dict[str, object]:
-        """Automatically infer ideal head yaw (-90..+90 deg) and horizontal placement from a location/style photo BEFORE grey-masking."""
+        """Automatically infer 3-axis head pose (Yaw, Pitch, Roll) and natural Gaze Mode from a reference photo BEFORE grey-masking."""
+        import math
+
         h, w = bgr_img.shape[:2]
         try:
             face = self.detector.detect(bgr_img)
-            le, re, nose, _, _ = face.landmarks_5pt
+            le, re, nose, lm, rm = face.landmarks_5pt
             d_left = float(np.linalg.norm(nose - le))
             d_right = float(np.linalg.norm(nose - re))
             signed_asym = (d_left - d_right) / max(1.0, d_left + d_right)
             est_yaw = float(np.clip(signed_asym * 145.0, -90.0, 90.0))
             matched = resolve_8angle_view_from_azimuth(est_yaw)
             snap_yaw = VIEW_AZIMUTH_DEG[matched]
+
+            # 3D Projective Pitch & Roll Extraction from 5-point landmarks + bbox foreshortening
+            eye_vec = re - le
+            eye_line_deg = math.degrees(math.atan2(float(eye_vec[1]), float(eye_vec[0])))
+            _, _, fw, fh = face.bbox
+            aspect_wh = float(fw) / max(1.0, float(fh))
+
+            # Projective law: when turned (signed_asym != 0) and bowing head downward, `signed_asym * eye_line_deg > 0`
+            # and `fw/fh` increases above ~0.78 due to vertical foreshortening.
+            slant_coupled = signed_asym * eye_line_deg
+            foreshorten_down = max(0.0, (aspect_wh - 0.78) * 95.0)
+            if slant_coupled > 2.2:
+                est_pitch = -float(np.clip(abs(eye_line_deg) * 0.62 + foreshorten_down * 0.45, 14.0, 42.0))
+                est_roll = float(np.clip(eye_line_deg * 0.35, -22.0, 22.0))
+            elif slant_coupled < -2.2:
+                est_pitch = float(np.clip(abs(eye_line_deg) * 0.45, 10.0, 28.0))
+                est_roll = float(np.clip(eye_line_deg * 0.35, -22.0, 22.0))
+            else:
+                # Near-frontal downward bow check via nose-to-mouth compression
+                eye_mid = 0.5 * (le + re)
+                mouth_mid = 0.5 * (lm + rm)
+                en_dist = float(np.linalg.norm(nose - eye_mid))
+                nm_dist = max(1.0, float(np.linalg.norm(mouth_mid - nose)))
+                en_nm_ratio = en_dist / nm_dist
+                if en_nm_ratio > 1.48 or aspect_wh > 0.90:
+                    est_pitch = -float(np.clip((en_nm_ratio - 1.25) * 45.0 + foreshorten_down * 0.6, 15.0, 38.0))
+                else:
+                    est_pitch = 0.0
+                est_roll = float(np.clip(eye_line_deg, -20.0, 20.0))
+
+            if est_pitch <= -14.0:
+                gaze_mode = "downward_task_focus"
+            elif est_pitch >= 14.0:
+                gaze_mode = "upward_contemplative"
+            elif abs(snap_yaw) >= 20.0:
+                gaze_mode = "off_camera_natural"
+            else:
+                gaze_mode = "camera_eye_contact"
+
             x_norm = float(np.clip(face.center[0] / max(1.0, float(w)), 0.25, 0.75))
             return {
                 "auto_yaw_deg": snap_yaw,
+                "auto_pitch_deg": round(est_pitch, 1),
+                "auto_roll_deg": round(est_roll, 1),
+                "auto_gaze_mode": gaze_mode,
                 "auto_matched_view": matched,
                 "auto_matched_label": VIEW_LABELS_KO[matched],
                 "auto_subject_x_norm": round(x_norm, 3),
-                "auto_source": "reference_face_yaw",
+                "auto_source": "reference_3d_pose_and_gaze",
             }
         except Exception:
-            # Empty room / architectural background: orient face gently toward the brighter key-light half
             gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
             mid_x = max(1, w // 2)
             left_luma = float(np.mean(gray[:, :mid_x]))
@@ -287,6 +346,9 @@ class RealPersonTurnaroundEngine:
             matched = resolve_8angle_view_from_azimuth(est_yaw)
             return {
                 "auto_yaw_deg": est_yaw,
+                "auto_pitch_deg": 0.0,
+                "auto_roll_deg": 0.0,
+                "auto_gaze_mode": "off_camera_natural" if abs(est_yaw) >= 20.0 else "camera_eye_contact",
                 "auto_matched_view": matched,
                 "auto_matched_label": VIEW_LABELS_KO[matched],
                 "auto_subject_x_norm": x_norm,

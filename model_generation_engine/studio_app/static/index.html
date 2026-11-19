@@ -195,7 +195,10 @@
           <input type="range" id="rngTorsoAz" min="-90" max="90" step="0.5" value="0" />
         </label>
         <label>고개 상하 (Pitch): <strong id="valHeadPitch">0°</strong>
-          <input type="range" id="rngHeadPitch" min="-25" max="25" step="1" value="0" />
+          <input type="range" id="rngHeadPitch" min="-40" max="25" step="1" value="0" />
+        </label>
+        <label>고개 기울기 (Roll): <strong id="valHeadRoll">0°</strong>
+          <input type="range" id="rngHeadRoll" min="-22" max="22" step="1" value="0" />
         </label>
         <label>카메라 높이 (Angle): <strong id="valCamElev">0°</strong>
           <input type="range" id="rngCamElev" min="-25" max="25" step="1" value="0" />
@@ -204,6 +207,15 @@
           <input type="range" id="rngSubjX" min="20" max="80" step="1" value="58" />
         </label>
         <div class="inline-selects">
+          <label>시선 처리
+            <select id="selGazeMode">
+              <option value="auto" selected>자동 시선 (포즈·숙임 연동)</option>
+              <option value="downward_task_focus">하방 시선 (작업·필기 몰입)</option>
+              <option value="off_camera_natural">오프카메라 자연 시선</option>
+              <option value="camera_eye_contact">카메라 아이컨택</option>
+              <option value="side_window_contemplative">창밖·자연광 응시</option>
+            </select>
+          </label>
           <label>렌즈
             <select id="selLens">
               <option value="35">35mm 광각</option>
@@ -214,6 +226,7 @@
           </label>
           <label>샷 스케일
             <select id="selShotScale">
+              <option value="medium waist-up seated candid editorial shot">웨이스트업 캔디드</option>
               <option value="medium upper-body portrait shot">상반신 미디엄 샷</option>
               <option value="three-quarter portrait shot" selected>3/4 무릎위 화보 샷</option>
               <option value="three-quarter seated portrait shot">3/4 착석 화보 샷</option>
@@ -260,8 +273,30 @@
         <div class="loc-upload-col">
           <div class="upload-bar">
             <select id="selLocationScope">
-              <option value="scene_and_mood">공간 구조 + 16항목 톤앤매너 모두 대입</option>
-              <option value="style_mood_only">레퍼런스 색감·조명·분위기 무드만 추출 대입</option>
+              <option value="scene_and_mood">공간 구조 + 리얼 에디토리얼 광원·톤앤매너 대입</option>
+              <option value="style_mood_only">레퍼런스 빛·명암·색감·심도 무드만 추출 대입</option>
+            </select>
+            <select id="selLightingMode" title="단일 카메라·광원 재조명 모드">
+              <option value="auto" selected>광원: 자동 광학 계측 (레퍼런스 빛 추출)</option>
+              <option value="natural_window_backlight">광원: 창가 역광·측후방광 (림라이트+깊은음영)</option>
+              <option value="warm_golden_sunbeam">광원: 오후 골든아워 직사광·그림자</option>
+              <option value="soft_diffused_daylight">광원: 부드러운 자연 확산광</option>
+              <option value="moody_chiaroscuro_interior">광원: 무디 로우키 실내광 (강한 명암비)</option>
+              <option value="cool_overcast_architectural">광원: 차분한 모던 건축 주광</option>
+            </select>
+            <select id="selApertureMode" title="대구경 단렌즈 심도 (DOF)">
+              <option value="auto" selected>심도: 자동 대구경 아웃포커싱</option>
+              <option value="f1_8">심도: f/1.8 (깊은 공간감·크리미 보케)</option>
+              <option value="f2_0">심도: f/2.0 (리얼 에디토리얼 표준)</option>
+              <option value="f2_8">심도: f/2.8 (인물·배경 밸런스)</option>
+              <option value="f4_0">심도: f/4.0 (건축 디테일 보존)</option>
+            </select>
+            <select id="selCohesionMode" title="생성 후 무드·톤·명암·색감 광학 마스터링">
+              <option value="auto" selected>후처리: 자동 광학 일체화 (무드·명암·색감 통합)</option>
+              <option value="warm_cinema_amber">후처리: 웜 시네마 앰버 (따뜻한 필름 톤)</option>
+              <option value="deep_chiaroscuro">후처리: 시네마틱 딥 명암 (들뜬 암부 밀착)</option>
+              <option value="soft_editorial_natural">후처리: 소프트 내추럴 필름</option>
+              <option value="off">후처리: 끄기 (생성 원본 그대로)</option>
             </select>
           </div>
           <label class="dropzone loc-dropzone" id="locationDropzone">
