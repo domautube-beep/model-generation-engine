@@ -85,24 +85,52 @@ class DynamicFaceDetector:
         if bgr_img is None or bgr_img.ndim != 3:
             raise ValueError("Input must be a valid 3-channel BGR image.")
         h, w = bgr_img.shape[:2]
-        detector = cv2.FaceDetectorYN.create(
-            self.yunet_path, "", (w, h), self.score_threshold, self.nms_threshold, 5000
-        )
-        _, faces = detector.detect(bgr_img)
+        faces = None
+        used_scale = 1.0
+        for max_dim in (0, 960, 640):
+            if max_dim == 0:
+                work_img = bgr_img
+                sw, sh = w, h
+                scale = 1.0
+            else:
+                if max(w, h) <= max_dim:
+                    continue
+                scale = float(max_dim) / float(max(w, h))
+                sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
+                work_img = cv2.resize(bgr_img, (sw, sh), interpolation=cv2.INTER_AREA)
+
+            detector = cv2.FaceDetectorYN.create(
+                self.yunet_path, "", (sw, sh), self.score_threshold, self.nms_threshold, 5000
+            )
+            _, cand = detector.detect(work_img)
+            if cand is not None and len(cand) > 0:
+                faces = cand
+                used_scale = scale
+                break
+
         if faces is None or len(faces) == 0:
             raise RuntimeError(f"No human face detected in image of shape ({w}x{h}).")
 
+        inv_s = 1.0 / used_scale
         best = max(faces, key=lambda f: float(f[2] * f[3]) * float(f[14]))
-        bbox = (float(best[0]), float(best[1]), float(best[2]), float(best[3]))
-        pts5 = np.array(
-            [
-                [best[4], best[5]],    # viewer's left eye
-                [best[6], best[7]],    # viewer's right eye
-                [best[8], best[9]],    # nose tip
-                [best[10], best[11]],  # viewer's left mouth corner
-                [best[12], best[13]],  # viewer's right mouth corner
-            ],
-            dtype=np.float32,
+        bbox = (
+            float(best[0]) * inv_s,
+            float(best[1]) * inv_s,
+            float(best[2]) * inv_s,
+            float(best[3]) * inv_s,
+        )
+        pts5 = (
+            np.array(
+                [
+                    [best[4], best[5]],    # viewer's left eye
+                    [best[6], best[7]],    # viewer's right eye
+                    [best[8], best[9]],    # nose tip
+                    [best[10], best[11]],  # viewer's left mouth corner
+                    [best[12], best[13]],  # viewer's right mouth corner
+                ],
+                dtype=np.float32,
+            )
+            * inv_s
         )
         return FaceDetectionResult(bbox=bbox, landmarks_5pt=pts5, confidence=float(best[14]))
 

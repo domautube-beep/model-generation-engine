@@ -43,7 +43,17 @@ description: Use this skill immediately whenever the user talks about creating, 
 
 ---
 
-## 3. Mandatory 7-Stage Progression Workflow
+## 3. Mandatory 8-Stage Progression Workflow (Including Real-Person 3D Turnaround Registration)
+
+### Stage 0: Real-Person 3D Turnaround Registration (`RealPersonTurnaroundEngine` — Solves Real-Photo vs AI-Model Angle Gap)
+- **Why Real Photos Drifted Across Angles While AI Models Stayed Consistent**:
+  1. AI models (`제니`, `이소`) start from a tight `85mm` neutral studio head-and-shoulders anchor, carry an explicit verbal DNA (`identityPrompt`), and pre-build a **5-Angle Turnaround (`정면 0° · 좌¾ 45° · 우¾ 45° · 좌측면 90° · 우측면 90°`)** using 2-Hop Progressive Rotation (`0° -> ±45° -> ±90°` with `[0° + ±45°]` dual anchors), then attach the angle-matched face anchor to every scene!
+  2. Raw user photos often have small face area (`~5%` of pixels surrounded by furniture/suits/legs), zero `identityPrompt` (`photo-v1` empty lead/look), and zero side/3Q depth ground-truth—forcing the generator to hallucinate generic average faces when turning `>20°`.
+- **Mandatory Real-Photo Registration Steps (`model_generation_engine/identity_turnaround.py`)**:
+  1. `prepare_canonical_identity_anchor`: Normalize the uploaded photo into a crisp `4:5` (`1200x1500`) `85mm` head-and-shoulders anchor (preserving real `7.5~8등신` shoulder context while maximizing facial ViT patch tokens).
+  2. `extract_anatomical_blueprint`: Measure `Apple Vision` + `YuNet` craniofacial ratios (`eye_to_chin`, `width_to_length`, `iod_to_bbox_width`, `mouth_to_eye_width`) and inject `to_3d_invariance_clause()`.
+  3. `plan_progressive_5angle_turnaround` & `assemble_master_turnaround_sheet`: Generate **Hop 1 (`좌¾ 45°`, `우¾ 45°`)** from `0°`, then **Hop 2 (`좌측면 90°`, `우측면 90°`)** passing **BOTH `[0° Front + ±45° Same-Side 3Q]`**, and assemble the 5-angle Master Turnaround Sheet.
+  4. `select_angle_matched_references`: Whenever generating or refining an angled scene, automatically attach `[Canonical Front + Angle-Matched Turnaround View]`!
 
 ### Stage 1: Reference Isolation (`SinglePassGenerationGuard.validate_reference_lineage`)
 - Verify the identity reference portrait contains a valid face (`YuNet` 5-point landmarks) and is **not** a previously generated output (`generation_depth == 0`).

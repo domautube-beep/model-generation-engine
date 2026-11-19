@@ -151,6 +151,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_prompt.add_argument("--negative-space-side", type=str, default="left")
     p_prompt.add_argument("--aspect-ratio-label", type=str, default="16:9")
 
+    # 5. plan-turnaround (Real-Person 2-Hop 5-Angle 3D Turnaround Registration)
+    p_turn = sub.add_parser(
+        "plan-turnaround",
+        help="Normalize a real photo into a canonical 85mm anchor and emit 2-Hop 5-Angle 3D turnaround prompts",
+    )
+    p_turn.add_argument("--ref-face", type=Path, required=True)
+    p_turn.add_argument("--output-canonical", type=Path, required=True)
+    p_turn.add_argument(
+        "--subject-label",
+        "--identity-label",
+        dest="subject_label",
+        type=str,
+        default="human subject in the reference portrait",
+    )
+    p_turn.add_argument("--hairstyle", type=str, default=None)
+    p_turn.add_argument("--eyewear", type=str, default=None)
+    p_turn.add_argument("--approved-3q-left", type=Path, default=None)
+    p_turn.add_argument("--approved-3q-right", type=Path, default=None)
+
     args = parser.parse_args(argv)
 
     if args.command in ("plan-variations", "plan"):
@@ -287,6 +306,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         p = PromptFirewall.build_universal_single_pass_prompt(subj, w, loc, cam)
         print(json.dumps({"universal_single_pass_prompt": p}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "plan-turnaround":
+        pipe = ModelGenerationPipeline()
+        canon_path, bp = pipe.turnaround.prepare_canonical_identity_anchor(
+            args.ref_face, args.output_canonical
+        )
+        subj = SubjectProfile(
+            subject_identity_label=args.subject_label,
+            hairstyle=args.hairstyle,
+            eyewear=args.eyewear,
+        )
+        plans = pipe.turnaround.plan_progressive_5angle_turnaround(
+            canon_path,
+            subj,
+            approved_3q_left_path=args.approved_3q_left,
+            approved_3q_right_path=args.approved_3q_right,
+        )
+        print(
+            json.dumps(
+                {
+                    "canonical_anchor_path": str(canon_path),
+                    "anatomical_blueprint": asdict(bp),
+                    "turnaround_plans": plans,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     return 1

@@ -28,6 +28,11 @@ from .upscaler import SuperResolutionEngine
 from .compositor import Seamless5KCompositor
 from .apple_vision import AppleVisionAnalyzer, AppleVisionError
 from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
+from .identity_turnaround import (
+    TURNAROUND_VIEWS,
+    AnatomicalBlueprint,
+    RealPersonTurnaroundEngine,
+)
 from .quality_gate import QualityGateAuditor, QualityReport
 from .pipeline import ModelGenerationPipeline, PortraitIdentityPipeline
 
@@ -55,6 +60,13 @@ __all__ = [
     "VariationSpec",
     "SuperResolutionEngine",
     "Seamless5KCompositor",
+    "AppleVisionAnalyzer",
+    "AppleVisionError",
+    "FaceLockCompositor",
+    "HeadRedrawCompositor",
+    "TURNAROUND_VIEWS",
+    "AnatomicalBlueprint",
+    "RealPersonTurnaroundEngine",
     "QualityGateAuditor",
     "QualityReport",
     "ModelGenerationPipeline",

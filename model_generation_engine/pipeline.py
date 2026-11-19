@@ -12,6 +12,7 @@ from .apple_vision import AppleVisionAnalyzer
 from .config import EngineConfig
 from .detector import DynamicFaceDetector
 from .face_reattach import FaceLockCompositor, HeadRedrawCompositor
+from .identity_turnaround import RealPersonTurnaroundEngine
 from .skin_processor import MatteSkinProcessor
 from .upscaler import SuperResolutionEngine
 from .compositor import Seamless5KCompositor
@@ -33,6 +34,9 @@ class ModelGenerationPipeline:
         self.apple_vision = AppleVisionAnalyzer(bin_dir=bin_dir)
         self.facelock = FaceLockCompositor(self.apple_vision)
         self.head_redraw = HeadRedrawCompositor(self.apple_vision)
+        self.turnaround = RealPersonTurnaroundEngine(
+            self.config, self.detector, self.apple_vision, self.upscaler
+        )
 
     def refine_matte_skin_texture(self, bgr_img: np.ndarray, seed: int = 42) -> np.ndarray:
         """Eliminate plastic/oily facial specular gloss and preserve scale-adaptive natural skin micro-texture."""

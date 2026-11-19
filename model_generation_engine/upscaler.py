@@ -93,9 +93,9 @@ class SuperResolutionEngine:
                 f"Detected abnormal eye tilt ({det.eye_tilt_degrees:.1f} deg); aborting CodeFormer to prevent distortion."
             )
 
-        # Anti-Smudge 3D Yaw Guard: if head yaw is steep 3/4 or profile (|yaw| > 0.28),
+        # Anti-Smudge 3D Yaw Guard: if head yaw is 3/4 or profile (|yaw| > 0.12, ~18+ deg),
         # never force onto frontal FFHQ_TEMPLATE_512 (which stretches/crushes angled faces).
-        if abs(det.yaw_asymmetry_ratio) > 0.28:
+        if abs(det.yaw_asymmetry_ratio) > 0.12:
             scale_factor = float(np.clip(det.inter_ocular_distance / 110.0, 0.5, 3.0))
             blur = cv2.GaussianBlur(patch_bgr, (0, 0), max(0.8, 1.0 * scale_factor))
             amt = max(0.25, self.config.unsharp_amount)

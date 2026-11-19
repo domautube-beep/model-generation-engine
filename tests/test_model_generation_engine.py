@@ -592,6 +592,57 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                 rep.identity_cosine_sim, self.config.min_identity_cosine_sim, f"{fname} low SFace similarity"
             )
 
+    def test_15_real_person_3d_turnaround_and_angle_routing(self) -> None:
+        """Verify RealPersonTurnaroundEngine canonical framing, craniofacial blueprint, 2-hop prompts, sheet assembly, and angle routing."""
+        import tempfile
+        from model_generation_engine import ModelGenerationPipeline, TURNAROUND_VIEWS
+
+        pipe = ModelGenerationPipeline(self.config)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            canon_path, bp = pipe.turnaround.prepare_canonical_identity_anchor(
+                self.ref_face, tmp / "canonical_front.jpg", target_size=(600, 750)
+            )
+            self.assertTrue(canon_path.exists())
+            self.assertGreater(bp.eye_to_chin_ratio, 1.0)
+            self.assertGreater(bp.width_to_length_ratio, 0.7)
+
+            subj = SubjectProfile(subject_identity_label="Adult editorial subject")
+            # Hop 1 + Hop 2 with dual-anchor 3/4 bridges
+            fake_3q_l = tmp / "3q_left.jpg"
+            fake_3q_r = tmp / "3q_right.jpg"
+            fake_p_l = tmp / "prof_left.jpg"
+            fake_p_r = tmp / "prof_right.jpg"
+            for fp in (fake_3q_l, fake_3q_r, fake_p_l, fake_p_r):
+                fp.write_bytes(canon_path.read_bytes())
+
+            plans = pipe.turnaround.plan_progressive_5angle_turnaround(
+                canon_path, subj, approved_3q_left_path=fake_3q_l, approved_3q_right_path=fake_3q_r
+            )
+            self.assertEqual(set(plans.keys()), set(TURNAROUND_VIEWS))
+            self.assertEqual(len(plans["three_quarter_left"]["reference_images"]), 1)
+            self.assertEqual(len(plans["left_profile"]["reference_images"]), 2)
+            for v in ("three_quarter_left", "three_quarter_right", "left_profile", "right_profile"):
+                PromptFirewall.validate_prompt(plans[v]["prompt"])
+
+            angle_bank = {
+                "left_profile": fake_p_l,
+                "three_quarter_left": fake_3q_l,
+                "front": canon_path,
+                "three_quarter_right": fake_3q_r,
+                "right_profile": fake_p_r,
+            }
+            sheet_path = pipe.turnaround.assemble_master_turnaround_sheet(
+                angle_bank, tmp / "master_sheet.jpg", cell_size=(240, 300), include_labels=False
+            )
+            self.assertTrue(sheet_path.exists())
+
+            refs_3q, resolved = pipe.turnaround.select_angle_matched_references(
+                canon_path, angle_bank, target_view="three_quarter_left"
+            )
+            self.assertEqual(resolved, "three_quarter_left")
+            self.assertEqual(refs_3q, [canon_path, fake_3q_l])
+
 
 if __name__ == "__main__":
     unittest.main()
