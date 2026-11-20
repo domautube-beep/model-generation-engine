@@ -70,7 +70,10 @@ from .multi_asset_composer import (
     SceneLocationInput,
 )
 from .quality_gate import QualityGateAuditor, QualityReport
+from .ocular_anatomy import OcularAnatomyAnalyzer, OcularAnatomyProfile
+from .face_exaggeration_guard import FaceExaggerationGuard, FacialOrganExaggerationMetrics
 from .pipeline import ModelGenerationPipeline, PortraitIdentityPipeline
+from .fresh_origin_workflow import CandidateScore, FreshOriginEditorialWorkflow
 
 __all__ = [
     "EngineConfig",
@@ -137,7 +140,13 @@ __all__ = [
     "MultiSceneBatchComposer",
     "QualityGateAuditor",
     "QualityReport",
+    "OcularAnatomyAnalyzer",
+    "OcularAnatomyProfile",
+    "FaceExaggerationGuard",
+    "FacialOrganExaggerationMetrics",
     "ModelGenerationPipeline",
     "PortraitIdentityPipeline",
+    "CandidateScore",
+    "FreshOriginEditorialWorkflow",
 ]
-__version__ = "2.0.0"
+__version__ = "9.0.0"

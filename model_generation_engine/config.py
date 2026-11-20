@@ -198,6 +198,7 @@ class EngineConfig:
     auto_facelock_below_iod_5k_px: float = 0.0
     max_face_shape_diff_pct: float = 4.5
     max_cheek_area_diff_pct: float = 6.5
+    enforce_ocular_gate: bool = True
     min_editorial_face_to_shoulder_ratio: float = 0.285
     max_editorial_face_to_shoulder_ratio: float = 0.375
     max_cranial_dome_diff_pct: float = 18.0

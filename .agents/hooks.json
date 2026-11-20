@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "python3 ../hooks/enforce_1origin_1gen_hook.py",
+        "command": "python3 ../hooks/enforce_1origin_1gen_hook.py --event pre_invocation",
         "timeout": 10
       }
     ],
@@ -13,10 +13,29 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ../hooks/enforce_1origin_1gen_hook.py",
+            "command": "python3 ../hooks/enforce_1origin_1gen_hook.py --event pre_tool",
             "timeout": 10
           }
         ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "run_command|read_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ../hooks/enforce_1origin_1gen_hook.py --event post_tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 ../hooks/enforce_1origin_1gen_hook.py --event stop",
+        "timeout": 10
       }
     ]
   }

@@ -362,6 +362,28 @@ class QualityGateAuditor:
                             failures.append(f"하관 볼 면적 왜곡 ({lja_diff:+.1f}%, 허용 ±{lim_area + 1.5:.1f}%)")
                         if abs(gon_diff) > 6.5:
                             failures.append(f"턱 각도(하악각) 왜곡 ({gon_diff:+.1f}°, 허용 ±6.5°)")
+
+                    # Gate 10b: 7-Metric Ocular Anatomy Audit (`눈매 · 쌍꺼풀 높이 · 흰자 노출 · 홍채 비율 · 눈꼬리`)
+                    from .ocular_anatomy import OcularAnatomyAnalyzer
+                    oc_cmp = OcularAnatomyAnalyzer(self.apple_vision).compare(reference_face_bgr, patch)
+                    if oc_cmp.get("valid"):
+                        oc_d = oc_cmp["diffs"]
+                        shape_note = (
+                            f"{shape_note} · 눈개방 {oc_d['earDiffPct']:+.1f}% · 눈꼬리 {oc_d['canthalTiltDiffDeg']:+.1f}° "
+                            f"· 흰자 {oc_d['scleraDiffPct']:+.1f}% · 눈매NCC {oc_cmp['eyelidEdgeNcc']:.2f}"
+                        ).strip(" ·")
+                        if getattr(self.config, "enforce_ocular_gate", True) and not oc_cmp.get("passed", True):
+                            for iss in oc_cmp.get("issues", []):
+                                failures.append(f"눈매 왜곡: {iss}")
+
+                    # Gate 10c: 7-Axis Anti-Exaggeration Face Guard (`눈·눈썹·코·입술·채도·윤곽 과장 전면 차단`)
+                    from .face_exaggeration_guard import FaceExaggerationGuard
+                    ex_rep = FaceExaggerationGuard(self.apple_vision).audit(reference_face_bgr, patch)
+                    if ex_rep.get("valid"):
+                        shape_note = f"{shape_note} · 과장지수 {ex_rep['exaggerationIndex']:.1f}".strip(" ·")
+                        if getattr(self.config, "enforce_ocular_gate", True) and not ex_rep.get("passed", True):
+                            for iss in ex_rep.get("issues", []):
+                                failures.append(f"얼굴 과장 차단: {iss}")
             except Exception:
                 pass
 

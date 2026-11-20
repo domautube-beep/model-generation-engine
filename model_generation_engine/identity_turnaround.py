@@ -202,9 +202,10 @@ class AnatomicalBlueprint:
     avg_gonion_deg: float = 132.0
     jaw_to_cheek_width_ratio: float = 0.72
     philtrum_to_eye_chin_ratio: float = 0.12
+    ocular_profile: Optional[object] = None
 
     def to_3d_invariance_clause(self) -> str:
-        """Emit a universal, zero-hardcoding 3D Craniofacial + Jawline-Angle + Cheek-Area + Cranial Dome + Scale Lock."""
+        """Emit a universal, zero-hardcoding 3D Craniofacial + Jawline-Angle + Cheek-Area + Ocular Anatomy + Cranial Dome Lock."""
         if self.cheek_area_norm >= 3.85:
             cheek_desc = (
                 "soft, full, gently rounded malar and lower-cheek surface area (NEVER hollow out the cheeks, "
@@ -238,6 +239,13 @@ class AnatomicalBlueprint:
             else "natural philtrum length matching Image 1"
         )
 
+        ocular_clause = (
+            f" {self.ocular_profile.to_ocular_lock_clause()}"
+            if self.ocular_profile is not None and hasattr(self.ocular_profile, "to_ocular_lock_clause")
+            else ""
+        )
+        from .face_exaggeration_guard import FaceExaggerationGuard
+
         return (
             f"Measured 3D Craniofacial, Jawline-Angle, Cheek-Area & Cranial Dome Lock "
             f"(vertical eye-to-menton index {self.eye_to_chin_ratio:.3f}, "
@@ -255,13 +263,14 @@ class AnatomicalBlueprint:
             f"inter-ocular index {self.iod_to_bbox_width_ratio:.3f}, "
             f"oral-to-ocular index {self.mouth_to_eye_width_ratio:.3f}, "
             f"source portrait angle {self.source_signed_yaw_deg:+.1f} deg): "
-            f"maintain strict 1:1 craniofacial, jawline-angle, cheek-area, and cranial-dome identity—"
+            f"maintain strict 1:1 craniofacial, jawline-angle, cheek-area, ocular-anatomy, and cranial-dome identity—"
             f"preserve {cheek_desc}; preserve {jaw_desc}; preserve {philtrum_desc}; "
             "preserve exact forehead height and hairline contour without compressing the forehead, "
             "exact natural crown root thickness without inflating wig-like top volume, exact temporal skull and side-hair breadth "
-            "(including head-fixed parting and ear-tuck asymmetry), eyebrow lightness, eyelid crease, nasal bridge and tip, and lip contour; "
+            "(including head-fixed parting and ear-tuck asymmetry), natural nasal bridge and tip, and natural lip contour; "
             "enforce balanced adult 7.5-to-7.8-head editorial body proportion where facial breadth measures ~31%-35% of natural "
             "unpadded bi-deltoid shoulder span (NEVER inflated big-head and NEVER tiny pinhead)."
+            f"{ocular_clause} {FaceExaggerationGuard.ZERO_EXAGGERATION_LAW_CLAUSE}"
         )
 
 
@@ -319,6 +328,31 @@ class RealPersonTurnaroundEngine:
             out = cv2.resize(crop, target_size, interpolation=cv2.INTER_LANCZOS4)
         output_crop_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_crop_path), out, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+        return output_crop_path
+
+    def prepare_pure_gen0_ocular_detail_anchor(
+        self,
+        raw_face_path: Path,
+        output_crop_path: Path,
+    ) -> Path:
+        """Pure lossless optical close-up crop of eyes + brows + nose + lips straight from untouched Gen-0 (0% AI, 0% Upscayl)."""
+        bgr = cv2.imread(str(raw_face_path))
+        if bgr is None:
+            raise FileNotFoundError(f"Cannot read raw portrait: {raw_face_path}")
+        h, w = bgr.shape[:2]
+        face = self.detector.detect(bgr)
+        fx, fy, fw, fh = face.bbox
+        cx = fx + 0.50 * fw
+        cy = fy + 0.42 * fh
+        cw = min(float(w), max(fw * 1.28, fh * 1.05))
+        ch = min(float(h), cw * 0.78)
+        x1 = int(round(np.clip(cx - 0.5 * cw, 0.0, max(0.0, float(w) - cw))))
+        y1 = int(round(np.clip(cy - 0.46 * ch, 0.0, max(0.0, float(h) - ch))))
+        x2 = min(w, x1 + max(32, int(round(cw))))
+        y2 = min(h, y1 + max(32, int(round(ch))))
+        crop = bgr[y1:y2, x1:x2]
+        output_crop_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_crop_path), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
         return output_crop_path
 
     def erase_foreign_person_completely(
@@ -646,6 +680,7 @@ class RealPersonTurnaroundEngine:
         avg_gonion = 132.0
         jaw_cheek_w = 0.72
         philtrum_ec = 0.12
+        ocular_prof = None
         try:
             pil_img = Image.fromarray(cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB))
             marks = self.apple_vision.landmarks(pil_img)
@@ -672,6 +707,8 @@ class RealPersonTurnaroundEngine:
                 avg_gonion = float(pvec.get("avgGonionDeg", avg_gonion))
                 jaw_cheek_w = float(pvec.get("jawToCheekW", jaw_cheek_w))
                 philtrum_ec = float(pvec.get("philtrumToEyeChin", philtrum_ec))
+            from .ocular_anatomy import OcularAnatomyAnalyzer
+            ocular_prof = OcularAnatomyAnalyzer(self.apple_vision).analyze(bgr_img, marks=marks)
         except Exception:
             pass
 
@@ -697,6 +734,7 @@ class RealPersonTurnaroundEngine:
             avg_gonion_deg=avg_gonion,
             jaw_to_cheek_width_ratio=jaw_cheek_w,
             philtrum_to_eye_chin_ratio=philtrum_ec,
+            ocular_profile=ocular_prof,
         )
 
     def prepare_canonical_identity_anchor(

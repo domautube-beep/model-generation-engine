@@ -33,10 +33,10 @@ class AppleVisionAnalyzer:
 
     def __init__(self, bin_dir: Optional[Path] = None, tools_dir: Optional[Path] = None) -> None:
         self.tools_dir = tools_dir or (Path(__file__).resolve().parent / "tools")
-        if bin_dir is None:
-            default_cache = Path.home() / ".cache" / "model_generation_engine" / "apple_vision_bin"
-            default_cache.mkdir(parents=True, exist_ok=True)
-            bin_dir = default_cache
+        # Always execute compiled Mach-O binaries from local SSD (never over Google Drive FUSE mount, which can hit Errno 60!)
+        local_ssd_cache = Path.home() / ".cache" / "model_generation_engine" / "apple_vision_bin"
+        if bin_dir is None or "CloudStorage" in str(bin_dir) or "GoogleDrive" in str(bin_dir):
+            bin_dir = local_ssd_cache
         self.bin_dir = Path(bin_dir)
         self.bin_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()

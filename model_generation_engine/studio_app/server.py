@@ -53,7 +53,7 @@ CANVAS_PRESETS: Dict[str, Tuple[int, int, str, str]] = {
     "5k_21x9": (5040, 2160, "21:9", "3840x2160"),
     "4k_16x9": (3840, 2160, "16:9", "3840x2160"),
     "4k_9x16": (2160, 3840, "9:16", "2160x3840"),
-    "3x4_editorial": (2400, 3200, "3:4", "1024x1536"),
+    "3x4_editorial": (3584, 4800, "3:4", "1024x1536"),
     "1x1_square": (2048, 2048, "1:1", "2048x2048"),
 }
 
@@ -389,8 +389,15 @@ def create_studio_app(
                     "recommended_aperture": rad.recommended_aperture,
                 }
 
-            masked_p = adir / f"{aid}_masked.jpg"
-            _, masked_faces = pipe.turnaround.mask_foreign_faces_in_reference(bgr, output_masked_path=masked_p)
+            masked_p = adir / f"{aid}_clean.jpg"
+            if category == "location":
+                _, erased_frac = pipe.turnaround.erase_foreign_person_completely(
+                    bgr, output_clean_path=masked_p, remove_overlay_text=True
+                )
+                masked_faces = 1 if erased_frac > 0.005 else 0
+            else:
+                masked_p = adir / f"{aid}_masked.jpg"
+                _, masked_faces = pipe.turnaround.mask_foreign_faces_in_reference(bgr, output_masked_path=masked_p)
             active_p = masked_p if masked_faces > 0 else raw_p
             if masked_faces == 0:
                 masked_p.unlink(missing_ok=True)

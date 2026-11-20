@@ -55,9 +55,18 @@ class PromptFirewall:
         r"(?<!no\s)(?<!zero\s)(?<!without\s)(?:deep|heavy|pronounced|aged|forced)\s+(?:(?:\w+\s+){0,2})?(?:wrinkles?|nasolabial\s+folds?|creases?|furrows?)\b",
     )
 
+    FORBIDDEN_FACIAL_EXAGGERATION_PATTERNS: Sequence[str] = (
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:plump(?:ed)?|pouty|luscious|fuller|voluminous|juicy|bee[-\s]?stung|glossy\s+red)\s+(?:(?:\w+\s+){0,1})?lips?\b",
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:big|large|huge|doe|wide[-\s]?open|doll|anime|cat[-\s]?eye|foxy|siren|dramatic)\s+(?:(?:\w+\s+){0,1})?eyes?\b",
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:sculpted|chiseled|sharp|high|razor|hollow(?:ed)?|contoured|dramatic)\s+(?:(?:\w+\s+){0,1})?(?:cheekbones?|cheeks?|jaw(?:line)?)\b",
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:button|barbie|upturned|pinched|tiny|slim|narrow|razor[-\s]?sharp)\s+(?:(?:\w+\s+){0,1})?nose\b",
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:heavy|dramatic|glam(?:orous)?|bold|smokey|editorial|red[-\s]?carpet|full[-\s]?glam)\s+(?:(?:\w+\s+){0,1})?(?:makeup|eyeliner|eyeshadow|lipstick|contour(?:ing)?|brows?)\b",
+        r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:beautify|beautified|idealized|glamourized|caricature|supermodel\s+face|flawless\s+beauty|perfect\s+symmetrical\s+face)\b",
+    )
+
     @classmethod
     def validate_prompt(cls, prompt: str) -> None:
-        """Raise PromptContaminationError if the prompt contains face-bloating, skin-blur, plastic-gloss, or forced-wrinkle terms."""
+        """Raise PromptContaminationError if the prompt contains face-bloating, skin-blur, plastic-gloss, forced-wrinkle, or facial-exaggeration terms."""
         lower = prompt.lower()
         for pat in cls.FORBIDDEN_FACE_WEIGHT_PATTERNS:
             if re.search(pat, lower):
@@ -75,6 +84,16 @@ class PromptFirewall:
                 raise PromptContaminationError(
                     f"Prompt contains forbidden plastic-gloss or forced-wrinkle pattern '{pat}'. "
                     "Skin must be natural matte texture with subtle pores and zero plastic gloss or forced wrinkles."
+                )
+        for pat in cls.FORBIDDEN_FACIAL_EXAGGERATION_PATTERNS:
+            for m in re.finditer(pat, lower):
+                prefix = lower[max(0, m.start() - 80) : m.start()]
+                clause_prefix = re.split(r"[.;\n]", prefix)[-1]
+                if re.search(r"\b(?:never|do\s+not|don't|without|zero|no|avoid)\b", clause_prefix):
+                    continue
+                raise PromptContaminationError(
+                    f"Prompt contains forbidden facial-exaggeration / beautification pattern '{pat}'. "
+                    "NEVER exaggerate, plump, enlarge, sculpt, or glam-caricature any real facial feature."
                 )
 
     @classmethod

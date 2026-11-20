@@ -282,6 +282,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         legacy_t2_cfg = EngineConfig(
             max_face_shape_diff_pct=6.0,
             max_cheek_area_diff_pct=18.0,
+            enforce_ocular_gate=False,
             max_editorial_face_to_shoulder_ratio=0.46,
         )
         auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
@@ -520,6 +521,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         legacy_t2_cfg = EngineConfig(
             max_face_shape_diff_pct=6.0,
             max_cheek_area_diff_pct=18.0,
+            enforce_ocular_gate=False,
             max_editorial_face_to_shoulder_ratio=0.46,
         )
         auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
@@ -555,6 +557,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         legacy_t2_cfg = EngineConfig(
             max_face_shape_diff_pct=6.0,
             max_cheek_area_diff_pct=18.0,
+            enforce_ocular_gate=False,
             max_editorial_face_to_shoulder_ratio=0.46,
         )
         auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
@@ -1603,6 +1606,194 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             st = json.loads(st_p.read_text(encoding="utf-8"))
             st.pop(conv_id, None)
             st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_27_v9_ocular_anatomy_and_6stage_fresh_origin_workflow(self) -> None:
+        """Verify v9.0 7-metric OcularAnatomyAnalyzer, 6-stage FreshOriginEditorialWorkflow, and Stop-hook non-skipping enforcement."""
+        import json
+        import subprocess
+        import tempfile
+        from model_generation_engine import (
+            FreshOriginEditorialWorkflow,
+            ModelGenerationPipeline,
+            OcularAnatomyAnalyzer,
+            PromptFirewall,
+        )
+
+        pipe = ModelGenerationPipeline(self.config)
+        face_bgr = cv2.imread(str(self.ref_face))
+        oa = OcularAnatomyAnalyzer(pipe.apple_vision)
+        prof = oa.analyze(face_bgr)
+        self.assertIsNotNone(prof)
+        self.assertGreater(prof.avg_ear, 0.12)
+        self.assertGreater(prof.avg_iris_to_eye_width, 0.25)
+        clause = prof.to_ocular_lock_clause()
+        self.assertIn("Measured Ocular Anatomy Lock", clause)
+        PromptFirewall.validate_prompt(clause)
+
+        # Self-comparison on Gen-0 must pass with high eyelid NCC
+        cmp_self = oa.compare(face_bgr, face_bgr)
+        self.assertTrue(cmp_self["valid"])
+        self.assertTrue(cmp_self["passed"])
+        self.assertGreater(float(cmp_self["eyelidEdgeNcc"]), 0.90)
+
+        # FreshOriginEditorialWorkflow Stage 1-2 prepare + Stage 4 native rank
+        wf = FreshOriginEditorialWorkflow(pipe)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest = wf.prepare_origin_bundle(
+                gen0_portrait_path=self.ref_face,
+                work_dir=tmp / "stage",
+                scene_instruction="calm minimalist studio portrait",
+                outfit_instruction="tailored charcoal knitwear",
+                aspect_ratio_label="3:4",
+                best_of_k=3,
+            )
+            self.assertEqual(manifest["stage"], "READY_FOR_FRESH_GEN")
+            self.assertEqual(len(manifest["prompts"]), 3)
+            self.assertTrue(Path(manifest["ocular_detail_anchor_path"]).is_file())
+            self.assertTrue(Path(manifest["manifest_path"]).is_file())
+            self.assertIn("Measured Ocular Anatomy Lock", manifest["prompts"][0]["prompt"])
+
+            # Fresh candidate copy created AFTER manifest -> rank succeeds natively
+            fresh_cand = tmp / "fresh_c1.jpg"
+            fresh_cand.write_bytes(self.ref_face.read_bytes())
+            rank_res = wf.score_and_select_native_winner(
+                gen0_portrait_path=self.ref_face,
+                candidate_paths=[fresh_cand],
+                min_created_epoch=float(manifest["created_at"]),
+            )
+            self.assertGreater(float(rank_res["winner"]["sface_similarity"]), 0.90)
+
+        # Stop hook enforcement test: MUST block stopping if portrait was generated without finalize + macro visual check!
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        conv_id = "unit-test-stop-hook-v9"
+
+        def _call(event_flag: str, payload: dict) -> dict:
+            p = subprocess.run(
+                ["python3", str(hook_py), "--event", event_flag],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(p.stdout.strip())
+
+        _call("pre_invocation", {"conversationId": conv_id, "lastUserInput": "새 화보 생성해줘"})
+        # Simulate fresh generation from .user_uploaded/
+        r_pre = _call(
+            "pre_tool",
+            {
+                "conversationId": conv_id,
+                "lastUserInput": "새 화보 생성해줘",
+                "toolCall": {
+                    "name": "invoke_subagent",
+                    "args": {
+                        "TypeName": "image-generator",
+                        "Role": "Fresh Editorial",
+                        "Prompt": "Use /tmp/.user_uploaded/gen0.jpg",
+                    },
+                },
+            },
+        )
+        self.assertEqual(r_pre["decision"], "allow")
+
+        # Trying to stop BEFORE finalize & macro read_file MUST return decision='continue'!
+        r_stop_block = _call(
+            "stop",
+            {"conversationId": conv_id, "lastUserInput": "새 화보 생성해줘", "fullyIdle": True, "terminationReason": "NO_TOOL_CALL"},
+        )
+        self.assertEqual(r_stop_block.get("decision"), "continue")
+
+        # Simulate Stage 5 finalize + Stage 6 macro read_file -> Stop now allowed cleanly!
+        _call(
+            "post_tool",
+            {
+                "conversationId": conv_id,
+                "lastUserInput": "새 화보 생성해줘",
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py finalize --stem hero"},
+                },
+            },
+        )
+        _call(
+            "post_tool",
+            {
+                "conversationId": conv_id,
+                "lastUserInput": "새 화보 생성해줘",
+                "toolCall": {
+                    "name": "read_file",
+                    "args": {"Path": "/tmp/hero_4k_macro.jpg"},
+                },
+            },
+        )
+        r_stop_ok = _call(
+            "stop",
+            {"conversationId": conv_id, "lastUserInput": "새 화보 생성해줘", "fullyIdle": True, "terminationReason": "NO_TOOL_CALL"},
+        )
+        self.assertNotEqual(r_stop_ok.get("decision"), "continue")
+
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st = json.loads(st_p.read_text(encoding="utf-8"))
+            st.pop(conv_id, None)
+            st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_28_v9_face_exaggeration_guard_all_7_axes(self) -> None:
+        """Verify 7-Axis FaceExaggerationGuard, PromptFirewall anti-exaggeration bans, and hook prompt-exaggeration blocking."""
+        import json
+        import subprocess
+        from model_generation_engine import (
+            FaceExaggerationGuard,
+            ModelGenerationPipeline,
+            PromptContaminationError,
+            PromptFirewall,
+        )
+
+        # 1. PromptFirewall MUST block facial exaggeration / beautification / caricature terms
+        for bad_prompt in (
+            "editorial portrait with plump lips and big eyes",
+            "portrait with sculpted cheekbones and button nose",
+            "luxury beauty shot with heavy makeup and dramatic eyeliner",
+        ):
+            with self.assertRaises(PromptContaminationError):
+                PromptFirewall.validate_prompt(bad_prompt)
+
+        # Zero-exaggeration law clause itself must pass PromptFirewall cleanly
+        PromptFirewall.validate_prompt(FaceExaggerationGuard.ZERO_EXAGGERATION_LAW_CLAUSE)
+
+        # 2. FaceExaggerationGuard on Gen-0 vs Gen-0 must pass with exaggerationIndex == 0.0
+        pipe = ModelGenerationPipeline(self.config)
+        face_bgr = cv2.imread(str(self.ref_face))
+        guard = FaceExaggerationGuard(pipe.apple_vision)
+        rep_self = guard.audit(face_bgr, face_bgr)
+        self.assertTrue(rep_self["valid"])
+        self.assertTrue(rep_self["passed"])
+        self.assertEqual(float(rep_self["exaggerationIndex"]), 0.0)
+
+        # 3. PreToolUse hook MUST block exaggeration prompts before image generation starts
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        p = subprocess.run(
+            ["python3", str(hook_py), "--event", "pre_tool"],
+            input=json.dumps({
+                "conversationId": "unit-test-exag-hook",
+                "lastUserInput": "새 화보",
+                "toolCall": {
+                    "name": "invoke_subagent",
+                    "args": {
+                        "TypeName": "image-generator",
+                        "Role": "Bad Exaggerated Portrait",
+                        "Prompt": "Use /tmp/.user_uploaded/gen0.jpg and draw big eyes and plump lips with dramatic makeup",
+                    },
+                },
+            }),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        res = json.loads(p.stdout.strip())
+        self.assertEqual(res["decision"], "deny")
+        self.assertIn("얼굴 과장", res["reason"])
 
 
 if __name__ == "__main__":
