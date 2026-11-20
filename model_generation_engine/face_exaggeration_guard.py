@@ -241,3 +241,104 @@ class FaceExaggerationGuard:
             },
             "issues": issues,
         }
+
+    def measure_pupil_aligned_silhouette(
+        self,
+        ref_gen0_bgr: np.ndarray,
+        cand_bgr: np.ndarray,
+        output_overlay_path: Optional[str] = None,
+        max_point_err_px: float = 11.5,
+        min_contour_iou: float = 0.92,
+    ) -> Dict[str, object]:
+        """Align Gen-0 and Candidate strictly by `(leftPupil, rightPupil)` at IOD=180px & audit exact 17-pt outer silhouette."""
+        import math
+
+        def _align(bgr: np.ndarray, size: int = 800):
+            pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            m = self.vision.landmarks(pil)
+            if not m or not m.get("contour") or not m.get("leftEye") or not m.get("rightEye"):
+                return None, None
+            le = np.array(m["leftEye"], dtype=np.float32)
+            re = np.array(m["rightEye"], dtype=np.float32)
+            lp = np.mean(np.array(m.get("leftPupil") or le, dtype=np.float32), axis=0)
+            rp = np.mean(np.array(m.get("rightPupil") or re, dtype=np.float32), axis=0)
+            iod = max(1.0, float(np.linalg.norm(rp - lp)))
+            ang = math.degrees(math.atan2(float(rp[1] - lp[1]), float(rp[0] - lp[0])))
+            mid = (0.5 * float(lp[0] + rp[0]), 0.5 * float(lp[1] + rp[1]))
+            scale = 180.0 / iod
+            M = cv2.getRotationMatrix2D(mid, ang, scale)
+            M[0, 2] += 400.0 - mid[0]
+            M[1, 2] += 340.0 - mid[1]
+            warped = cv2.warpAffine(bgr, M, (size, size), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
+            c = np.array(m["contour"], dtype=np.float32)
+            ones = np.ones((len(c), 1), dtype=np.float32)
+            c_xf = np.hstack([c, ones]) @ M.T
+            return warped, c_xf
+
+        w0, c0 = _align(ref_gen0_bgr)
+        wc, cc = _align(cand_bgr)
+        if w0 is None or wc is None or c0 is None or cc is None:
+            return {"valid": False, "passed": True, "contourIoU": 1.0, "maxContourPointErrPx": 0.0, "width5LevelDiffPct": {}, "issues": []}
+
+        if len(c0) != len(cc):
+            t_old = np.linspace(0.0, 1.0, len(cc))
+            t_new = np.linspace(0.0, 1.0, len(c0))
+            cc = np.stack([np.interp(t_new, t_old, cc[:, 0]), np.interp(t_new, t_old, cc[:, 1])], axis=-1).astype(np.float32)
+
+        pt_errs = np.linalg.norm(cc - c0, axis=1)
+        max_pt_err = float(np.max(pt_errs))
+        mean_pt_err = float(np.mean(pt_errs))
+
+        m0 = np.zeros((800, 800), dtype=np.uint8)
+        mc = np.zeros((800, 800), dtype=np.uint8)
+        cv2.fillPoly(m0, [np.round(c0).astype(np.int32)], 255)
+        cv2.fillPoly(mc, [np.round(cc).astype(np.int32)], 255)
+        union = float(np.sum((m0 > 0) | (mc > 0)))
+        iou = float(np.sum((m0 > 0) & (mc > 0))) / max(1.0, union)
+
+        n = len(c0)
+        w5: Dict[str, float] = {}
+        for lbl, frac_i in (("temple", 0.0), ("cheek", 0.125), ("midJaw", 0.25), ("lowJaw", 0.375), ("chin", 0.4375)):
+            i = int(round(frac_i * (n - 1)))
+            j = (n - 1) - i
+            wr = max(1.0, abs(float(c0[j, 0] - c0[i, 0])))
+            wg = abs(float(cc[j, 0] - cc[i, 0]))
+            w5[lbl] = round(100.0 * (wg - wr) / wr, 1)
+
+        issues: List[str] = []
+        if iou < min_contour_iou:
+            issues.append(f"1:1 외곽선 겹침률(IoU) 부족 ({iou:.3f} < {min_contour_iou:.2f})")
+        if max_pt_err > max_point_err_px:
+            issues.append(f"외곽선 최대 점별 변형 초과 ({max_pt_err:.1f}px > {max_point_err_px:.1f}px @ IOD=180)")
+        worst_w5 = max((abs(v) for v in w5.values()), default=0.0)
+        if worst_w5 > 6.5:
+            issues.append(f"5단계 가로폭 외곽 오차 초과 (최대 {worst_w5:.1f}%, 허용 ±6.5%)")
+
+        saved_ov: Optional[str] = None
+        if output_overlay_path:
+            ov = cv2.addWeighted(w0, 0.50, wc, 0.50, 0)
+            cv2.polylines(ov, [np.round(c0).astype(np.int32)], False, (0, 255, 0), 3)
+            cv2.polylines(ov, [np.round(cc).astype(np.int32)], False, (0, 0, 255), 3)
+            cv2.putText(
+                ov,
+                f"GREEN=Gen0 RED=Gen IoU={iou:.3f} MaxErr={max_pt_err:.1f}px",
+                (16, 36),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.78,
+                (255, 255, 0),
+                2,
+            )
+            side = np.hstack([w0, ov, wc])
+            cv2.imwrite(str(output_overlay_path), side, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            saved_ov = str(output_overlay_path)
+
+        return {
+            "valid": True,
+            "passed": len(issues) == 0,
+            "contourIoU": round(iou, 4),
+            "maxContourPointErrPx": round(max_pt_err, 2),
+            "meanContourPointErrPx": round(mean_pt_err, 2),
+            "width5LevelDiffPct": w5,
+            "overlayPath": saved_ov,
+            "issues": issues,
+        }

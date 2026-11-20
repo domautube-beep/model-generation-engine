@@ -399,11 +399,17 @@ class FreshOriginEditorialWorkflow:
         out_closeup = out_dir / f"{output_stem}_4k_closeup.jpg"
         out_macro = out_dir / f"{output_stem}_4k_macro.jpg"
         out_eye_cmp = out_dir / f"{output_stem}_eye_compare_400pct.jpg"
+        out_sil_ov = out_dir / f"{output_stem}_silhouette_overlay.jpg"
 
         raw_bgr = cv2.imread(str(win_p))
         ref_bgr = cv2.imread(str(gen0_p))
         if raw_bgr is None or ref_bgr is None:
             raise RuntimeError("Failed to decode winner or Gen-0 portrait.")
+
+        # Measure HONEST pre-upscale face resolution BEFORE Upscayl 4x
+        raw_face_det = self.pipeline.detector.detect(raw_bgr)
+        raw_fw, raw_fh = round(float(raw_face_det.bbox[2]), 1), round(float(raw_face_det.bbox[3]), 1)
+        raw_iod_px = round(float(raw_face_det.inter_ocular_distance), 1)
 
         # 1. SINGLE Final Upscayl 4x pass (`high-fidelity-4x` Photo / `digital-art-4x` Illustration) — ZERO warp, ZERO face-pasting!
         up_bgr, up_model = self.pipeline.upscaler.upscale_with_upscayl(raw_bgr, style="auto", scale=4)
@@ -429,7 +435,7 @@ class FreshOriginEditorialWorkflow:
         auditor_4k = ModelGenerationPipeline(cfg_4k).auditor
         report = auditor_4k.audit(up_bgr, crop_box, seam_l1_diff=0.0, reference_face_bgr=ref_bgr)
 
-        # Save all 4 mandatory deliverables even before strict check so failures can be visually diagnosed
+        # Save all 5 mandatory deliverables even before strict check so failures can be visually diagnosed
         cv2.imwrite(str(out_4k), up_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
         cv2.imwrite(str(out_closeup), up_bgr[vy1:vy2, vx1:vx2], [int(cv2.IMWRITE_JPEG_QUALITY), 97])
 
@@ -441,32 +447,64 @@ class FreshOriginEditorialWorkflow:
 
         eye_strip_saved = self.ocular.save_400pct_eye_comparison_strip(ref_bgr, macro_bgr, str(out_eye_cmp))
         oc_cmp = self.ocular.compare(ref_bgr, macro_bgr)
+        sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(
+            ref_bgr, macro_bgr, output_overlay_path=str(out_sil_ov)
+        )
+        ex_cmp = self.exaggeration_guard.audit(ref_bgr, macro_bgr)
+
+        all_passed = bool(report.passed and sil_cmp.get("passed", True))
+        fail_msg = report.message
+        if not sil_cmp.get("passed", True):
+            sil_err = "; ".join(str(x) for x in sil_cmp.get("issues", []))
+            fail_msg = f"{fail_msg}; {sil_err}" if not report.passed else f"1:1 외곽선 게이트 미달: {sil_err}"
 
         # Blacklist generated output in OriginOnlyOneShotGuard so it can NEVER be re-fed as input!
         self.origin_guard.register_generated_scene_output(out_4k, job_id=output_stem)
 
         vault_synced: List[str] = []
-        if sync_to_vault and report.passed and self.pipeline.config.vault_dir:
+        if sync_to_vault and all_passed and self.pipeline.config.vault_dir:
             v_out = self.pipeline.config.vault_dir / "outputs"
             v_out.mkdir(parents=True, exist_ok=True)
-            for p_item in (out_4k, out_closeup, out_macro, out_eye_cmp):
+            for p_item in (out_4k, out_closeup, out_macro, out_eye_cmp, out_sil_ov):
                 if p_item.is_file():
                     dst = v_out / p_item.name
                     shutil.copy2(p_item, dst)
                     vault_synced.append(str(dst))
 
         receipt = {
-            "workflow_version": "9.0",
-            "stage": "FINALIZED_10GATES_PASSED" if report.passed else "FINALIZED_10GATES_FAILED",
+            "workflow_version": "10.0",
+            "stage": "FINALIZED_10GATES_PASSED" if all_passed else "FINALIZED_10GATES_FAILED",
             "timestamp": time.time(),
-            "passed_10gates": bool(report.passed),
+            "passed_10gates": all_passed,
             "upscayl_model": up_model,
             "resolution": [uw, uh],
+            "raw_pre_upscale_canvas": [int(raw_bgr.shape[1]), int(raw_bgr.shape[0])],
+            "raw_pre_upscale_face_px": [raw_fw, raw_fh],
+            "raw_pre_upscale_iod_px": raw_iod_px,
+            "raw_resolution_warning": (
+                f"원시 생성 얼굴 폭 {raw_fw:.0f}px (<260px): 400% 확대 시 Upscayl 보간 한계 존재"
+                if raw_fw < 260.0
+                else None
+            ),
             "warp_applied": False,
             "face_pasting_applied": False,
             "sface_similarity": round(float(report.identity_cosine_sim), 4),
             "face_shape_note": report.face_shape_note,
-            "audit_message": report.message,
+            "audit_message": "ALL QUALITY GATES PASSED" if all_passed else fail_msg,
+            "silhouette_1to1": {
+                "passed": sil_cmp.get("passed"),
+                "contourIoU": sil_cmp.get("contourIoU"),
+                "maxContourPointErrPx": sil_cmp.get("maxContourPointErrPx"),
+                "meanContourPointErrPx": sil_cmp.get("meanContourPointErrPx"),
+                "width5LevelDiffPct": sil_cmp.get("width5LevelDiffPct"),
+                "issues": sil_cmp.get("issues"),
+            },
+            "exaggeration_audit": {
+                "passed": ex_cmp.get("passed"),
+                "exaggerationIndex": ex_cmp.get("exaggerationIndex"),
+                "diffs": ex_cmp.get("diffs"),
+                "issues": ex_cmp.get("issues"),
+            },
             "ocular_summary": {
                 "passed": oc_cmp.get("passed"),
                 "eyelidEdgeNcc": oc_cmp.get("eyelidEdgeNcc"),
@@ -479,6 +517,7 @@ class FreshOriginEditorialWorkflow:
                 "closeup": str(out_closeup),
                 "macro": str(out_macro),
                 "eye_compare_400pct": eye_strip_saved,
+                "silhouette_overlay": sil_cmp.get("overlayPath"),
             },
             "vault_synced": vault_synced,
         }
@@ -486,7 +525,7 @@ class FreshOriginEditorialWorkflow:
         receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding="utf-8")
         receipt["receipt_path"] = str(receipt_path)
 
-        if strict_10gate and not report.passed:
-            raise RuntimeError(f"10-Gate Quality Audit REJECTED output (must regenerate fresh from Gen-0): {report.message}")
+        if strict_10gate and not all_passed:
+            raise RuntimeError(f"10-Gate Quality Audit REJECTED output (must regenerate fresh from Gen-0): {fail_msg}")
 
         return receipt

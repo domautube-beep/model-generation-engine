@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-"""전역 `매번 순수 원본(Gen-0) 6단계 필수 워크플로우 강제 게이트 훅` (`원본1생성게이트.py` v9.0).
+"""전역 `매번 프로세스 Stage 1(순수 원본 Gen-0)부터 재-생성 강제 게이트 훅` (`원본1생성게이트.py` v10.0).
 
-지원 라이프사이클 이벤트:
-1. `PreInvocation`: 사용자 입력(`lastUserInput`)이 바뀔 때마다 해당 대화(`conversationId`)의
-   `turn_started_epoch`를 갱신하고 이번 턴 체크리스트(`fresh_gen_created`, `finalized_4k_receipt`,
-   `macro_visually_inspected`, `stop_nudge_count`)를 초기화한다.
-2. `PreToolUse` (`.*generate_image.*|invoke_subagent|send_message|run_command`):
-   - **이전 턴 구 결과물 후처리('거기서 띡 바꾸기') 절대 금지**: `mtime < turn_started_epoch`인 구 생성물에
-     후처리/재보정/재업스케일을 시도하면 즉시 `deny`.
-   - **생성 결과물 재투입 금지 (`1원본들 → 1생성`)**: `generate_image`, `invoke_subagent(image-generator)`,
-     `send_message`, `gti --image`에 이전 생성물 파일명이나 원장 SHA-256이 들어가면 즉시 `deny`.
-   - **다단계 턴어라운드 연쇄 생성(`8dir -> 8dir`) · 합성 보드 · 3D 프리비즈 와이어프레임 첨부 금지**.
-   - **순수 광학 `Gen-0` 눈매/얼굴 디테일 크롭(`gen0_optical_ocular_detail_anchor.jpg`) 및 사람제거 클린 배경(`loc*_clean.jpg`)은 허용**.
-   - 실제 인물 이미지 생성 시 `fresh_gen_created = True` 기록.
-3. `PostToolUse` (`run_command|read_file`):
-   - `run_command`가 `run_fresh_origin_workflow.py finalize` 또는 `Upscayl + 10-Gate`를 통과(`workflow_receipt.json` 생성)하면
-     `finalized_4k_receipt = True` 기록.
-   - `read_file`이 `*_4k_macro.jpg` 또는 `*_eye_compare_400pct.jpg`를 육안 검수하면 `macro_visually_inspected = True` 기록.
-4. `Stop` (`--event stop`):
-   - 이번 턴에 인물 이미지 생성(`fresh_gen_created == True`)이 일어났는데,
-     (a) `finalized_4k_receipt` (최종 `Upscayl 4x` + 10대 품질 게이트 + 매크로/400% 눈매 비교 스트립 생성) 또는
-     (b) `macro_visually_inspected` (`read_file` 육안 검수) 중 하나라도 빠졌으면
-     `{"decision": "continue", "reason": "..."}`를 반환하여 건너뛰기/빼먹기를 물리적으로 차단한다! (최대 2회 강제 보완)
+닫은 허점까지 포함한 5중 물리 차단:
+1. `PreInvocation`: 사용자 입력(`lastUserInput`)이 바뀔 때마다 `turn_started_epoch` 갱신.
+   - 인물 생성 세션에서 수정·피드백·재생성 지시(`다시`, `재생성`, `고쳐`, `바꿔`, `과장`, `잡아`, `만들어`, `생성해`, `수정해`, `뽑아`, `1.3` 등)가
+     들어오면 `requires_fresh_restart_from_stage1 = True`를 걸어, **프로세스 제일 처음(Stage 1 `prepare`)부터 끝(Stage 6 육안 검수)까지
+     완료하지 않으면 멈출 수 없게 강제**한다!
+2. `PreToolUse` (`run_command`):
+   - 이전 턴에 만든 구 생성물(`mtime < turn_started_epoch - 2.0`)을 후처리·재보정·재업스케일·재채점·재감사
+     (`calibrate`, `upscale`, `finalize`, `rank`, `audit`, `compare`, `cv2.remap`)하려 하면 즉시 `deny` 차단!
+3. `PreToolUse` (`.*generate_image.*|invoke_subagent|send_message|gti`):
+   - 이전 생성물/파생물 재투입 즉시 `deny` 차단 (`1원본들 → 1생성`).
+   - `requires_fresh_restart_from_stage1 == True`인데 Stage 1(`run_fresh_origin_workflow.py prepare`)을 먼저 실행하지 않고
+     바로 생성기를 부르려 하면 즉시 `deny` 차단! ("프로세스 제일 처음으로 가서 바꿔라")
+   - 얼굴 과장/미화/캐리커처 유발 프롬프트 즉시 `deny` 차단.
+   - 다단계 턴어라운드 연쇄(`8dir -> 8dir`) · 합성 보드 · 3D 프리비즈 와이어프레임 첨부 즉시 `deny` 차단.
+4. `PostToolUse` (`run_command|read_file`):
+   - `run_fresh_origin_workflow.py prepare` 완료 -> `stage1_prepare_ran = True`
+   - `run_fresh_origin_workflow.py finalize` 완료 -> `finalized_4k_receipt = True`
+   - `read_file`로 `*_4k_macro.jpg` / `*_eye_compare_400pct.jpg` / `*_silhouette_overlay.jpg` 육안 확인 -> `macro_visually_inspected = True`
+5. `Stop` (`--event stop`):
+   - 이번 턴에 `requires_fresh_restart_from_stage1 == True` 또는 `fresh_gen_created == True`인데
+     (`stage1_prepare_ran`, `fresh_gen_created`, `finalized_4k_receipt`, `macro_visually_inspected`) 중 하나라도 미완료면
+     `{"decision": "continue", "reason": "..."}`로 정지 불가 처리 (최대 3회 강제 보완).
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ FORBIDDEN_GEN_INPUT_PATTERNS = [
     (re.compile(r"(?:^|[/\\])(?:hero|5k_21x9|21x9|closeup|macro_verify)_", re.IGNORECASE), "생성된 5K/클로즈업 결과물 재투입 금지"),
     (re.compile(r"(?:^|[/\\])(?:raw_batch|raw_scene|nb_raw|nb_dop|nb_subj|s03_crimson|exp_m|exp_final)_", re.IGNORECASE), "1차 장면 생성물 재투입 금지"),
     (re.compile(r"(?:^|[/\\])s\d+_v\d+_", re.IGNORECASE), "이전 버전 생성 후보/결과물 재투입 금지 (반드시 순수 처음 원본 Gen-0만 입력할 것)"),
-    (re.compile(r"(?:_verified_|_closeup|_macro|_eye_compare_)\b", re.IGNORECASE), "검증/클로즈업/매크로 파생 결과물 재투입 금지"),
+    (re.compile(r"(?:_verified_|_closeup|_macro|_eye_compare_|_silhouette_overlay)\b", re.IGNORECASE), "검증/클로즈업/매크로 파생 결과물 재투입 금지"),
     (re.compile(r"upscayl4k_|_upscayl", re.IGNORECASE), "Upscayl 변형본을 다시 생성기 입력으로 넣는 다단계 변형 금지 (순수 원본만 입력할 것)"),
     (re.compile(r"composite_styling_board", re.IGNORECASE), "합성 스타일링 보드 금지 (개별 원본 에셋을 직접 전달할 것)"),
     (re.compile(r"(?:^|[/\\])previz_.*\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE), "3D 프리비즈 이미지 첨부 금지 (포즈 텍스트 + 원본만 전달할 것)"),
@@ -61,20 +62,28 @@ TURNAROUND_GENERATED_INPUT_PATTERN = re.compile(
     r"(?:^|[/\\])(?:t2_turn_|crisp_gen1_turn_|subj\d+_turn_|s\d+_8dir_|angle_[mp]\d)", re.IGNORECASE
 )
 
-POST_PROCESS_CMD_PATTERN = re.compile(
+# 구 결과물 후처리·재보정·재감사('거기서 띡 바꾸기' 및 '구 결과물로 재채점해서 넘어가지 않기') 전면 차단 패턴
+STALE_TOUCH_CMD_PATTERN = re.compile(
     r"(?:calibrate_to_gen0|MicroProportionCalibrator|proportion_calibrator|upscale_with_upscayl|"
     r"run_single_pass_5k|run_tonematched_5k_synthesis|integrate_relit_face|apply_facelock|"
-    r"blend_redrawn_head|cv2\.remap|finalize_native_winner_4k|run_fresh_origin_workflow\.py\s+finalize)",
+    r"blend_redrawn_head|cv2\.remap|finalize_native_winner_4k|score_and_select_native_winner|"
+    r"run_fresh_origin_workflow\.py\s+(?:rank|finalize)|FaceExaggerationGuard|OcularAnatomyAnalyzer|"
+    r"auditor\.audit|guard\.audit)",
+    re.IGNORECASE,
+)
+
+STAGE1_PREPARE_CMD_PATTERN = re.compile(
+    r"(?:run_fresh_origin_workflow\.py\s+prepare|prepare_origin_bundle)",
     re.IGNORECASE,
 )
 
 FINALIZE_SUCCESS_CMD_PATTERN = re.compile(
-    r"(?:run_fresh_origin_workflow\.py\s+finalize|finalize_native_winner_4k|upscale_with_upscayl)",
+    r"(?:run_fresh_origin_workflow\.py\s+finalize|finalize_native_winner_4k)",
     re.IGNORECASE,
 )
 
 MACRO_INSPECT_FILE_PATTERN = re.compile(
-    r"(?:_4k_macro|_eye_compare_400pct|_4k)\.(?:jpg|jpeg|png|webp)$",
+    r"(?:_4k_macro|_eye_compare_400pct|_silhouette_overlay)\.(?:jpg|jpeg|png|webp)$",
     re.IGNORECASE,
 )
 
@@ -83,7 +92,13 @@ IMAGE_PATH_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-# 4. 얼굴 과장/미화/캐리커처 유발 프롬프트 즉시 차단 패턴 (절대 얼굴 보호)
+# 수정·피드백·재생성 지시 감지 (단순 질문만 있는 턴은 오탐 방지)
+REGENERATION_ACTION_PATTERN = re.compile(
+    r"(?:다시\s*(?:해|생성|만들|뽑|돌려)|재생성|처음부터|제일\s*처음|과장.*잡아|싹다\s*잡아|"
+    r"고쳐\s*(?:줘|라|서)|바꿔\s*(?:줘|라|서)|수정해|새로\s*(?:생성|만들|뽑)|원본으로\s*(?:무조건\s*)?재생성)",
+    re.IGNORECASE,
+)
+
 FORBIDDEN_FACIAL_EXAGGERATION_PATTERNS = [
     (re.compile(r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:plump(?:ed)?|pouty|luscious|voluminous|juicy|bee[-\s]?stung|glossy\s+red)\s+(?:(?:\w+\s+){0,1})?lips?\b", re.IGNORECASE), "입술 과장/필러화 표현 금지"),
     (re.compile(r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:big|large|huge|doe|doll|anime|cat[-\s]?eye|foxy|siren)\s+(?:(?:\w+\s+){0,1})?eyes?\b", re.IGNORECASE), "눈 과장/인형눈 표현 금지"),
@@ -118,6 +133,20 @@ def _save_json(p: Path, obj: dict) -> None:
         pass
 
 
+def _is_portrait_session(payload: dict, prev_entry: dict) -> bool:
+    if prev_entry.get("ever_generated_portrait"):
+        return True
+    art_dir = str(payload.get("artifactDirectoryPath") or "").strip()
+    if art_dir:
+        up_dir = Path(art_dir) / ".user_uploaded"
+        if up_dir.is_dir() and any(up_dir.glob("*.jpg")):
+            return True
+    for wp in payload.get("workspacePaths") or []:
+        if "모델생성" in str(wp) or "인물사진" in str(wp):
+            return True
+    return False
+
+
 def _get_or_update_turn_entry(payload: dict) -> tuple[str, dict, dict]:
     conv_id = str(payload.get("conversationId") or "default")
     last_input = str(payload.get("lastUserInput") or "").strip()
@@ -126,10 +155,15 @@ def _get_or_update_turn_entry(payload: dict) -> tuple[str, dict, dict]:
     if last_input:
         input_hash = hashlib.sha256(last_input.encode("utf-8")).hexdigest()[:16]
         if entry.get("last_input_hash") != input_hash:
+            is_portrait = _is_portrait_session(payload, entry)
+            needs_restart = bool(is_portrait and REGENERATION_ACTION_PATTERN.search(last_input))
             entry = {
                 "last_input_hash": input_hash,
                 "turn_started_epoch": time.time(),
                 "last_input_preview": last_input[:120],
+                "ever_generated_portrait": bool(entry.get("ever_generated_portrait", is_portrait)),
+                "requires_fresh_restart_from_stage1": needs_restart,
+                "stage1_prepare_ran": False,
                 "fresh_gen_created": False,
                 "finalized_4k_receipt": False,
                 "macro_visually_inspected": False,
@@ -180,7 +214,7 @@ def _check_gen_input_path(img_str: str, ledger: dict, is_turnaround_target: bool
 
 
 def _check_stale_postprocess_command(cmd: str, payload: dict, turn_started_epoch: float) -> str | None:
-    if not POST_PROCESS_CMD_PATTERN.search(cmd):
+    if not STALE_TOUCH_CMD_PATTERN.search(cmd):
         return None
     if re.search(r"\b(?:unittest|pytest|test_model_generation_engine)\b", cmd):
         return None
@@ -202,7 +236,7 @@ def _check_stale_postprocess_command(cmd: str, payload: dict, turn_started_epoch
             name = p.name
             looks_generated_input = bool(
                 re.search(
-                    r"(?:^s\d+_v\d+_|^s03_|^raw_|^exp_|_c\d+_|_3x4_|_16x9_|_pure1pass_|_chintuck_|_verified_|_closeup|_macro)",
+                    r"(?:^s\d+_v\d+_|^s03_|^raw_|^exp_|_c\d+_|_3x4_|_16x9_|_pure1pass_|_chintuck_|_verified_|_closeup|_macro|_final_)",
                     name,
                     re.IGNORECASE,
                 )
@@ -212,7 +246,7 @@ def _check_stale_postprocess_command(cmd: str, payload: dict, turn_started_epoch
             is_only_output = bool(
                 re.search(rf"(?:out_\w*|output_\w*|save\w*|--stem)\s*[= ]+[^\n]*{re.escape(name)}", cmd)
             ) and not bool(
-                re.search(rf"(?:cand|raw|src|input|scene|winner|imread|open)\w*[^\n]*{re.escape(name)}", cmd, re.IGNORECASE)
+                re.search(rf"(?:cand|raw|src|input|scene|winner|imread|open|v\d+\s*=)\w*[^\n]*{re.escape(name)}", cmd, re.IGNORECASE)
             )
             if is_only_output:
                 continue
@@ -222,9 +256,9 @@ def _check_stale_postprocess_command(cmd: str, payload: dict, turn_started_epoch
                 continue
             if mtime < (turn_started_epoch - 2.0):
                 return (
-                    f"[원본재생성 강제 훅 차단] 이전 턴에 생성된 구 결과물 '{name}'을(를) 후처리/재보정('거기서 띡 바꾸기')할 수 없습니다! "
-                    "사용자 피드백이 들어오면 반드시 순수 처음 원본(Gen-0) 사진으로 새 이미지를 먼저 1회 생성한 뒤, "
-                    "그 새 생성물에 대해서만 최종 업스케일·10대 게이트 검증을 실행하세요."
+                    f"[원본재생성 강제 훅 차단] 이전 턴에 생성된 구 결과물 '{name}'을(를) 후처리·재보정·재감사할 수 없습니다! "
+                    "반드시 프로세스 제일 처음(Stage 1 `run_fresh_origin_workflow.py prepare`)부터 순수 처음 원본(Gen-0)으로 "
+                    "새 이미지를 먼저 생성한 뒤, 그 새 생성물에 대해서만 채점·업스케일·검증을 실행하세요."
                 )
     return None
 
@@ -243,23 +277,26 @@ def main() -> int:
         conv_id, entry, state = _get_or_update_turn_entry(payload)
         turn_started_epoch = float(entry.get("turn_started_epoch", 0.0))
 
-        # ── STOP EVENT: prevent stopping if fresh portrait was generated without 10-Gate 4K finalization + macro visual check!
+        # ── STOP EVENT: block stopping if restart/fresh-gen required and ANY stage (1, 3, 5, 6) was skipped!
         if cli_args.event == "stop" or "terminationReason" in payload:
-            # Allow user-cancel / error / non-idle background waits cleanly
             if not payload.get("fullyIdle", True):
                 print(json.dumps({}))
                 return 0
             if str(payload.get("terminationReason") or "") in ("USER_CANCELED", "ERROR"):
                 print(json.dumps({}))
                 return 0
-            if entry.get("fresh_gen_created") and int(entry.get("stop_nudge_count", 0)) < 2:
+
+            needs_full_cycle = bool(entry.get("requires_fresh_restart_from_stage1") or entry.get("fresh_gen_created"))
+            if needs_full_cycle and int(entry.get("stop_nudge_count", 0)) < 3:
                 missing = []
+                if entry.get("requires_fresh_restart_from_stage1") and not entry.get("stage1_prepare_ran"):
+                    missing.append("Stage 1~2(`run_fresh_origin_workflow.py prepare` — 프로세스 제일 처음 순수 원본 계측·매니페스트 생성)")
+                if not entry.get("fresh_gen_created"):
+                    missing.append("Stage 3(순수 원본 Gen-0만으로 새 후보 병렬 재-생성 — 이전 결과물 재사용 금지)")
                 if not entry.get("finalized_4k_receipt"):
-                    missing.append(
-                        "Stage 4~5(FreshOriginEditorialWorkflow rank -> finalize: 단일 Upscayl 4x + 10대 품질 게이트 + 4K/매크로/400% 눈매 비교 스트립)"
-                    )
+                    missing.append("Stage 4~5(`run_fresh_origin_workflow.py rank -> finalize` — 단일 Upscayl 4x + 10대 게이트 + 매크로/눈매/외곽 비교 생성)")
                 if not entry.get("macro_visually_inspected"):
-                    missing.append("Stage 6(`read_file`로 최종 4K 매크로 및 400% 눈매 비교 스트립 육안 검수)")
+                    missing.append("Stage 6(`read_file`로 최종 4K 매크로·400% 눈매·1:1 외곽 오버레이 육안 검수)")
                 if missing:
                     entry["stop_nudge_count"] = int(entry.get("stop_nudge_count", 0)) + 1
                     state[conv_id] = entry
@@ -269,8 +306,8 @@ def main() -> int:
                             {
                                 "decision": "continue",
                                 "reason": (
-                                    "[필수 6단계 워크플로우 누락 방지 훅] 이번 턴에 인물 이미지를 새로 생성했지만 아래 필수 단계가 "
-                                    f"완료되지 않았습니다: {' / '.join(missing)}. 건너뛰지 말고 반드시 완료한 뒤 보고하세요."
+                                    "[프로세스 처음부터 순수 원본 재-생성 강제 훅] 필수 워크플로우 단계가 누락되어 종료할 수 없습니다: "
+                                    f"{' / '.join(missing)}. 반드시 프로세스 제일 처음(Stage 1)부터 끝까지 순수 원본으로 완료하세요."
                                 ),
                             },
                             ensure_ascii=False,
@@ -280,7 +317,7 @@ def main() -> int:
             print(json.dumps({}))
             return 0
 
-        # ── PRE_INVOCATION EVENT: turn state already stamped above
+        # ── PRE_INVOCATION EVENT
         tool_call = payload.get("toolCall")
         if cli_args.event == "pre_invocation" or not tool_call:
             print(json.dumps({}))
@@ -289,15 +326,20 @@ def main() -> int:
         t_name = str(tool_call.get("name") or "").lower()
         args = tool_call.get("args") or {}
 
-        # ── POST_TOOL EVENT: track Stage 5 finalization & Stage 6 visual inspection!
+        # ── POST_TOOL EVENT: track Stage 1 prepare, Stage 5 finalize, Stage 6 visual inspection!
         if cli_args.event == "post_tool":
             if not payload.get("error"):
                 if t_name == "run_command":
                     cmd = str(args.get("CommandLine") or args.get("commandLine") or "")
-                    if FINALIZE_SUCCESS_CMD_PATTERN.search(cmd) and not re.search(r"\b(?:unittest|pytest)\b", cmd):
-                        entry["finalized_4k_receipt"] = True
-                        state[conv_id] = entry
-                        _save_json(STATE_PATH, state)
+                    if not re.search(r"\b(?:unittest|pytest)\b", cmd):
+                        if STAGE1_PREPARE_CMD_PATTERN.search(cmd):
+                            entry["stage1_prepare_ran"] = True
+                            state[conv_id] = entry
+                            _save_json(STATE_PATH, state)
+                        if FINALIZE_SUCCESS_CMD_PATTERN.search(cmd):
+                            entry["finalized_4k_receipt"] = True
+                            state[conv_id] = entry
+                            _save_json(STATE_PATH, state)
                 elif t_name == "read_file":
                     fpath = str(args.get("Path") or args.get("path") or "")
                     if MACRO_INSPECT_FILE_PATTERN.search(fpath):
@@ -384,13 +426,30 @@ def main() -> int:
                     print(json.dumps({"decision": "deny", "reason": err}, ensure_ascii=False))
                     return 0
 
-        # Mark that a fresh non-turnaround portrait generation has started in this turn
-        if is_image_gen_call and not is_turn_target and any(_is_safe_origin(c) for c in candidates):
-            entry["fresh_gen_created"] = True
-            entry["finalized_4k_receipt"] = False
-            entry["macro_visually_inspected"] = False
-            state[conv_id] = entry
-            _save_json(STATE_PATH, state)
+        # Enforce Stage 1 `prepare` BEFORE calling image-generator when restart from beginning is required!
+        if is_image_gen_call and not is_turn_target:
+            if entry.get("requires_fresh_restart_from_stage1") and not entry.get("stage1_prepare_ran"):
+                print(
+                    json.dumps(
+                        {
+                            "decision": "deny",
+                            "reason": (
+                                "[Stage 1 처음부터 재시작 강제 훅 차단] 수정·재생성 요청 시 반드시 프로세스 제일 처음"
+                                "(Stage 1: `scripts/run_fresh_origin_workflow.py prepare`)을 먼저 실행해 순수 원본(Gen-0) "
+                                "25항목 계측·광학 눈매 앵커·클린 배경·매니페스트를 새로 만든 뒤에만 이미지 생성을 호출할 수 있습니다!"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
+            if any(_is_safe_origin(c) for c in candidates):
+                entry["ever_generated_portrait"] = True
+                entry["fresh_gen_created"] = True
+                entry["finalized_4k_receipt"] = False
+                entry["macro_visually_inspected"] = False
+                state[conv_id] = entry
+                _save_json(STATE_PATH, state)
     except Exception:
         pass
 

@@ -1795,6 +1795,73 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         self.assertEqual(res["decision"], "deny")
         self.assertIn("얼굴 과장", res["reason"])
 
+    def test_29_v10_stage1_restart_hook_and_pupil_aligned_silhouette_gate(self) -> None:
+        """Verify v10.0 Stage-1 restart hook (blocks stale audits, blocks skipping prepare, blocks stopping without fresh gen) + 1:1 silhouette gate."""
+        import json
+        import os
+        import subprocess
+        import tempfile
+        import time
+        from model_generation_engine import FaceExaggerationGuard, ModelGenerationPipeline
+
+        pipe = ModelGenerationPipeline(self.config)
+        guard = FaceExaggerationGuard(pipe.apple_vision)
+        face_bgr = cv2.imread(str(self.ref_face))
+        with tempfile.TemporaryDirectory() as td:
+            ov_p = Path(td) / "sil.jpg"
+            sil = guard.measure_pupil_aligned_silhouette(face_bgr, face_bgr, output_overlay_path=str(ov_p))
+            self.assertTrue(sil["valid"])
+            self.assertTrue(sil["passed"])
+            self.assertGreater(float(sil["contourIoU"]), 0.99)
+            self.assertLess(float(sil["maxContourPointErrPx"]), 0.5)
+            self.assertTrue(ov_p.is_file())
+
+            # Hook Red-Team: user says "얼굴 과장 싹다잡아라 다시 생성해" in an active portrait session
+            hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+            conv_id = "unit-test-v10-stage1-restart"
+            ws = ["/Volumes/DOMA/Project/모델생성"]
+
+            def _call(ev: str, pl: dict) -> dict:
+                pl.setdefault("conversationId", conv_id)
+                pl.setdefault("workspacePaths", ws)
+                pl.setdefault("lastUserInput", "얼굴 과장 싹다잡아라 다시 생성해")
+                p = subprocess.run(["python3", str(hook_py), "--event", ev], input=json.dumps(pl), text=True, capture_output=True, check=True)
+                return json.loads(p.stdout.strip())
+
+            _call("pre_invocation", {})
+
+            # 1) Auditing stale prior generated file -> MUST DENY!
+            stale_f = Path(td) / "s03_v10_ocular_final_4k_macro.jpg"
+            stale_f.write_bytes(b"stale")
+            old_t = time.time() - 500.0
+            os.utime(stale_f, (old_t, old_t))
+            r_stale_audit = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 -c \"guard.audit(g0, '{stale_f}')\""}}})
+            self.assertEqual(r_stale_audit["decision"], "deny")
+
+            # 2) Calling image-generator BEFORE Stage 1 `prepare` -> MUST DENY!
+            r_skip_s1 = _call("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Skip S1", "Prompt": "Use /tmp/.user_uploaded/gen0.jpg"}}})
+            self.assertEqual(r_skip_s1["decision"], "deny")
+            self.assertIn("Stage 1", r_skip_s1["reason"])
+
+            # 3) Stopping BEFORE Stage 1 + Stage 3 + Stage 5 + Stage 6 -> MUST CONTINUE!
+            r_stop_block = _call("stop", {"fullyIdle": True, "terminationReason": "NO_TOOL_CALL"})
+            self.assertEqual(r_stop_block.get("decision"), "continue")
+
+            # 4) Execute Stage 1 prepare -> Stage 3 fresh gen -> Stage 5 finalize -> Stage 6 read_file -> Stop ALLOWED!
+            _call("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py prepare --gen0 /tmp/.user_uploaded/gen0.jpg"}}})
+            r_gen_ok = _call("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Fresh", "Prompt": "Use /tmp/.user_uploaded/gen0.jpg"}}})
+            self.assertEqual(r_gen_ok["decision"], "allow")
+            _call("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py finalize --stem hero"}}})
+            _call("post_tool", {"toolCall": {"name": "read_file", "args": {"Path": "/tmp/hero_silhouette_overlay.jpg"}}})
+            r_stop_ok = _call("stop", {"fullyIdle": True, "terminationReason": "NO_TOOL_CALL"})
+            self.assertNotEqual(r_stop_ok.get("decision"), "continue")
+
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st = json.loads(st_p.read_text(encoding="utf-8"))
+            st.pop(conv_id, None)
+            st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 if __name__ == "__main__":
     unittest.main()
