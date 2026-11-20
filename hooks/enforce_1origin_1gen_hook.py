@@ -400,7 +400,7 @@ def main() -> int:
                 for m in re.finditer(r"--image\s+(['\"]?)([^\s'\"]+)\1", cmd):
                     candidates.append(m.group(2))
 
-            elif FLOW_CLI_CMD_PATTERN.search(cmd) and "--login" not in cmd:
+            elif FLOW_CLI_CMD_PATTERN.search(cmd) and "--login" not in cmd and "--download-edit-url" not in cmd:
                 is_image_gen_call = True
                 prompt_to_audit = cmd
                 out_m = re.search(r"--output\s+(['\"]?)([^\s'\"]+)\1", cmd)

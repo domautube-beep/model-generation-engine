@@ -223,40 +223,54 @@ class FreshOriginEditorialWorkflow:
         yaw_deg = float(blueprint.source_signed_yaw_deg)
         if match_gen0_yaw and abs(yaw_deg) >= 8.0:
             side_word = "image-right" if yaw_deg > 0 else "image-left"
-            yaw_clause = (
-                f"Head turned subtly ~{abs(yaw_deg):.0f} degrees toward {side_word} (matching Image 1's natural "
-                f"{yaw_deg:+.1f} deg orientation almost 1:1 so left/right mandibular jaw angles, cheek surface areas, "
-                "and eye-corner asymmetry stay identical to Image 1), chin level, calm direct gaze toward the lens."
-            )
+            yaw_clause = f"Head turned ~{abs(yaw_deg):.0f} deg toward {side_word} matching Image 1, chin level, calm direct gaze."
         else:
-            yaw_clause = "Head facing cleanly forward-level matching Image 1, chin level, calm natural gaze toward the lens."
+            yaw_clause = "Head facing cleanly forward matching Image 1, chin level, calm direct gaze."
 
-        subj_label = subject.subject_identity_label if subject is not None else "exact real person from Image 1"
+        subj_label = subject.subject_identity_label if subject is not None else "exact same real person from Image 1 and Image 2"
         k_count = max(1, int(best_of_k))
         prompts: List[Dict[str, str]] = []
-        # Concise photographic prompt (~1,500 chars) prevents Nano Banana Pro's >5,500-char reference-attention collapse!
+        # 5-Slot Positive Prompt Allocator (~1,050-1,250 chars total: top-loaded 8-head framing, ZERO numeric spam, ZERO pink-elephant 'NEVER' bloat!)
         ocular_short = (
-            "tight thin in-line eyelid fold flush against the lash line, natural medium dark-brown irises with visible white sclera, delicate eyebrows"
+            "sleek flatter almond upper eyelids with tight thin in-line fold, crisp dark lash root, visible white sclera, natural fuller brow density"
             if (blueprint.ocular_profile is not None and float(getattr(blueprint.ocular_profile, "avg_crease_gap_ratio", 0.35)) <= 0.36)
-            else "exact natural eyelid fold, iris proportion, visible white sclera, and natural eyebrows from Image 1"
+            else "exact natural eyelid arch, iris size, visible white sclera, and natural brow density from Image 1"
         )
+        ref_note = "Image 1 (untouched portrait) and Image 2 (angle reference)" if turnaround_p is not None else "Image 1 (untouched portrait)"
         for i in range(k_count):
-            seed_tag, cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
-            p_text = (
-                f"{cam_hdr} ({aspect_ratio_label} aspect ratio). "
-                f"Feature the {subj_label} from the attached reference photos: " + "; ".join(role_lines) + ". "
-                "Preserve their exact real face 1:1 with zero beautification or alteration: "
-                "exact mandibular jawline angle, lower-jaw taper, and chin contour from Image 1 and the angle reference "
-                "(do NOT widen, puff out, round, or lengthen the lower jaw or chin, and do NOT hollow the cheeks), "
-                f"Measured Ocular Anatomy Lock: {ocular_short}, exact nose bridge/tip, compact philtrum, natural lips, hairline, parting, and ear tuck. "
-                f"Scene & Pose: {scene_instruction.strip()}. {yaw_clause} "
-                f"Outfit & Natural Body Scale: {outfit_instruction.strip()} (discarding reference clothing completely); "
-                "balanced natural 7.5-to-7.8-head editorial proportions with natural unpadded shoulder width "
-                "(facial breadth ~32%-35% of shoulders, neither oversized nor tiny head). "
-                "Balanced soft editorial key light and eye-level fill, unretouched natural matte skin pores, zero plastic gloss, zero text, zero watermarks."
+            seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
+            slot1_camera = (
+                f"Hasselblad X2D 85mm f/4 full-three-quarter to knee-up distant editorial portrait ({aspect_ratio_label}), "
+                "pulled back generously with ample margin so true 8-head proportion holds (small graceful head, face ~1/3 of open shoulder width)."
             )
+            slot2_identity = (
+                f"Subject: {subj_label} ({ref_note}). "
+                "Exact 1:1 facial fidelity: crisp steep chin-to-ear mandibular diagonal with clean shadow beneath jaw, taut lower cheek, "
+                f"Measured Ocular Anatomy Lock ({ocular_short}), exact nose, hydrated natural lips, hairline parting & ear tuck."
+            )
+            slot3_pose = f"Scene & Pose: {scene_instruction.strip()}. {yaw_clause}"
+            slot4_outfit = f"Outfit: {outfit_instruction.strip()} (replacing reference clothing completely)."
+            slot5_light = (
+                "Lighting & Texture: sculpted 45-degree editorial key light carving clean jaw-to-neck separation shadow, "
+                "authentic unretouched matte skin pores, natural filmic tonal depth, clean studio finish."
+            )
+            p_text = f"{slot1_camera} {slot2_identity} {slot3_pose} {slot4_outfit} {slot5_light}"
             PromptFirewall.validate_prompt(p_text)
-            prompts.append({"candidate_tag": f"c{i + 1}_{seed_tag}", "prompt": p_text, "full_blueprint_clause": clause_25pt})
+            prompts.append(
+                {
+                    "candidate_tag": f"c{i + 1}_{seed_tag}",
+                    "prompt": p_text,
+                    "prompt_chars": len(p_text),
+                    "slot_budgets": {
+                        "slot1_camera": len(slot1_camera),
+                        "slot2_identity": len(slot2_identity),
+                        "slot3_pose": len(slot3_pose),
+                        "slot4_outfit": len(slot4_outfit),
+                        "slot5_light": len(slot5_light),
+                    },
+                    "full_blueprint_clause": clause_25pt,
+                }
+            )
 
         manifest = {
             "workflow_version": "9.0",

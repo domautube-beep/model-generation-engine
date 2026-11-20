@@ -589,6 +589,7 @@ def main() -> int:
     parser.add_argument("--aspect", type=str, default="3:4")
     parser.add_argument("--tier", type=str, default="4K", help="Preferred download tier: 4K (default), 2K, or Original")
     parser.add_argument("--project-url", type=str, default="", help="Persistent Google Flow project URL for this person (1 person = 1 project)")
+    parser.add_argument("--download-edit-url", type=str, default="", help="Directly download a specific generated tile URL at --tier (e.g. 4K winner)")
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
     parser.add_argument("--headed", action="store_true", help="Show browser window during generation")
@@ -622,6 +623,49 @@ def main() -> int:
             finally:
                 ctx.close()
         return 0
+
+    if args.download_edit_url:
+        if args.output is None:
+            print("ERROR: Provide --output with --download-edit-url.", file=sys.stderr)
+            return 2
+        with sync_playwright() as pw:
+            ctx = _open_context(pw, args.profile_dir, headed=args.headed, downloads_dir=downloads_dir)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(args.download_edit_url, wait_until="domcontentloaded", timeout=60000)
+                time.sleep(3.5)
+                dl_btn = _first_visible(page, "button:has-text('download'), button[aria-label*='다운로드'], button[aria-label*='Download']")
+                if dl_btn is None:
+                    raise RuntimeError(f"Download button not found on {args.download_edit_url}")
+                dl_btn.click(timeout=6000, force=True)
+                time.sleep(1.0)
+                pref = args.tier.strip().upper()
+                sel = (
+                    "[role='menuitem']:has-text('4K'), button:has-text('4K')"
+                    if pref == "4K"
+                    else "[role='menuitem']:has-text('2K'), button:has-text('2K')"
+                    if pref == "2K"
+                    else "[role='menuitem']:has-text('1K'), [role='menuitem']:has-text('원본')"
+                )
+                opt = page.locator(sel).first
+                with page.expect_download(timeout=args.timeout * 1000) as dli:
+                    opt.click(timeout=8000, force=True)
+                dl = dli.value
+                tmp = downloads_dir / (dl.suggested_filename or f"winner_{int(time.time())}.png")
+                dl.save_as(str(tmp))
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp, args.output)
+                w_px, h_px = 0, 0
+                try:
+                    from PIL import Image
+                    with Image.open(args.output) as im:
+                        w_px, h_px = im.size
+                except Exception:
+                    pass
+                print(json.dumps({"status": "ok", "output_path": str(args.output), "resolution": [w_px, h_px], "download_tier": pref, "edit_url": args.download_edit_url}, ensure_ascii=False, indent=2))
+                return 0
+            finally:
+                ctx.close()
 
     jobs: List[Dict[str, Any]] = []
     if args.batch_json is not None:
@@ -729,7 +773,8 @@ def main() -> int:
                 time.sleep(5.0)
                 before_srcs |= {src for _, src, _, _ in _snapshot_result_images(page)}
 
-                new_src: Optional[str] = None
+                target_n = max(1, int(job["count"]))
+                fresh_srcs: List[str] = []
                 t0 = time.time()
                 while time.time() - t0 < args.timeout:
                     time.sleep(2.5)
@@ -739,12 +784,99 @@ def main() -> int:
                         return 3
                     cur_imgs = _snapshot_result_images(page)
                     fresh = [src for _, src, _, _ in cur_imgs if src not in before_srcs]
-                    if fresh:
-                        new_src = fresh[0]
+                    if len(fresh) >= target_n:
+                        fresh_srcs = fresh[:target_n]
+                        time.sleep(3.0)
+                        break
+                    elif fresh and (time.time() - t0) > 65.0:
+                        fresh_srcs = fresh
                         time.sleep(2.5)
                         break
-                if not new_src:
+                if not fresh_srcs:
                     raise TimeoutError(f"Timed out after {args.timeout}s waiting for job {job['tag']}.")
+
+                if target_n > 1:
+                    # Harvest ALL newly generated candidates (`_c1.._cN`) with each candidate's exact `/edit/` URL!
+                    proj_root = _normalize_project_root_url(page.url) or pinned_project_url or page.url
+                    cand_records: List[Dict[str, Any]] = []
+                    seen_edit_urls = set()
+                    for c_idx, fsrc in enumerate(fresh_srcs, start=1):
+                        if c_idx > 1:
+                            page.goto(proj_root, wait_until="domcontentloaded", timeout=60000)
+                            time.sleep(3.0)
+                        c_out = job["output"].with_name(f"{job['output'].stem}_c{c_idx}{job['output'].suffix}")
+                        # Click the exact tile matching `fsrc` (or `c_idx`-th fresh tile)
+                        cur_tiles = _snapshot_result_images(page)
+                        fresh_tiles = [(idx, s, w, h) for idx, s, w, h in cur_tiles if s not in before_srcs]
+                        target_tile = None
+                        for idx, s, w, h in fresh_tiles:
+                            if s.split("?")[0] == fsrc.split("?")[0]:
+                                target_tile = idx
+                                break
+                        if target_tile is None and (c_idx - 1) < len(fresh_tiles):
+                            target_tile = fresh_tiles[c_idx - 1][0]
+                        if target_tile is None:
+                            continue
+                        el = page.locator("img").nth(target_tile)
+                        tbox = el.bounding_box()
+                        if not tbox:
+                            continue
+                        page.mouse.click(tbox["x"] + tbox["width"] * 0.5, tbox["y"] + tbox["height"] * 0.5)
+                        time.sleep(2.2)
+                        edit_url = page.url
+                        if edit_url in seen_edit_urls:
+                            continue
+                        seen_edit_urls.add(edit_url)
+                        dl_btn = _first_visible(page, "button:has-text('download'), button[aria-label*='다운로드'], button[aria-label*='Download']")
+                        if dl_btn is None:
+                            continue
+                        dl_btn.click(timeout=6000, force=True)
+                        time.sleep(0.9)
+                        pref = job["tier"].strip().upper()
+                        tier_sel = (
+                            "[role='menuitem']:has-text('4K'), button:has-text('4K')"
+                            if pref == "4K"
+                            else "[role='menuitem']:has-text('2K'), button:has-text('2K')"
+                            if pref == "2K"
+                            else "[role='menuitem']:has-text('1K'), [role='menuitem']:has-text('원본')"
+                        )
+                        opt = page.locator(tier_sel).first
+                        if opt.count() == 0 or not opt.is_visible():
+                            opt = page.locator("[role='menuitem']:has-text('1K'), [role='menuitem']:has-text('2K'), [role='menuitem']:has-text('원본')").first
+                        with page.expect_download(timeout=args.timeout * 1000) as dli:
+                            opt.click(timeout=8000, force=True)
+                        dl = dli.value
+                        tmp = downloads_dir / (dl.suggested_filename or f"cand_{c_idx}_{int(time.time())}.png")
+                        dl.save_as(str(tmp))
+                        c_out.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(tmp, c_out)
+                        w_px, h_px = 0, 0
+                        try:
+                            from PIL import Image
+                            with Image.open(c_out) as im:
+                                w_px, h_px = im.size
+                        except Exception:
+                            pass
+                        cand_records.append(
+                            {
+                                "candidate": c_idx,
+                                "output_path": str(c_out),
+                                "resolution": [w_px, h_px],
+                                "edit_url": edit_url,
+                            }
+                        )
+                        print(f"[Flow x{target_n}] Harvested c{c_idx}/{target_n} -> {c_out.name} ({w_px}x{h_px})", file=sys.stderr, flush=True)
+                    rec = {
+                        "status": "ok",
+                        "tag": job["tag"],
+                        "count_requested": target_n,
+                        "candidates": cand_records,
+                        "uploaded_references": uploaded_n,
+                        "config_notes": cfg_notes,
+                        "project_url": proj_root,
+                    }
+                    results.append(rec)
+                    continue
 
                 saved_path, tier, menu_items = _download_highest_res_image(
                     page,
