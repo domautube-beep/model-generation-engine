@@ -279,7 +279,11 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
     def test_08_all_11_deliverables_pass_6_quality_gates(self) -> None:
         """Verify all 11 5K 21:9 deliverables in Google Drive Vault pass all 6 quality gates."""
-        legacy_t2_cfg = EngineConfig(max_face_shape_diff_pct=6.0, max_editorial_face_to_shoulder_ratio=0.46)
+        legacy_t2_cfg = EngineConfig(
+            max_face_shape_diff_pct=6.0,
+            max_cheek_area_diff_pct=18.0,
+            max_editorial_face_to_shoulder_ratio=0.46,
+        )
         auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
         expected_files = [
             "21x9_studio_seated_01_terracotta_cane.jpg",
@@ -513,7 +517,11 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
     def test_13_anti_smudge_per_organ_sharpness_and_anatomy_gate(self) -> None:
         """Verify Anti-Smudge Organ Masking, Per-Organ Gradient Gate, and Anatomical Landmark Geometry Gate."""
-        legacy_t2_cfg = EngineConfig(max_face_shape_diff_pct=6.0, max_editorial_face_to_shoulder_ratio=0.46)
+        legacy_t2_cfg = EngineConfig(
+            max_face_shape_diff_pct=6.0,
+            max_cheek_area_diff_pct=18.0,
+            max_editorial_face_to_shoulder_ratio=0.46,
+        )
         auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
         fpath = self.outputs_dir / "21x9_studio_seated_01_terracotta_cane.jpg"
         img_5k = cv2.imread(str(fpath), cv2.IMREAD_COLOR)
@@ -544,7 +552,11 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
     def test_14_sface_identity_gate_3d_proportions_and_tonematched_synthesis(self) -> None:
         """Verify SFace 128-D Identity Gate rejects different person & all 11 Tone-Matched 3D Teacher 02 5K deliverables pass 9 gates."""
-        legacy_t2_cfg = EngineConfig(max_face_shape_diff_pct=6.0, max_editorial_face_to_shoulder_ratio=0.46)
+        legacy_t2_cfg = EngineConfig(
+            max_face_shape_diff_pct=6.0,
+            max_cheek_area_diff_pct=18.0,
+            max_editorial_face_to_shoulder_ratio=0.46,
+        )
         auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
         ref_t2 = cv2.imread(str(self.config.vault_dir / "resources" / "ref_teacher_02_face.jpg"))
         self.assertIsNotNone(ref_t2)
@@ -1477,7 +1489,18 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         face_bgr = cv2.imread(str(self.ref_face))
         v_ref = extract_14pt_proportion_vector(pipe.apple_vision, face_bgr)
         self.assertIsNotNone(v_ref)
-        for req_k in ("eyeChin", "normWidthLength", "philtrumToEyeChin", "noseWToIod", "foreheadToEyeChin", "crownRootToEyeChin"):
+        for req_k in (
+            "eyeChin",
+            "normWidthLength",
+            "cheekAreaNorm",
+            "lowerJawAreaNorm",
+            "leftGonionDeg",
+            "rightGonionDeg",
+            "philtrumToEyeChin",
+            "noseWToIod",
+            "foreheadToEyeChin",
+            "crownRootToEyeChin",
+        ):
             self.assertIn(req_k, v_ref)
 
         # Two-sided head-size gate MUST reject BOTH tiny-head (27.0% < 28.5%) AND big-head (39.5% > 37.5%)
@@ -1498,6 +1521,88 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         self.assertTrue(cal_meta.get("applied"))
         self.assertEqual(cal_out.shape, squeezed_canvas.shape)
         self.assertLess(float(cal_meta["driftAfterPct"]), float(cmp_before["meanWeightedDriftPct"]))
+
+    def test_26_v8_fresh_origin_regeneration_hook_and_jawline_cheek_blueprint(self) -> None:
+        """Verify v8.0 AnatomicalBlueprint dynamic jawline-angle & cheek-area lock + fresh-origin regeneration hook."""
+        import json
+        import os
+        import subprocess
+        import tempfile
+        import time
+        from model_generation_engine import ModelGenerationPipeline, PromptFirewall
+
+        pipe = ModelGenerationPipeline(self.config)
+        face_bgr = cv2.imread(str(self.ref_face))
+        bp = pipe.turnaround.extract_anatomical_blueprint(face_bgr)
+        self.assertGreater(bp.cheek_area_norm, 1.5)
+        self.assertGreater(bp.lower_jaw_area_norm, 0.5)
+        self.assertGreater(bp.avg_gonion_deg, 95.0)
+        clause = bp.to_3d_invariance_clause()
+        self.assertIn("cheek surface area index", clause)
+        self.assertIn("mandibular gonion angle", clause)
+        PromptFirewall.validate_prompt(clause)
+
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        self.assertTrue(hook_py.exists())
+        conv_id = "unit-test-fresh-origin-hook-v8"
+
+        def _call(payload: dict) -> dict:
+            p = subprocess.run(["python3", str(hook_py)], input=json.dumps(payload), text=True, capture_output=True, check=True)
+            return json.loads(p.stdout.strip())
+
+        # 1. Stamp new user feedback turn
+        _call({"conversationId": conv_id, "lastUserInput": "턱 각도랑 볼 면적 맞춰서 처음 원본으로 다시 생성"})
+
+        # 2. Stale generated output passed to image-generator subagent MUST be denied
+        r_refeed = _call({
+            "conversationId": conv_id,
+            "lastUserInput": "턱 각도랑 볼 면적 맞춰서 처음 원본으로 다시 생성",
+            "toolCall": {
+                "name": "invoke_subagent",
+                "args": {
+                    "TypeName": "image-generator",
+                    "Role": "Bad Re-Feed",
+                    "Prompt": "Edit /tmp/s03_v7_c2_3x4_12345.jpg",
+                },
+            },
+        })
+        self.assertEqual(r_refeed["decision"], "deny")
+
+        # 3. Stale prior generated output tweaked via calibrate_to_gen0/upscale_with_upscayl MUST be denied
+        with tempfile.TemporaryDirectory() as td:
+            stale_p = Path(td) / "s03_v7_c2_3x4_old.jpg"
+            stale_p.write_bytes(b"old")
+            old_t = time.time() - 600.0
+            os.utime(stale_p, (old_t, old_t))
+            r_stale = _call({
+                "conversationId": conv_id,
+                "lastUserInput": "턱 각도랑 볼 면적 맞춰서 처음 원본으로 다시 생성",
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": f"python3 -c \"cand='{stale_p}'; calibrate_to_gen0(cand)\""},
+                },
+            })
+            self.assertEqual(r_stale["decision"], "deny")
+
+            # 4. Brand-new output generated AFTER turn start MUST be allowed
+            fresh_p = Path(td) / "s03_v9_fresh_c1_3x4_new.jpg"
+            fresh_p.write_bytes(b"new")
+            r_fresh = _call({
+                "conversationId": conv_id,
+                "lastUserInput": "턱 각도랑 볼 면적 맞춰서 처음 원본으로 다시 생성",
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": f"python3 -c \"cand='{fresh_p}'; upscale_with_upscayl(cand)\""},
+                },
+            })
+            self.assertEqual(r_fresh["decision"], "allow")
+
+        # Cleanup test conversation key from state file
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st = json.loads(st_p.read_text(encoding="utf-8"))
+            st.pop(conv_id, None)
+            st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

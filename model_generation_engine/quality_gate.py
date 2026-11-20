@@ -10,6 +10,7 @@ from PIL import Image
 from .apple_vision import AppleVisionAnalyzer
 from .config import EngineConfig
 from .detector import DynamicFaceDetector
+from .proportion_calibrator import extract_14pt_proportion_vector
 from .skin_processor import MatteSkinProcessor
 
 
@@ -330,7 +331,7 @@ class QualityGateAuditor:
                 if not cmp.get("passed", True):
                     failures.append(f"Face shape proportion drift exceeded {eff_shape_lim}%: {shape_note}")
 
-                # Gate 10: Cranial Dome & 8-Head Editorial Face-to-Shoulder Scale Audit on full canvas!
+                # Gate 10: Cranial Dome, 17-Pt Jawline-Angle & Cheek-Area, and Two-Sided Head-to-Shoulder Scale Audit!
                 full_pil = Image.fromarray(cv2.cvtColor(canvas_5k_bgr, cv2.COLOR_BGR2RGB))
                 dst_cran = self.apple_vision.compute_cranial_and_scale_profile(full_pil)
                 cran_cmp = self.apple_vision.compare_cranial_and_scale(
@@ -345,6 +346,22 @@ class QualityGateAuditor:
                 if not cran_cmp.get("passed", True):
                     for iss in cran_cmp.get("issues", []):
                         failures.append(str(iss))
+
+                if yaw_diff <= 0.22 and tilt_diff < 8.0:
+                    ref_p18 = extract_14pt_proportion_vector(self.apple_vision, reference_face_bgr)
+                    dst_p18 = extract_14pt_proportion_vector(self.apple_vision, patch)
+                    if ref_p18 and dst_p18:
+                        ca_diff = (float(dst_p18["cheekAreaNorm"]) / max(0.5, float(ref_p18["cheekAreaNorm"])) - 1.0) * 100.0
+                        lja_diff = (float(dst_p18["lowerJawAreaNorm"]) / max(0.2, float(ref_p18["lowerJawAreaNorm"])) - 1.0) * 100.0
+                        gon_diff = float(dst_p18["avgGonionDeg"]) - float(ref_p18["avgGonionDeg"])
+                        shape_note = f"{shape_note} · 볼면적 {ca_diff:+.1f}% · 하관면적 {lja_diff:+.1f}% · 턱각도 {gon_diff:+.1f}°".strip(" ·")
+                        lim_area = float(getattr(self.config, "max_cheek_area_diff_pct", 6.5))
+                        if abs(ca_diff) > lim_area:
+                            failures.append(f"볼 면적 왜곡 ({ca_diff:+.1f}%, 허용 ±{lim_area:.1f}%)")
+                        if abs(lja_diff) > lim_area + 1.5:
+                            failures.append(f"하관 볼 면적 왜곡 ({lja_diff:+.1f}%, 허용 ±{lim_area + 1.5:.1f}%)")
+                        if abs(gon_diff) > 6.5:
+                            failures.append(f"턱 각도(하악각) 왜곡 ({gon_diff:+.1f}°, 허용 ±6.5°)")
             except Exception:
                 pass
 

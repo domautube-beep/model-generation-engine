@@ -1,13 +1,19 @@
 {
-  "enforce-1origin-1gen": {
-    "enabled": true,
+  "모델생성-매번원본재생성-게이트": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 ../hooks/enforce_1origin_1gen_hook.py",
+        "timeout": 10
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": ".*generate_image.*|run_command",
+        "matcher": ".*generate_image.*|invoke_subagent|send_message|run_command",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Volumes/DOMA/Project/모델생성/hooks/enforce_1origin_1gen_hook.py",
+            "command": "python3 ../hooks/enforce_1origin_1gen_hook.py",
             "timeout": 10
           }
         ]

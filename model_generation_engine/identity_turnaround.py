@@ -179,7 +179,7 @@ def resolve_8angle_view_from_azimuth(yaw_deg: float) -> str:
 
 @dataclass(frozen=True)
 class AnatomicalBlueprint:
-    """Measured craniofacial + above-eyebrow cranial dome & hairline ratio profile extracted from a real reference photograph."""
+    """Measured craniofacial + above-eyebrow cranial dome + 17-pt jawline-angle & cheek-area profile from a real Gen-0 photo."""
 
     eye_to_chin_ratio: float
     width_to_length_ratio: float
@@ -195,12 +195,58 @@ class AnatomicalBlueprint:
     cranial_to_face_width_ratio: float = 1.30
     left_hair_lobe_ratio: float = 0.14
     right_hair_lobe_ratio: float = 0.14
+    cheek_area_norm: float = 3.70
+    lower_jaw_area_norm: float = 1.75
+    left_gonion_deg: float = 132.0
+    right_gonion_deg: float = 132.0
+    avg_gonion_deg: float = 132.0
+    jaw_to_cheek_width_ratio: float = 0.72
+    philtrum_to_eye_chin_ratio: float = 0.12
 
     def to_3d_invariance_clause(self) -> str:
-        """Emit a gender-neutral, firewall-safe 3D Craniofacial + Cranial Dome + 8-Head Editorial Scale Lock specification."""
+        """Emit a universal, zero-hardcoding 3D Craniofacial + Jawline-Angle + Cheek-Area + Cranial Dome + Scale Lock."""
+        if self.cheek_area_norm >= 3.85:
+            cheek_desc = (
+                "soft, full, gently rounded malar and lower-cheek surface area (NEVER hollow out the cheeks, "
+                "NEVER apply gaunt western cheekbone contouring, and NEVER pinch the lower face into a narrow V-line)"
+            )
+        elif self.cheek_area_norm <= 3.30:
+            cheek_desc = "lean, slender cheek planes with defined lower-face taper matching Image 1 without artificial puffiness"
+        else:
+            cheek_desc = "balanced, natural mid-cheek and lower-cheek surface area matching Image 1 exactly"
+
+        if self.avg_gonion_deg >= 133.0:
+            jaw_desc = (
+                f"gentle, soft-curved obtuse mandibular jawline angle (~{self.avg_gonion_deg:.0f} deg, "
+                f"left {self.left_gonion_deg:.0f} deg / right {self.right_gonion_deg:.0f} deg) flowing smoothly into a soft "
+                "rounded chin curve without sharp angular cornering or pinched tapering"
+            )
+        elif self.avg_gonion_deg <= 122.0:
+            jaw_desc = (
+                f"structured, crisply angled mandibular jawline corner (~{self.avg_gonion_deg:.0f} deg, "
+                f"left {self.left_gonion_deg:.0f} deg / right {self.right_gonion_deg:.0f} deg) matching Image 1"
+            )
+        else:
+            jaw_desc = (
+                f"natural moderate jawline angle (~{self.avg_gonion_deg:.0f} deg, "
+                f"left {self.left_gonion_deg:.0f} deg / right {self.right_gonion_deg:.0f} deg) matching Image 1"
+            )
+
+        philtrum_desc = (
+            "short, compact philtrum gap between nose base and upper lip"
+            if self.philtrum_to_eye_chin_ratio <= 0.125
+            else "natural philtrum length matching Image 1"
+        )
+
         return (
-            f"Measured 3D Craniofacial, Cranial Dome & Hairline Lock (vertical eye-to-menton index {self.eye_to_chin_ratio:.3f}, "
+            f"Measured 3D Craniofacial, Jawline-Angle, Cheek-Area & Cranial Dome Lock "
+            f"(vertical eye-to-menton index {self.eye_to_chin_ratio:.3f}, "
             f"cheek-width-to-length index {self.width_to_length_ratio:.3f}, "
+            f"cheek surface area index {self.cheek_area_norm:.2f}, "
+            f"lower-jaw area index {self.lower_jaw_area_norm:.2f}, "
+            f"mandibular gonion angle {self.avg_gonion_deg:.1f} deg [L {self.left_gonion_deg:.1f} / R {self.right_gonion_deg:.1f}], "
+            f"jaw-to-cheek width ratio {self.jaw_to_cheek_width_ratio:.3f}, "
+            f"philtrum-to-face index {self.philtrum_to_eye_chin_ratio:.3f}, "
             f"upper-cranium-to-menton dome index {self.crown_to_eye_chin_ratio:.3f}, "
             f"forehead hairline height index {self.forehead_to_eye_chin_ratio:.3f}, "
             f"crown root thickness index {self.crown_root_thickness_ratio:.3f}, "
@@ -209,12 +255,13 @@ class AnatomicalBlueprint:
             f"inter-ocular index {self.iod_to_bbox_width_ratio:.3f}, "
             f"oral-to-ocular index {self.mouth_to_eye_width_ratio:.3f}, "
             f"source portrait angle {self.source_signed_yaw_deg:+.1f} deg): "
-            "maintain strict 1:1 craniofacial and cranial-dome identity—preserve exact forehead height and hairline contour without "
-            "compressing the forehead, preserve exact natural crown root thickness without inflating wig-like top volume, preserve "
-            "exact temporal skull and side-hair breadth (including head-fixed parting and ear-tuck asymmetry), preserve exact natural "
-            "cheek volume, eyebrow tone, eyelid crease, nasal bridge and rounded tip, philtrum length, and lip contour; "
-            "enforce perspective-calibrated 7.8-to-8-head editorial body proportion where facial breadth measures ~31% of full "
-            "bi-deltoid shoulder span (compensating close-up reference camera perspective so head scale never inflates relative to shoulders)."
+            f"maintain strict 1:1 craniofacial, jawline-angle, cheek-area, and cranial-dome identity—"
+            f"preserve {cheek_desc}; preserve {jaw_desc}; preserve {philtrum_desc}; "
+            "preserve exact forehead height and hairline contour without compressing the forehead, "
+            "exact natural crown root thickness without inflating wig-like top volume, exact temporal skull and side-hair breadth "
+            "(including head-fixed parting and ear-tuck asymmetry), eyebrow lightness, eyelid crease, nasal bridge and tip, and lip contour; "
+            "enforce balanced adult 7.5-to-7.8-head editorial body proportion where facial breadth measures ~31%-35% of natural "
+            "unpadded bi-deltoid shoulder span (NEVER inflated big-head and NEVER tiny pinhead)."
         )
 
 
@@ -592,6 +639,13 @@ class RealPersonTurnaroundEngine:
         cranial_fw = 1.30
         l_lobe = 0.14
         r_lobe = 0.14
+        cheek_area = 3.70
+        lower_jaw_area = 1.75
+        l_gonion = 132.0
+        r_gonion = 132.0
+        avg_gonion = 132.0
+        jaw_cheek_w = 0.72
+        philtrum_ec = 0.12
         try:
             pil_img = Image.fromarray(cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB))
             marks = self.apple_vision.landmarks(pil_img)
@@ -608,6 +662,16 @@ class RealPersonTurnaroundEngine:
                 cranial_fw = float(cran.get("cranialToFaceWidthRatio", cranial_fw))
                 l_lobe = float(cran.get("leftHairLobeRatio", l_lobe))
                 r_lobe = float(cran.get("rightHairLobeRatio", r_lobe))
+            from .proportion_calibrator import extract_14pt_proportion_vector
+            pvec = extract_14pt_proportion_vector(self.apple_vision, bgr_img)
+            if pvec:
+                cheek_area = float(pvec.get("cheekAreaNorm", cheek_area))
+                lower_jaw_area = float(pvec.get("lowerJawAreaNorm", lower_jaw_area))
+                l_gonion = float(pvec.get("leftGonionDeg", l_gonion))
+                r_gonion = float(pvec.get("rightGonionDeg", r_gonion))
+                avg_gonion = float(pvec.get("avgGonionDeg", avg_gonion))
+                jaw_cheek_w = float(pvec.get("jawToCheekW", jaw_cheek_w))
+                philtrum_ec = float(pvec.get("philtrumToEyeChin", philtrum_ec))
         except Exception:
             pass
 
@@ -626,6 +690,13 @@ class RealPersonTurnaroundEngine:
             cranial_to_face_width_ratio=cranial_fw,
             left_hair_lobe_ratio=l_lobe,
             right_hair_lobe_ratio=r_lobe,
+            cheek_area_norm=cheek_area,
+            lower_jaw_area_norm=lower_jaw_area,
+            left_gonion_deg=l_gonion,
+            right_gonion_deg=r_gonion,
+            avg_gonion_deg=avg_gonion,
+            jaw_to_cheek_width_ratio=jaw_cheek_w,
+            philtrum_to_eye_chin_ratio=philtrum_ec,
         )
 
     def prepare_canonical_identity_anchor(

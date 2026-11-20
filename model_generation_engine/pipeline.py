@@ -62,7 +62,7 @@ class ModelGenerationPipeline:
         reference_scene_path: Optional[Path] = None,
         radiometric_spec: Optional[SingleLensRadiometricSpec] = None,
         angle_bank: Optional[Dict[str, Path]] = None,
-        calibrate_micro_proportions: bool = True,
+        calibrate_micro_proportions: bool = False,  # Default False: pure unwarped fresh Gen-0 single-pass (opt-in TPS only)
     ) -> Dict[str, object]:
         """Execute Single-Pass Pure From-Scratch 5K Pipeline with Post-Gen Optical Cohesion Mastering & 9-Gate Audit."""
         ref_bgr: Optional[np.ndarray] = None
