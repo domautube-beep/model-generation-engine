@@ -378,12 +378,27 @@ class QualityGateAuditor:
 
                     # Gate 10c: 7-Axis Anti-Exaggeration Face Guard (`눈·눈썹·코·입술·채도·윤곽 과장 전면 차단`)
                     from .face_exaggeration_guard import FaceExaggerationGuard
-                    ex_rep = FaceExaggerationGuard(self.apple_vision).audit(reference_face_bgr, patch)
+                    feg = FaceExaggerationGuard(self.apple_vision)
+                    ex_rep = feg.audit(reference_face_bgr, patch)
                     if ex_rep.get("valid"):
                         shape_note = f"{shape_note} · 과장지수 {ex_rep['exaggerationIndex']:.1f}".strip(" ·")
                         if getattr(self.config, "enforce_ocular_gate", True) and not ex_rep.get("passed", True):
                             for iss in ex_rep.get("issues", []):
                                 failures.append(f"얼굴 과장 차단: {iss}")
+
+                    # Gate 10d: Jaw-to-Ear Diagonal Line, Submandibular Shadow, Neck Width & Eye-Arch/Brow Density Audit
+                    je_rep = feg.measure_jaw_to_ear_neck_and_eye_audit(reference_face_bgr, patch)
+                    if je_rep.get("valid"):
+                        jd = je_rep["diffs"]
+                        shape_note = (
+                            f"{shape_note} · 턱귀사선(좌{jd['leftJawSlopeDegDiff']:+.1f}°/우{jd['rightJawSlopeDegDiff']:+.1f}°) "
+                            f"· 턱불룩함(좌{jd['leftJawBulgePct']:+.1f}%/우{jd['rightJawBulgePct']:+.1f}%) "
+                            f"· 턱밑음영 {jd['submandibularShadowDiffL']:+.1f}L · 목굵기 {jd['neckWidthDiffPct']:+.1f}% "
+                            f"· 눈아치 {jd['upperLidArchDiffPct']:+.1f}% · 눈썹굵기 {jd['browThickDiffPct']:+.1f}%"
+                        ).strip(" ·")
+                        if getattr(self.config, "enforce_ocular_gate", True) and not je_rep.get("passed", True):
+                            for iss in je_rep.get("issues", []):
+                                failures.append(f"턱→귀·눈매 정밀 차단: {iss}")
             except Exception:
                 pass
 

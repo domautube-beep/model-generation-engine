@@ -157,7 +157,9 @@ class FreshOriginEditorialWorkflow:
             )
 
         ocular_anchor_p: Optional[Path] = None
-        if attach_ocular_detail_anchor:
+        # Google Flow Nano Banana Pro drops face identity when >=3 face refs are attached!
+        # When an individual 8-dir face anchor is already attached as Image 2, keep STRICTLY 2 face refs (Gen-0 + 8-dir)!
+        if attach_ocular_detail_anchor and turnaround_p is None:
             ocular_anchor_p = wdir / "gen0_optical_ocular_detail_anchor.jpg"
             self.pipeline.turnaround.prepare_pure_gen0_ocular_detail_anchor(gen0_p, ocular_anchor_p)
             self.origin_guard.register_approved_origin(ocular_anchor_p, kind="gen0_optical_crop", depth=0)

@@ -342,3 +342,212 @@ class FaceExaggerationGuard:
             "overlayPath": saved_ov,
             "issues": issues,
         }
+
+    def measure_jaw_to_ear_neck_and_eye_audit(
+        self,
+        ref_gen0_bgr: np.ndarray,
+        cand_bgr: np.ndarray,
+    ) -> Dict[str, object]:
+        """Dedicated micro-geometry & optical shading audit for:
+        1) Jaw-to-Ear diagonal line (chin->gonion slope, gonion->ear slope, outward sagitta bulge '턱 뚱뚱해 보임'),
+        2) Submandibular jaw-neck shadow separation contrast ('턱밑-목 경계 음영'),
+        3) Neck-to-Face width ratio ('목 굵기 / 얼굴폭'),
+        4) Upper eyelid arch flatness ('윗눈꺼풀 둥글기') & brow density/darkness ('눈썹 밀도').
+        """
+        import math
+
+        def _extract_profile(bgr: np.ndarray) -> Optional[Dict[str, float]]:
+            pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            m = self.vision.landmarks(pil)
+            if not m or not m.get("contour") or not m.get("leftEye") or not m.get("rightEye"):
+                return None
+            c = np.array(m["contour"], dtype=np.float32)
+            le = np.array(m["leftEye"], dtype=np.float32)
+            re = np.array(m["rightEye"], dtype=np.float32)
+            leb = np.array(m.get("leftEyebrow") or le, dtype=np.float32)
+            reb = np.array(m.get("rightEyebrow") or re, dtype=np.float32)
+            lp = np.mean(np.array(m.get("leftPupil") or le, dtype=np.float32), axis=0)
+            rp = np.mean(np.array(m.get("rightPupil") or re, dtype=np.float32), axis=0)
+            iod = max(1.0, float(np.linalg.norm(rp - lp)))
+            n = len(c)
+            mid_idx = n // 2
+            chin = c[mid_idx]
+            # Left (viewer-left) & Right (viewer-right) jaw-to-ear arcs
+            l_ear = c[0]
+            l_gon = c[max(1, int(round(0.22 * (n - 1))))]
+            l_mid = c[max(2, int(round(0.32 * (n - 1))))]
+            r_ear = c[n - 1]
+            r_gon = c[min(n - 2, int(round(0.78 * (n - 1))))]
+            r_mid = c[min(n - 3, int(round(0.68 * (n - 1))))]
+
+            # 1) Positive outward sagitta (bowing bulge perpendicular to straight chin->ear chord, AWAY from face center!)
+            face_center = np.array([0.5 * float(lp[0] + rp[0]), 0.5 * float(lp[1] + rp[1])], dtype=np.float32)
+
+            def _chord_bulge(p_ear: np.ndarray, p_chin: np.ndarray, pts: np.ndarray) -> float:
+                v = p_chin - p_ear
+                vlen = max(1.0, float(np.linalg.norm(v)))
+                nx, ny = -v[1] / vlen, v[0] / vlen
+                mid_chord = 0.5 * (p_ear + p_chin)
+                # Ensure normal points OUTWARD away from face_center
+                if ((mid_chord[0] - face_center[0]) * nx + (mid_chord[1] - face_center[1]) * ny) < 0:
+                    nx, ny = -nx, -ny
+                dists = [((p[0] - p_ear[0]) * nx + (p[1] - p_ear[1]) * ny) / iod for p in pts]
+                return float(max(dists)) if dists else 0.0
+
+            l_bulge = _chord_bulge(l_ear, chin, c[1:mid_idx])
+            r_bulge = _chord_bulge(r_ear, chin, c[mid_idx + 1 : n - 1])
+
+            # Diagonal chin->gonion & gonion->ear angles (degrees)
+            l_chin_gon_deg = math.degrees(math.atan2(abs(float(chin[1] - l_gon[1])), max(1.0, abs(float(chin[0] - l_gon[0])))))
+            r_chin_gon_deg = math.degrees(math.atan2(abs(float(chin[1] - r_gon[1])), max(1.0, abs(float(r_gon[0] - chin[0])))))
+            l_gon_ear_deg = math.degrees(math.atan2(abs(float(l_gon[1] - l_ear[1])), max(1.0, abs(float(l_gon[0] - l_ear[0])))))
+            r_gon_ear_deg = math.degrees(math.atan2(abs(float(r_gon[1] - r_ear[1])), max(1.0, abs(float(r_ear[0] - r_gon[0])))))
+
+            # 2) Submandibular jaw-neck shadow contrast (CIE L* inside jaw vs outside neck along near jaw arc)
+            lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+            L_ch = lab[:, :, 0]
+            h, w = L_ch.shape
+            off = max(4, int(round(0.08 * iod)))
+            jaw_contrasts = []
+            # Use the more visible jaw side (greater horizontal span from nose/pupil)
+            use_left = abs(float(l_ear[0] - lp[0])) >= abs(float(r_ear[0] - rp[0]))
+            arc_pts = c[max(1, int(round(0.15 * n))) : mid_idx] if use_left else c[mid_idx + 1 : min(n - 1, int(round(0.85 * n)))]
+            sign_in = 1.0 if use_left else -1.0
+            for pt in arc_pts:
+                px, py = int(round(pt[0])), int(round(pt[1]))
+                ix, iy = int(np.clip(px + sign_in * off, 0, w - 1)), int(np.clip(py - off, 0, h - 1))
+                ox, oy = int(np.clip(px - sign_in * off, 0, w - 1)), int(np.clip(py + off, 0, h - 1))
+                jaw_contrasts.append(float(L_ch[iy, ix] - L_ch[oy, ox]))
+            submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 0.0
+
+            # 3) Neck width right beneath the chin (using skin-like / person-foreground width vs IOD)
+            face_w = max(1.0, float(c[:, 0].max() - c[:, 0].min()))
+            neck_y = int(np.clip(chin[1] + 0.24 * iod, 0, h - 1))
+            neck_band_h = max(3, int(round(0.06 * iod)))
+            y1, y2 = max(0, neck_y - neck_band_h), min(h, neck_y + neck_band_h)
+            x1 = max(0, int(round(c[:, 0].min() - 0.15 * face_w)))
+            x2 = min(w, int(round(c[:, 0].max() + 0.15 * face_w)))
+            neck_ratio = 0.0
+            if y2 > y1 and x2 > x1:
+                # Sample skin color right above chin to segment neck pixels cleanly
+                sy1, sy2 = max(0, int(chin[1] - 0.35 * iod)), max(1, int(chin[1] - 0.08 * iod))
+                sx1, sx2 = max(0, int(chin[0] - 0.25 * iod)), min(w, int(chin[0] + 0.25 * iod))
+                skin_ref = lab[sy1:sy2, sx1:sx2].reshape(-1, 3)
+                if skin_ref.size >= 15:
+                    med_lab = np.median(skin_ref, axis=0)
+                    band = lab[y1:y2, x1:x2]
+                    # Allow shaded neck skin (L drop up to 78, chroma delta <= 30)
+                    d_ab = np.sqrt((band[:, :, 1] - med_lab[1]) ** 2 + (band[:, :, 2] - med_lab[2]) ** 2)
+                    d_l = med_lab[0] - band[:, :, 0]
+                    mask = (d_ab <= 30.0) & (d_l >= -22.0) & (d_l <= 78.0)
+                    col_cov = np.mean(mask, axis=0)
+                    # Find longest contiguous skin-tone run near chin_x (within ±0.35*face_w)
+                    cx_rel = int(np.clip(chin[0] - x1, 0, max(0, x2 - x1 - 1)))
+                    search_r = max(4, int(round(0.35 * face_w)))
+                    seed = None
+                    for delta in range(search_r):
+                        for cand_x in (cx_rel - delta, cx_rel + delta):
+                            if 0 <= cand_x < len(col_cov) and col_cov[cand_x] >= 0.25:
+                                seed = cand_x
+                                break
+                        if seed is not None:
+                            break
+                    if seed is not None:
+                        lx = seed
+                        while lx > 0 and col_cov[lx - 1] >= 0.25:
+                            lx -= 1
+                        rx = seed
+                        while rx < len(col_cov) - 1 and col_cov[rx + 1] >= 0.25:
+                            rx += 1
+                        neck_ratio = float(rx - lx + 1) / face_w
+
+            # 4) Upper eyelid arch height ratio (roundness/dome height above inner-outer corner chord) & brow density
+            def _upper_lid_arch(epts: np.ndarray) -> float:
+                ix = int(np.argmin(epts[:, 0]))
+                ox = int(np.argmax(epts[:, 0]))
+                p_in, p_out = epts[ix], epts[ox]
+                ew = max(1.0, float(np.linalg.norm(p_out - p_in)))
+                # Highest point (smallest y) above the corner chord
+                mid_y = 0.5 * float(p_in[1] + p_out[1])
+                top_y = float(epts[:, 1].min())
+                return max(0.0, (mid_y - top_y) / ew)
+
+            upper_arch = 0.5 * (_upper_lid_arch(le) + _upper_lid_arch(re))
+
+            # Brow darkness & thickness
+            brow_h = 0.5 * (float(leb[:, 1].max() - leb[:, 1].min()) + float(reb[:, 1].max() - reb[:, 1].min())) / iod
+            skin_L = float(np.median(L_ch[max(0, int(lp[1] + 0.15 * iod)) : min(h, int(lp[1] + 0.45 * iod)), max(0, int(lp[0] - 0.15 * iod)) : min(w, int(lp[0] + 0.15 * iod))]))
+            b_darks = []
+            for bpts in (leb, reb):
+                bx1, bx2 = max(0, int(bpts[:, 0].min())), min(w, int(bpts[:, 0].max()))
+                by1, by2 = max(0, int(bpts[:, 1].min() - 0.04 * iod)), min(h, int(bpts[:, 1].max() + 0.04 * iod))
+                patch = L_ch[by1:by2, bx1:bx2]
+                if patch.size >= 12:
+                    b_darks.append(max(0.0, skin_L - float(np.percentile(patch, 25))))
+            brow_dark = float(np.mean(b_darks)) if b_darks else 25.0
+
+            return {
+                "leftJawBulgeIod": round(l_bulge, 4),
+                "rightJawBulgeIod": round(r_bulge, 4),
+                "leftChinGonionDeg": round(l_chin_gon_deg, 1),
+                "rightChinGonionDeg": round(r_chin_gon_deg, 1),
+                "leftGonionEarDeg": round(l_gon_ear_deg, 1),
+                "rightGonionEarDeg": round(r_gon_ear_deg, 1),
+                "submandibularContrastL": round(submandibular_contrast, 2),
+                "neckToFaceWidthRatio": round(neck_ratio, 3),
+                "upperLidArchRatio": round(upper_arch, 4),
+                "browThickIod": round(brow_h, 4),
+                "browDarknessL": round(brow_dark, 2),
+            }
+
+        p0 = _extract_profile(ref_gen0_bgr)
+        pc = _extract_profile(cand_bgr)
+        if not p0 or not pc:
+            return {"valid": False, "passed": True, "issues": []}
+
+        l_bulge_pct = 100.0 * (pc["leftJawBulgeIod"] - p0["leftJawBulgeIod"]) / max(0.05, p0["leftJawBulgeIod"])
+        r_bulge_pct = 100.0 * (pc["rightJawBulgeIod"] - p0["rightJawBulgeIod"]) / max(0.05, p0["rightJawBulgeIod"])
+        l_slope_diff = pc["leftChinGonionDeg"] - p0["leftChinGonionDeg"]
+        r_slope_diff = pc["rightChinGonionDeg"] - p0["rightChinGonionDeg"]
+        shadow_diff = pc["submandibularContrastL"] - p0["submandibularContrastL"]
+        neck_diff_pct = (
+            100.0 * (pc["neckToFaceWidthRatio"] - p0["neckToFaceWidthRatio"]) / max(0.25, p0["neckToFaceWidthRatio"])
+            if (p0["neckToFaceWidthRatio"] > 0.25 and pc["neckToFaceWidthRatio"] > 0.25)
+            else 0.0
+        )
+        arch_diff_pct = 100.0 * (pc["upperLidArchRatio"] - p0["upperLidArchRatio"]) / max(0.05, p0["upperLidArchRatio"])
+        brow_thick_pct = 100.0 * (pc["browThickIod"] - p0["browThickIod"]) / max(0.03, p0["browThickIod"])
+        brow_dark_diff = pc["browDarknessL"] - p0["browDarknessL"]
+
+        issues: List[str] = []
+        if l_bulge_pct > 9.0 or r_bulge_pct > 9.0:
+            issues.append(f"턱→귀 라인 외측 불룩함(뚱뚱해 보임) 초과 (좌 {l_bulge_pct:+.1f}% / 우 {r_bulge_pct:+.1f}%, 허용 ≤+9.0%)")
+        if abs(l_slope_diff) > 5.5 or abs(r_slope_diff) > 5.5:
+            issues.append(f"턱끝→하악각 사선 기울기 이탈 (좌 {l_slope_diff:+.1f}° / 우 {r_slope_diff:+.1f}°, 허용 ±5.5°)")
+        if p0["submandibularContrastL"] >= 8.0 and pc["submandibularContrastL"] < p0["submandibularContrastL"] * 0.55:
+            issues.append(f"턱밑-목 경계 음영 뭉개짐 (생성 {pc['submandibularContrastL']:.1f}L vs 원본 {p0['submandibularContrastL']:.1f}L)")
+        if neck_diff_pct > 11.0:
+            issues.append(f"목 굵기 과대 팽창 ({neck_diff_pct:+.1f}%, 허용 ≤+11.0%)")
+        if abs(arch_diff_pct) > 14.0:
+            issues.append(f"윗눈꺼풀 아치 곡률(둥글기) 이탈 ({arch_diff_pct:+.1f}%, 허용 ±14.0%)")
+        if brow_thick_pct < -12.0 or brow_dark_diff < -10.0:
+            issues.append(f"눈썹 과도한 옅어짐/얇아짐 (굵기 {brow_thick_pct:+.1f}%, 진하기 {brow_dark_diff:+.1f}L)")
+
+        return {
+            "valid": True,
+            "passed": len(issues) == 0,
+            "ref": p0,
+            "cand": pc,
+            "diffs": {
+                "leftJawBulgePct": round(l_bulge_pct, 1),
+                "rightJawBulgePct": round(r_bulge_pct, 1),
+                "leftJawSlopeDegDiff": round(l_slope_diff, 1),
+                "rightJawSlopeDegDiff": round(r_slope_diff, 1),
+                "submandibularShadowDiffL": round(shadow_diff, 2),
+                "neckWidthDiffPct": round(neck_diff_pct, 1),
+                "upperLidArchDiffPct": round(arch_diff_pct, 1),
+                "browThickDiffPct": round(brow_thick_pct, 1),
+                "browDarkDiffL": round(brow_dark_diff, 1),
+            },
+            "issues": issues,
+        }

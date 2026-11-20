@@ -490,7 +490,7 @@ def main() -> int:
                     print(json.dumps({"decision": "deny", "reason": err}, ensure_ascii=False))
                     return 0
 
-        # Enforce Stage 1 `prepare` AND Mandatory Verified 8-Direction Bank BEFORE ANY Step-2 Scene Generation!
+        # Enforce Stage 1 `prepare`, Mandatory Verified 8-Direction Bank, AND Max-2 Face Refs on Google Flow!
         if is_image_gen_call and not is_turn_target:
             has_gen0_portrait = any(_is_safe_origin(c) for c in candidates)
             has_8dir_bank_ref = any(VERIFIED_8DIR_BANK_REF_PATTERN.search(c) for c in candidates)
@@ -502,13 +502,30 @@ def main() -> int:
                             "reason": (
                                 "[8방향 필수 선행 훅 차단] Step 1(원본 Gen-0 → -90°~+90° 8방향 마스터 뱅크 생성·조립·검증)을 "
                                 "건너뛰고 2D 원본 사진만으로 바로 화보/장면 생성을 호출할 수 없습니다! "
-                                "반드시 먼저 8방향 1-Hop 뱅크를 완성한 뒤, Gen-0 + 검증된 8방향 마스터 시트/앵커를 함께 첨부해 생성하세요."
+                                "반드시 먼저 8방향 1-Hop 뱅크를 완성한 뒤, Gen-0 + 검증된 8방향 단독 포트레이트를 함께 첨부해 생성하세요."
                             ),
                         },
                         ensure_ascii=False,
                     )
                 )
                 return 0
+            if t_name == "run_command" and FLOW_CLI_CMD_PATTERN.search(str(args.get("CommandLine") or args.get("commandLine") or "")):
+                unique_face_refs = {Path(c).name for c in candidates if _is_safe_origin(c) or VERIFIED_8DIR_BANK_REF_PATTERN.search(c)}
+                if len(unique_face_refs) > 2:
+                    print(
+                        json.dumps(
+                            {
+                                "decision": "deny",
+                                "reason": (
+                                    f"[Google Flow 3장 이상 얼굴 참조 정체성 붕괴 차단] 얼굴 참조 이미지가 {len(unique_face_refs)}장 첨부되었습니다 "
+                                    f"({', '.join(sorted(unique_face_refs))}). Google Flow Nano Banana Pro는 얼굴 참조 3장 이상 첨부 시 "
+                                    "정체성 전이가 풀려 엉뚱한 인물이 나옵니다! 반드시 최대 2장(Gen-0 + 검증된 단독 8방향 1장)만 첨부하세요."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
             if entry.get("requires_fresh_restart_from_stage1") and not entry.get("stage1_prepare_ran"):
                 print(
                     json.dumps(

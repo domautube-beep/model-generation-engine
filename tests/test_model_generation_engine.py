@@ -1908,5 +1908,52 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+    def test_31_v12_jaw_to_ear_neck_eye_gate_and_max2_flow_refs(self) -> None:
+        """Verify v12.0 Gate 10d (jaw-to-ear slope, outward sagitta bulge, submandibular shadow, neck width, upper-lid arch, brow density) + Max-2 Flow face ref hook."""
+        import json
+        import subprocess
+        from model_generation_engine.face_exaggeration_guard import FaceExaggerationGuard
+
+        pipe = ModelGenerationPipeline(EngineConfig())
+        face_bgr = cv2.imread(str(self.ref_face))
+        guard = FaceExaggerationGuard(pipe.apple_vision)
+        rep = guard.measure_jaw_to_ear_neck_and_eye_audit(face_bgr, face_bgr)
+        self.assertTrue(rep["valid"])
+        self.assertTrue(rep["passed"])
+        self.assertEqual(rep["diffs"]["leftJawSlopeDegDiff"], 0.0)
+        self.assertEqual(rep["diffs"]["rightJawSlopeDegDiff"], 0.0)
+        self.assertEqual(rep["diffs"]["upperLidArchDiffPct"], 0.0)
+        self.assertGreaterEqual(rep["ref"]["leftJawBulgeIod"], 0.0)
+
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        conv_id = "unit-test-v12-max2-flow"
+        p = subprocess.run(
+            ["python3", str(hook_py), "--event", "pre_tool"],
+            input=json.dumps({
+                "conversationId": conv_id,
+                "workspacePaths": ["/Volumes/DOMA/Project/모델생성"],
+                "lastUserInput": "새 화보 생성",
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {
+                        "CommandLine": "python3 scripts/google_flow_ultra_cli.py --images /tmp/.user_uploaded/gen0.jpg /tmp/s03_8dir_05_right_22.png /tmp/gen0_optical_ocular_detail_anchor.jpg --output /tmp/out.png --prompt 'red dress'"
+                    },
+                },
+            }),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        res = json.loads(p.stdout.strip())
+        self.assertEqual(res["decision"], "deny")
+        self.assertIn("3장 이상", res["reason"])
+
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st = json.loads(st_p.read_text(encoding="utf-8"))
+            st.pop(conv_id, None)
+            st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 if __name__ == "__main__":
     unittest.main()
