@@ -46,6 +46,7 @@ FORBIDDEN_GEN_INPUT_PATTERNS = [
     (re.compile(r"(?:_verified_|_closeup|_macro|_eye_compare_|_silhouette_overlay)\b", re.IGNORECASE), "검증/클로즈업/매크로 파생 결과물 재투입 금지"),
     (re.compile(r"upscayl4k_|_upscayl", re.IGNORECASE), "Upscayl 변형본을 다시 생성기 입력으로 넣는 다단계 변형 금지 (순수 원본만 입력할 것)"),
     (re.compile(r"composite_styling_board", re.IGNORECASE), "합성 스타일링 보드 금지 (개별 원본 에셋을 직접 전달할 것)"),
+    (re.compile(r"master_8angle_turnaround_sheet", re.IGNORECASE), "9분할 콜라주 시트를 생성기에 직접 넣으면 다중 얼굴 오인으로 정체성이 깨집니다 — 8방향 뱅크의 개별 단독 포트레이트(예: s03_8dir_06_right_45.png)를 첨부하세요"),
     (re.compile(r"(?:^|[/\\])previz_.*\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE), "3D 프리비즈 이미지 첨부 금지 (포즈 텍스트 + 원본만 전달할 것)"),
     (re.compile(r"[/\\]batches[/\\][^/\\]+[/\\](?:raw_|hero_|closeup_)", re.IGNORECASE), "배치 출력물 재투입 금지"),
 ]
@@ -57,10 +58,15 @@ SAFE_ORIGIN_PATTERNS = [
     re.compile(r"[/\\]gen0_optical_ocular_detail_anchor\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
 ]
 
-TURNAROUND_TARGET_PATTERN = re.compile(r"(?:8dir|turn_|angle_[mp]\d)", re.IGNORECASE)
+TURNAROUND_TARGET_PATTERN = re.compile(r"(?:8dir|turn_|angle_[mp]\d|turnaround)", re.IGNORECASE)
 TURNAROUND_GENERATED_INPUT_PATTERN = re.compile(
-    r"(?:^|[/\\])(?:t2_turn_|crisp_gen1_turn_|subj\d+_turn_|s\d+_8dir_|angle_[mp]\d)", re.IGNORECASE
+    r"(?:^|[/\\])(?:t2_turn_|crisp_gen1_turn_|subj\d+_turn_|s\d+_8dir_|angle_[mp]\d|.*master_8angle)", re.IGNORECASE
 )
+VERIFIED_8DIR_BANK_REF_PATTERN = re.compile(
+    r"(?:master_8angle|8dir_bank|s\d+_8dir_|turnaround_sheet|8angle_turnaround|angle_[mp]\d|t2_turn_|subj\d+_turn_)",
+    re.IGNORECASE,
+)
+FLOW_CLI_CMD_PATTERN = re.compile(r"google_flow_ultra_cli\.py\b", re.IGNORECASE)
 
 # 구 결과물 후처리·재보정·재감사('거기서 띡 바꾸기' 및 '구 결과물로 재채점해서 넘어가지 않기') 전면 차단 패턴
 STALE_TOUCH_CMD_PATTERN = re.compile(
@@ -105,6 +111,7 @@ FORBIDDEN_FACIAL_EXAGGERATION_PATTERNS = [
     (re.compile(r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:sculpted|chiseled|razor|hollow(?:ed)?|contoured)\s+(?:(?:\w+\s+){0,1})?(?:cheekbones?|cheeks?|jaw(?:line)?)\b", re.IGNORECASE), "광대·턱 과장 깎기 표현 금지"),
     (re.compile(r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:button|barbie|upturned|pinched|razor[-\s]?sharp)\s+(?:(?:\w+\s+){0,1})?nose\b", re.IGNORECASE), "코 과장/성형 표현 금지"),
     (re.compile(r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:heavy|dramatic|full[-\s]?glam|red[-\s]?carpet)\s+(?:(?:\w+\s+){0,1})?(?:makeup|eyeliner|eyeshadow|lipstick|contour(?:ing)?)\b", re.IGNORECASE), "과도한 화보 메이크업/윤곽 과장 표현 금지"),
+    (re.compile(r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:soft,\s+full,\s+gently\s+rounded|soft\s+rounded\s+chin|full\s+rounded\s+cheeks?)\b", re.IGNORECASE), "턱선·볼 둥글림/부풀림 유도 표현 금지 (원본 턱 각도 1:1 중립 유지)"),
 ]
 
 
@@ -393,6 +400,63 @@ def main() -> int:
                 for m in re.finditer(r"--image\s+(['\"]?)([^\s'\"]+)\1", cmd):
                     candidates.append(m.group(2))
 
+            elif FLOW_CLI_CMD_PATTERN.search(cmd) and "--login" not in cmd:
+                is_image_gen_call = True
+                prompt_to_audit = cmd
+                out_m = re.search(r"--output\s+(['\"]?)([^\s'\"]+)\1", cmd)
+                if out_m:
+                    target_name = out_m.group(2)
+                b_m = re.search(r"--batch-json\s+(['\"]?)([^\s'\"]+)\1", cmd)
+                if b_m:
+                    bp = Path(b_m.group(2))
+                    target_name = target_name or bp.name
+                    if bp.is_file():
+                        try:
+                            bjobs = json.loads(bp.read_text(encoding="utf-8"))
+                            if isinstance(bjobs, list) and bjobs:
+                                if all(TURNAROUND_TARGET_PATTERN.search(str(jb.get("tag") or jb.get("output") or "")) for jb in bjobs):
+                                    target_name = "8dir_turnaround_batch"
+                                for jb in bjobs:
+                                    candidates.extend(str(x) for x in (jb.get("images") or []))
+                                    prompt_to_audit += "\n" + str(jb.get("prompt") or "")
+                        except Exception:
+                            pass
+                m_m = re.search(r"--manifest\s+(['\"]?)([^\s'\"]+)\1", cmd)
+                if m_m:
+                    mp = Path(m_m.group(2))
+                    if mp.is_file():
+                        try:
+                            mf = json.loads(mp.read_text(encoding="utf-8"))
+                            for ref in mf.get("ordered_reference_images") or []:
+                                if ref.get("path"):
+                                    candidates.append(str(ref["path"]))
+                            for pr in mf.get("prompts") or []:
+                                prompt_to_audit += "\n" + str(pr.get("prompt") or "")
+                        except Exception:
+                            pass
+                for raw_p in IMAGE_PATH_REGEX.findall(cmd):
+                    if target_name and (raw_p == target_name or Path(raw_p).name == Path(target_name).name):
+                        continue
+                    candidates.append(raw_p)
+
+            # Enforce `--turnaround-sheet` on Stage 1 `run_fresh_origin_workflow.py prepare` (ZERO skipping 8-dir bank!)
+            if STAGE1_PREPARE_CMD_PATTERN.search(cmd) and not re.search(r"\b(?:unittest|pytest)\b", cmd):
+                if "--turnaround-sheet" not in cmd:
+                    print(
+                        json.dumps(
+                            {
+                                "decision": "deny",
+                                "reason": (
+                                    "[8방향 필수 선행 훅 차단] `run_fresh_origin_workflow.py prepare` 실행 시 반드시 "
+                                    "`--turnaround-sheet <검증된_8방향_마스터_시트>`를 지정해야 합니다! "
+                                    "Step 1(원본 Gen-0 → -90°~+90° 8방향 개별 1-Hop 생성·조립·검증)을 먼저 완료한 뒤 진행하세요."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
+
             stale_err = _check_stale_postprocess_command(cmd, payload, turn_started_epoch)
             if stale_err:
                 print(json.dumps({"decision": "deny", "reason": stale_err}, ensure_ascii=False))
@@ -426,8 +490,25 @@ def main() -> int:
                     print(json.dumps({"decision": "deny", "reason": err}, ensure_ascii=False))
                     return 0
 
-        # Enforce Stage 1 `prepare` BEFORE calling image-generator when restart from beginning is required!
+        # Enforce Stage 1 `prepare` AND Mandatory Verified 8-Direction Bank BEFORE ANY Step-2 Scene Generation!
         if is_image_gen_call and not is_turn_target:
+            has_gen0_portrait = any(_is_safe_origin(c) for c in candidates)
+            has_8dir_bank_ref = any(VERIFIED_8DIR_BANK_REF_PATTERN.search(c) for c in candidates)
+            if has_gen0_portrait and not has_8dir_bank_ref:
+                print(
+                    json.dumps(
+                        {
+                            "decision": "deny",
+                            "reason": (
+                                "[8방향 필수 선행 훅 차단] Step 1(원본 Gen-0 → -90°~+90° 8방향 마스터 뱅크 생성·조립·검증)을 "
+                                "건너뛰고 2D 원본 사진만으로 바로 화보/장면 생성을 호출할 수 없습니다! "
+                                "반드시 먼저 8방향 1-Hop 뱅크를 완성한 뒤, Gen-0 + 검증된 8방향 마스터 시트/앵커를 함께 첨부해 생성하세요."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
             if entry.get("requires_fresh_restart_from_stage1") and not entry.get("stage1_prepare_ran"):
                 print(
                     json.dumps(
@@ -435,17 +516,18 @@ def main() -> int:
                             "decision": "deny",
                             "reason": (
                                 "[Stage 1 처음부터 재시작 강제 훅 차단] 수정·재생성 요청 시 반드시 프로세스 제일 처음"
-                                "(Stage 1: `scripts/run_fresh_origin_workflow.py prepare`)을 먼저 실행해 순수 원본(Gen-0) "
-                                "25항목 계측·광학 눈매 앵커·클린 배경·매니페스트를 새로 만든 뒤에만 이미지 생성을 호출할 수 있습니다!"
+                                "(Stage 1: `scripts/run_fresh_origin_workflow.py prepare --turnaround-sheet ...`)을 먼저 실행해 "
+                                "순수 원본(Gen-0) + 8방향 뱅크 25항목 계측·광학 앵커·매니페스트를 새로 만든 뒤에만 이미지 생성을 호출할 수 있습니다!"
                             ),
                         },
                         ensure_ascii=False,
                     )
                 )
                 return 0
-            if any(_is_safe_origin(c) for c in candidates):
+            if has_gen0_portrait:
                 entry["ever_generated_portrait"] = True
                 entry["fresh_gen_created"] = True
+                entry["eight_dir_bank_attached"] = has_8dir_bank_ref
                 entry["finalized_4k_receipt"] = False
                 entry["macro_visually_inspected"] = False
                 state[conv_id] = entry

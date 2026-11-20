@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -33,7 +34,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -41,6 +42,45 @@ if str(ROOT) not in sys.path:
 
 FLOW_URL = "https://labs.google/fx/ko/tools/flow"
 DEFAULT_PROFILE_DIR = Path(os.environ.get("SHORTS_SECRETS") or os.path.expanduser("~/.shorts-factory")) / "browser"
+SUBJECT_PROJECTS_PATH = Path.home() / ".model_generation_studio" / "flow_subject_projects.json"
+
+
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _normalize_project_root_url(url: str) -> Optional[str]:
+    m = re.search(r"(https://(?:flow\.google\.com|labs\.google/fx/(?:[a-z-]+/)?tools/flow)/project/[0-9a-fA-F\-]+)", url or "")
+    if m:
+        return m.group(1)
+    return None
+
+
+def _load_subject_project_url(gen0_path: Optional[Path]) -> Optional[str]:
+    if gen0_path is None or not gen0_path.is_file() or not SUBJECT_PROJECTS_PATH.is_file():
+        return None
+    try:
+        data = json.loads(SUBJECT_PROJECTS_PATH.read_text(encoding="utf-8"))
+        return _normalize_project_root_url(str(data.get(_sha256_file(gen0_path), "")))
+    except Exception:
+        return None
+
+
+def _save_subject_project_url(gen0_path: Optional[Path], project_url: str) -> None:
+    root_u = _normalize_project_root_url(project_url)
+    if gen0_path is None or not gen0_path.is_file() or not root_u:
+        return
+    try:
+        SUBJECT_PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(SUBJECT_PROJECTS_PATH.read_text(encoding="utf-8")) if SUBJECT_PROJECTS_PATH.is_file() else {}
+        data[_sha256_file(gen0_path)] = root_u
+        SUBJECT_PROJECTS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _clean_crash_banner(profile_dir: Path) -> None:
@@ -182,85 +222,203 @@ def _configure_image_mode(page, model_name: str, aspect: str, count: int) -> Lis
     return notes
 
 
+def _count_prompt_bar_chips(page) -> int:
+    """Count attached reference thumbnail `<img>` chips inside the bottom Google Flow prompt bar."""
+    tbox = None
+    try:
+        tb = page.locator("[role='textbox'][contenteditable='true'], textarea").first
+        tbox = tb.bounding_box()
+    except Exception:
+        pass
+    min_y = (tbox["y"] - 110) if tbox else 700
+    cnt = 0
+    imgs = page.locator("img")
+    for i in range(imgs.count()):
+        try:
+            el = imgs.nth(i)
+            box = el.bounding_box()
+            if not box:
+                continue
+            if box["x"] >= 240 and box["y"] >= min_y and 14 <= box["width"] <= 140 and 14 <= box["height"] <= 140:
+                src = (el.get_attribute("src") or "").strip()
+                if src and not src.startswith("data:image/svg"):
+                    cnt += 1
+        except Exception:
+            pass
+    return cnt
+
+
+def _first_visible(page, selector: str, min_x: float = 0.0, min_y: float = 0.0):
+    loc = page.locator(selector)
+    for i in range(loc.count()):
+        try:
+            el = loc.nth(i)
+            if not el.is_visible():
+                continue
+            box = el.bounding_box()
+            if not box:
+                continue
+            if box["x"] >= min_x and box["y"] >= min_y:
+                return el
+        except Exception:
+            pass
+    return None
+
+
+def _open_prompt_bar_media_popover(page) -> bool:
+    """Click the exact `+` button immediately to the LEFT of the bottom prompt textbox (`무엇을 만들고 싶으신가요?`)."""
+    tb = page.locator("[role='textbox'][contenteditable='true'], textarea").first
+    tb.wait_for(state="visible", timeout=20000)
+    tbox = tb.bounding_box()
+    if not tbox:
+        return False
+    # Find the visible button directly left of the textbox on the same horizontal row
+    btns = page.locator("button")
+    best_btn = None
+    best_dist = 1e9
+    for i in range(btns.count()):
+        try:
+            b = btns.nth(i)
+            if not b.is_visible():
+                continue
+            bb = b.bounding_box()
+            if not bb:
+                continue
+            if abs((bb["y"] + bb["height"] * 0.5) - (tbox["y"] + tbox["height"] * 0.5)) <= 45 and bb["x"] < tbox["x"] + 20 and bb["x"] > tbox["x"] - 140:
+                dist = abs(tbox["x"] - (bb["x"] + bb["width"]))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_btn = b
+        except Exception:
+            pass
+    if best_btn is not None:
+        best_btn.click(timeout=5000, force=True)
+        time.sleep(1.2)
+        return True
+    return False
+
+
 def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
     if not image_paths:
         return 0
-    str_paths = [str(p.resolve()) for p in image_paths]
+    resolved_paths = [p.resolve() for p in image_paths]
+    before_chips = _count_prompt_bar_chips(page)
+    target_chips = before_chips + len(resolved_paths)
 
-    # 1. Open the prompt media attachment modal (`프롬프트 상자에 소재 추가`) by clicking the `+` button on the prompt bar
-    upload_btn_sel = "button:has-text('미디어 업로드'), button:has-text('Upload media'), button:has-text('Upload')"
-    if page.locator(upload_btn_sel).count() == 0:
-        for add_sel in (
-            "button:has-text('add_2')",
-            "button[aria-label*='소재']",
-            "button[aria-label*='추가']",
-            "button[aria-label*='Add']",
-            "button:has-text('add')",
-        ):
+    upload_btn_sel = "button:has-text('미디어 업로드'), button:has-text('이미지 업로드'), button:has-text('Upload media'), button:has-text('Upload image')"
+    add_prompt_btn_sel = "button:has-text('프롬프트에 추가'), button:has-text('Add to prompt')"
+    popover_toggle_sel = "button[aria-label='프롬프트 상자에 소재 추가'], button[aria-label*='Add to prompt'], button[aria-label*='소재 추가']"
+
+    def _ensure_popover_open() -> None:
+        if _first_visible(page, upload_btn_sel, min_x=240.0) is not None or _first_visible(page, add_prompt_btn_sel, min_x=240.0) is not None:
+            return
+        tog = _first_visible(page, popover_toggle_sel, min_x=240.0)
+        if tog is not None:
+            tog.click(timeout=4000, force=True)
+            time.sleep(1.2)
+            if _first_visible(page, upload_btn_sel, min_x=240.0) is not None:
+                return
+        _open_prompt_bar_media_popover(page)
+
+    def _find_asset_item_by_name(fname: str):
+        # Match asset button by filename prefix (Google Flow truncates very long filenames with ellipsis in UI)
+        prefix = fname[:24]
+        btns = page.locator("button")
+        for bi in range(btns.count()):
             try:
-                loc = page.locator(add_sel)
-                for idx in range(loc.count() - 1, -1, -1):
-                    btn = loc.nth(idx)
-                    if btn.is_visible():
-                        btn.click(timeout=4000, force=True)
-                        time.sleep(1.2)
-                        if page.locator(upload_btn_sel).count() > 0 or page.locator("input[type='file']").count() > 0:
-                            break
-                if page.locator(upload_btn_sel).count() > 0 or page.locator("input[type='file']").count() > 0:
+                b = btns.nth(bi)
+                if not b.is_visible():
+                    continue
+                box = b.bounding_box()
+                if not box or box["x"] < 300 or box["y"] > 840 or box["y"] < 150:
+                    continue
+                txt = (b.inner_text() or "").strip()
+                if fname in txt or prefix in txt:
+                    return b
+            except Exception:
+                pass
+        return None
+
+    for p in resolved_paths:
+        _ensure_popover_open()
+        item_btn = _find_asset_item_by_name(p.name)
+        if item_btn is None:
+            # Upload this single missing asset into the project cleanly
+            vis_up = _first_visible(page, upload_btn_sel, min_x=240.0)
+            file_inps = page.locator("input[type='file']")
+            if vis_up is not None:
+                try:
+                    with page.expect_file_chooser(timeout=15000) as fc_info:
+                        vis_up.click(timeout=6000)
+                    fc_info.value.set_files([str(p)])
+                except Exception:
+                    if file_inps.count() > 0:
+                        file_inps.last.set_input_files([str(p)])
+                    else:
+                        raise
+            elif file_inps.count() > 0:
+                file_inps.last.set_input_files([str(p)])
+            else:
+                raise RuntimeError("Google Flow upload button/input not found")
+
+            # Wait up to 35s for upload to finish and appear in the popover asset list (or auto-attach as chip!)
+            t_wait = time.time()
+            cur_before_this = _count_prompt_bar_chips(page)
+            while time.time() - t_wait < 35.0:
+                time.sleep(1.5)
+                if _count_prompt_bar_chips(page) > cur_before_this:
+                    item_btn = "AUTO_ATTACHED"
                     break
-            except Exception:
-                pass
+                _ensure_popover_open()
+                item_btn = _find_asset_item_by_name(p.name)
+                if item_btn is not None:
+                    break
 
-    # 2. Upload via direct `<input type="file">` OR native `expect_file_chooser()` on "미디어 업로드" button!
-    file_inps = page.locator("input[type='file']")
-    if file_inps.count() > 0:
-        target_inp = file_inps.last
-        if target_inp.get_attribute("multiple") is not None:
-            target_inp.set_input_files(str_paths)
-            time.sleep(3.5 + 1.5 * len(str_paths))
-        else:
-            for sp in str_paths:
-                file_inps.last.set_input_files(sp)
-                time.sleep(3.5)
-    elif page.locator(upload_btn_sel).count() > 0:
-        up_btn = page.locator(upload_btn_sel).first
-        with page.expect_file_chooser(timeout=15000) as fc_info:
-            up_btn.click(timeout=6000, force=True)
-        fc_info.value.set_files(str_paths)
-        time.sleep(4.0 + 1.5 * len(str_paths))
-    else:
-        dbg_p = Path.home() / ".model_generation_studio" / "flow_upload_debug.png"
+        if item_btn == "AUTO_ATTACHED":
+            continue
+        if item_btn is None:
+            dbg_p = Path.home() / ".model_generation_studio" / "flow_attach_verify_debug.png"
+            page.screenshot(path=str(dbg_p), full_page=False)
+            raise RuntimeError(f"Asset '{p.name}' did not appear in Google Flow asset popover (debug: {dbg_p})")
+
+        # Click the asset item in the list — in Flow this either attaches immediately & closes the popover,
+        # OR highlights it so "프롬프트에 추가" can be clicked.
+        chips_before_click = _count_prompt_bar_chips(page)
+        item_btn.click(timeout=4000, force=True)
+        time.sleep(0.8)
+        if _count_prompt_bar_chips(page) <= chips_before_click:
+            add_btn = _first_visible(page, add_prompt_btn_sel, min_x=300.0)
+            if add_btn is not None:
+                add_btn.click(timeout=5000, force=True)
+                time.sleep(1.0)
+
+    # Close popover cleanly so only the prompt bar remains
+    if _first_visible(page, add_prompt_btn_sel, min_x=240.0) is not None:
+        page.keyboard.press("Escape")
+        time.sleep(0.9)
+
+    attached_delta = _count_prompt_bar_chips(page) - before_chips
+    if attached_delta < len(resolved_paths):
+        dbg_p = Path.home() / ".model_generation_studio" / "flow_attach_verify_debug.png"
         page.screenshot(path=str(dbg_p), full_page=False)
-        raise RuntimeError(f"Google Flow upload button/input not found (debug screenshot: {dbg_p})")
-
-    # 3. Wait for uploaded asset thumbnails to finish appearing, then select/attach them if modal stays open
-    time.sleep(2.5)
-    try:
-        modal_imgs = page.locator("[role='dialog'] img, [role='listbox'] img")
-        cnt = modal_imgs.count()
-        for i in range(min(len(str_paths), cnt)):
-            try:
-                modal_imgs.nth(i).click(timeout=3000, force=True)
-                time.sleep(0.8)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    page.keyboard.press("Escape")
-    time.sleep(1.0)
-    return len(str_paths)
+        raise RuntimeError(
+            f"Reference attachment verification FAILED: expected {len(resolved_paths)} attached chip(s) in prompt bar, "
+            f"found {attached_delta} (debug screenshot: {dbg_p})"
+        )
+    return attached_delta
 
 
 def _snapshot_result_images(page) -> List[Tuple[int, str, float, float]]:
-    """Return [(index, src, width, height)] for all visible media tile images (>=140px) on canvas."""
+    """Return [(index, src, width, height)] for all visible media tile images on canvas (handles narrow tiles beside wide 9-panel sheets)."""
     imgs = page.locator("img")
     found: List[Tuple[int, str, float, float]] = []
     for i in range(imgs.count()):
         try:
             el = imgs.nth(i)
             box = el.bounding_box()
-            if not box or box["width"] < 140 or box["height"] < 140:
+            if not box or box["x"] < 200 or box["y"] < 55 or box["y"] > 760:
+                continue
+            if box["width"] < 70 or box["height"] < 90:
                 continue
             src = (el.get_attribute("src") or "").strip()
             if not src or src.startswith("data:image/svg"):
@@ -277,6 +435,7 @@ def _download_highest_res_image(
     output_path: Path,
     before_srcs: set,
     wait_timeout: int = 180,
+    preferred_tier: str = "4K",
 ) -> Tuple[Path, str, List[str]]:
     """Open the newly generated image tile (not in `before_srcs`) and download at highest available resolution (4K > 2K > Original)."""
     before_bases = {s.split("?")[0] for s in before_srcs}
@@ -286,7 +445,7 @@ def _download_highest_res_image(
         try:
             el = imgs.nth(i)
             box = el.bounding_box()
-            if not box or box["width"] < 140 or box["height"] < 140:
+            if not box or box["x"] < 200 or box["y"] < 55 or box["y"] > 760 or box["width"] < 70 or box["height"] < 90:
                 continue
             src = (el.get_attribute("src") or "").strip()
             if not src or src.startswith("data:image/svg"):
@@ -305,9 +464,46 @@ def _download_highest_res_image(
 
     time.sleep(2.2)
 
-    # Locate Download button on the opened generated image editor/viewer
-    dl_btn = page.locator("button:has-text('download'), button[aria-label*='다운로드'], button[aria-label*='Download']").last
-    dl_btn.wait_for(state="visible", timeout=20000)
+    # Locate the ACTUALLY VISIBLE Download button on the opened generated image viewer (never a hidden hover button!)
+    dl_sel = "button:has-text('download'), button[aria-label*='다운로드'], button[aria-label*='Download']"
+    dl_btn = None
+    for attempt in range(3):
+        t_wait = time.time()
+        while time.time() - t_wait < 8.0:
+            cands = page.locator(dl_sel)
+            for ci in range(cands.count() - 1, -1, -1):
+                try:
+                    cand = cands.nth(ci)
+                    if cand.is_visible():
+                        dl_btn = cand
+                        break
+                except Exception:
+                    pass
+            if dl_btn is not None:
+                break
+            time.sleep(0.5)
+        if dl_btn is not None:
+            break
+        # Retry opening the tile viewer in case the first click only selected/focused the tile
+        for i in range(imgs.count()):
+            try:
+                el = imgs.nth(i)
+                box = el.bounding_box()
+                if not box or box["width"] < 140 or box["height"] < 140:
+                    continue
+                src = (el.get_attribute("src") or "").strip()
+                if src and not src.startswith("data:image/svg") and src.split("?")[0] not in before_bases:
+                    page.mouse.move(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
+                    time.sleep(0.5)
+                    page.mouse.dblclick(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
+                    time.sleep(1.5)
+                    break
+            except Exception:
+                pass
+    if dl_btn is None:
+        dbg_p = Path.home() / ".model_generation_studio" / "flow_dlbtn_debug.png"
+        page.screenshot(path=str(dbg_p), full_page=False)
+        raise RuntimeError(f"Visible Download button not found on Google Flow viewer (debug: {dbg_p})")
 
     chosen_tier = "default"
     seen_menu_items: List[str] = []
@@ -328,12 +524,20 @@ def _download_highest_res_image(
             except Exception:
                 pass
         dl = None
-        for tier_lbl, sel in (
+        all_tiers = [
             ("4K", "[role='menuitem']:has-text('4K'), button:has-text('4K'), [role='option']:has-text('4K')"),
             ("2K", "[role='menuitem']:has-text('2K'), button:has-text('2K'), [role='option']:has-text('2K')"),
             ("Original", "[role='menuitem']:has-text('원본'), [role='menuitem']:has-text('Original'), button:has-text('원본')"),
             ("1K", "[role='menuitem']:has-text('1K'), button:has-text('1K'), [role='option']:has-text('1K')"),
-        ):
+        ]
+        pref = preferred_tier.strip().upper()
+        if pref == "2K":
+            tier_order = [all_tiers[1], all_tiers[0], all_tiers[2], all_tiers[3]]
+        elif pref in ("1K", "ORIGINAL"):
+            tier_order = [all_tiers[2], all_tiers[3], all_tiers[1], all_tiers[0]]
+        else:
+            tier_order = all_tiers
+        for tier_lbl, sel in tier_order:
             opt = page.locator(sel)
             if opt.count() > 0 and opt.first.is_visible():
                 chosen_tier = tier_lbl
@@ -360,7 +564,7 @@ def _validate_origin_inputs(image_paths: List[Path]) -> None:
         re.IGNORECASE,
     )
     safe = re.compile(
-        r"(?:[/\\]\.user_uploaded[/\\]|[/\\]originals[/\\]|loc\d+.*_clean\.|gen0_optical_ocular_detail_anchor\.)",
+        r"(?:[/\\]\.user_uploaded[/\\]|[/\\]originals[/\\]|loc\d+.*_clean\.|gen0_optical_ocular_detail_anchor\.|master_8angle|s\d+_8dir_)",
         re.IGNORECASE,
     )
     for p in image_paths:
@@ -377,11 +581,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Google Flow ULTRA Native 2K/4K Image CLI (모델생성 v10.1)")
     parser.add_argument("--login", action="store_true", help="Open visible Chrome window for Google AI Ultra login")
     parser.add_argument("--manifest", type=Path, default=None, help="Stage-1 workflow_manifest.json path")
+    parser.add_argument("--batch-json", type=Path, default=None, help="JSON list of jobs [{images, prompt, output, aspect, model, tier}] to run in 1 Chrome session")
     parser.add_argument("--images", nargs="*", type=Path, default=[], help="Reference image paths (pure Gen-0 only)")
     parser.add_argument("--prompt", type=str, default="", help="Prompt text (optional if --manifest is provided)")
     parser.add_argument("--output", type=Path, default=None, help="Output image file path")
     parser.add_argument("--model", type=str, default="Nano Banana Pro")
     parser.add_argument("--aspect", type=str, default="3:4")
+    parser.add_argument("--tier", type=str, default="4K", help="Preferred download tier: 4K (default), 2K, or Original")
+    parser.add_argument("--project-url", type=str, default="", help="Persistent Google Flow project URL for this person (1 person = 1 project)")
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
     parser.add_argument("--headed", action="store_true", help="Show browser window during generation")
@@ -416,106 +623,164 @@ def main() -> int:
                 ctx.close()
         return 0
 
-    ref_images: List[Path] = list(args.images)
-    prompt_text = args.prompt.strip()
-    if args.manifest is not None:
-        m = json.loads(args.manifest.read_text(encoding="utf-8"))
-        if not ref_images:
-            ref_images = [Path(r["path"]) for r in m.get("ordered_reference_images", [])]
-        if not prompt_text and m.get("prompts"):
-            prompt_text = str(m["prompts"][0]["prompt"]).strip()
+    jobs: List[Dict[str, Any]] = []
+    if args.batch_json is not None:
+        raw_jobs = json.loads(args.batch_json.read_text(encoding="utf-8"))
+        for jb in raw_jobs:
+            imgs = [Path(p) for p in jb.get("images", [])]
+            _validate_origin_inputs(imgs)
+            jobs.append(
+                {
+                    "tag": str(jb.get("tag", Path(jb["output"]).stem)),
+                    "images": imgs,
+                    "prompt": str(jb["prompt"]).strip(),
+                    "output": Path(jb["output"]),
+                    "model": str(jb.get("model", args.model)),
+                    "aspect": str(jb.get("aspect", args.aspect)),
+                    "tier": str(jb.get("tier", args.tier)),
+                    "count": int(jb.get("count", args.count)),
+                }
+            )
+    else:
+        ref_images: List[Path] = list(args.images)
+        prompt_text = args.prompt.strip()
+        if args.manifest is not None:
+            m = json.loads(args.manifest.read_text(encoding="utf-8"))
+            if not ref_images:
+                ref_images = [Path(r["path"]) for r in m.get("ordered_reference_images", [])]
+            if not prompt_text and m.get("prompts"):
+                prompt_text = str(m["prompts"][0]["prompt"]).strip()
 
-    if not prompt_text:
-        print("ERROR: Provide --prompt or --manifest.", file=sys.stderr)
-        return 2
-    if args.output is None:
-        print("ERROR: Provide --output path.", file=sys.stderr)
-        return 2
+        if not prompt_text:
+            print("ERROR: Provide --prompt, --manifest, or --batch-json.", file=sys.stderr)
+            return 2
+        if args.output is None:
+            print("ERROR: Provide --output path.", file=sys.stderr)
+            return 2
+        _validate_origin_inputs(ref_images)
+        jobs.append(
+            {
+                "tag": args.output.stem,
+                "images": ref_images,
+                "prompt": prompt_text,
+                "output": args.output,
+                "model": args.model,
+                "aspect": args.aspect,
+                "tier": args.tier,
+                "count": args.count,
+            }
+        )
 
-    _validate_origin_inputs(ref_images)
+    results: List[Dict[str, Any]] = []
+    # 1 Person = 1 Persistent Google Flow Project (NEVER spam new projects per angle or retry!)
+    primary_gen0: Optional[Path] = jobs[0]["images"][0] if (jobs and jobs[0]["images"]) else None
+    pinned_project_url: Optional[str] = (
+        _normalize_project_root_url(args.project_url)
+        or _load_subject_project_url(primary_gen0)
+    )
+    if pinned_project_url and primary_gen0 is not None:
+        _save_subject_project_url(primary_gen0, pinned_project_url)
 
     with sync_playwright() as pw:
         ctx = _open_context(pw, args.profile_dir, headed=args.headed, downloads_dir=downloads_dir)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(3.5)
+            for j_idx, job in enumerate(jobs):
+                if pinned_project_url:
+                    page.goto(pinned_project_url, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(3.2)
+                    block = _check_auth_or_bot_block(page)
+                    if block:
+                        print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
+                        return 3
+                else:
+                    page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(3.2)
+                    block = _check_auth_or_bot_block(page)
+                    if block:
+                        print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
+                        return 3
+                    _enter_new_project(page)
+                    block = _check_auth_or_bot_block(page)
+                    if block:
+                        print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
+                        return 3
+                    pinned_project_url = _normalize_project_root_url(page.url)
+                    if pinned_project_url and primary_gen0 is not None:
+                        _save_subject_project_url(primary_gen0, pinned_project_url)
 
-            block = _check_auth_or_bot_block(page)
-            if block:
-                print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
-                return 3
+                cfg_notes = _configure_image_mode(page, job["model"], job["aspect"], job["count"])
+                uploaded_n = _upload_and_attach_images(page, job["images"])
+                # Let any newly uploaded asset tiles settle on the project grid BEFORE snapshotting `before_srcs`!
+                time.sleep(3.5)
+                before_srcs = {src for _, src, _, _ in _snapshot_result_images(page)}
 
-            _enter_new_project(page)
-            block = _check_auth_or_bot_block(page)
-            if block:
-                print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
-                return 3
+                box = page.locator("[role='textbox'][contenteditable='true'], textarea").first
+                box.wait_for(state="visible", timeout=20000)
+                box.click(timeout=5000, force=True)
+                time.sleep(0.4)
+                box.fill(job["prompt"])
+                time.sleep(0.8)
 
-            cfg_notes = _configure_image_mode(page, args.model, args.aspect, args.count)
-            uploaded_n = _upload_and_attach_images(page, ref_images)
+                send_btn = page.locator("button:has-text('arrow_forward'), button[type='submit']").last
+                send_btn.click(timeout=8000, force=True)
 
-            before_srcs = {src for _, src, _, _ in _snapshot_result_images(page)}
+                # Refresh `before_srcs` during the first 6s (uploaded tiles settle quickly; real Nano Banana generation takes >= 10s)
+                time.sleep(5.0)
+                before_srcs |= {src for _, src, _, _ in _snapshot_result_images(page)}
 
-            # Focus prompt box and type full prompt cleanly (never silently chop off outfit/head-yaw at the end!)
-            box = page.locator("[role='textbox'][contenteditable='true'], textarea").first
-            box.wait_for(state="visible", timeout=20000)
-            box.click(timeout=5000, force=True)
-            time.sleep(0.4)
-            box.fill(prompt_text)
-            time.sleep(0.8)
+                new_src: Optional[str] = None
+                t0 = time.time()
+                while time.time() - t0 < args.timeout:
+                    time.sleep(2.5)
+                    blk = _check_auth_or_bot_block(page)
+                    if blk:
+                        print(json.dumps({"status": "blocked", "reason": blk, "url": page.url}, ensure_ascii=False))
+                        return 3
+                    cur_imgs = _snapshot_result_images(page)
+                    fresh = [src for _, src, _, _ in cur_imgs if src not in before_srcs]
+                    if fresh:
+                        new_src = fresh[0]
+                        time.sleep(2.5)
+                        break
+                if not new_src:
+                    raise TimeoutError(f"Timed out after {args.timeout}s waiting for job {job['tag']}.")
 
-            # Submit generation
-            send_btn = page.locator("button:has-text('arrow_forward'), button[type='submit']").last
-            send_btn.click(timeout=8000, force=True)
-
-            # Wait strictly for a BRAND-NEW generated image tile (`src` NOT in `before_srcs`!)
-            new_src: Optional[str] = None
-            t0 = time.time()
-            while time.time() - t0 < args.timeout:
-                time.sleep(3.0)
-                blk = _check_auth_or_bot_block(page)
-                if blk:
-                    print(json.dumps({"status": "blocked", "reason": blk, "url": page.url}, ensure_ascii=False))
-                    return 3
-                cur_imgs = _snapshot_result_images(page)
-                fresh = [src for _, src, _, _ in cur_imgs if src not in before_srcs]
-                if fresh:
-                    new_src = fresh[0]
-                    time.sleep(3.0)
-                    break
-            if not new_src:
-                raise TimeoutError(f"Timed out after {args.timeout}s waiting for new Google Flow generated image.")
-
-            saved_path, tier, menu_items = _download_highest_res_image(
-                page, downloads_dir, args.output, before_srcs=before_srcs, wait_timeout=args.timeout
-            )
-
-            # Measure actual downloaded image resolution
-            w_px, h_px = 0, 0
-            try:
-                from PIL import Image
-                with Image.open(saved_path) as im:
-                    w_px, h_px = im.size
-            except Exception:
-                pass
-
-            print(
-                json.dumps(
-                    {
-                        "status": "ok",
-                        "output_path": str(saved_path),
-                        "resolution": [w_px, h_px],
-                        "download_tier": tier,
-                        "download_menu_options": menu_items,
-                        "uploaded_references": uploaded_n,
-                        "config_notes": cfg_notes,
-                        "project_url": page.url,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
+                saved_path, tier, menu_items = _download_highest_res_image(
+                    page,
+                    downloads_dir,
+                    job["output"],
+                    before_srcs=before_srcs,
+                    wait_timeout=args.timeout,
+                    preferred_tier=job["tier"],
                 )
-            )
+
+                w_px, h_px = 0, 0
+                try:
+                    from PIL import Image
+                    with Image.open(saved_path) as im:
+                        w_px, h_px = im.size
+                except Exception:
+                    pass
+
+                rec = {
+                    "status": "ok",
+                    "tag": job["tag"],
+                    "output_path": str(saved_path),
+                    "resolution": [w_px, h_px],
+                    "download_tier": tier,
+                    "download_menu_options": menu_items,
+                    "uploaded_references": uploaded_n,
+                    "config_notes": cfg_notes,
+                    "project_url": page.url,
+                }
+                results.append(rec)
+                print(f"[Flow Batch {j_idx + 1}/{len(jobs)}] DONE {job['tag']} -> {saved_path.name} ({w_px}x{h_px}, {tier}, refs={uploaded_n})", file=sys.stderr, flush=True)
+
+            if args.batch_json is not None:
+                print(json.dumps({"status": "ok", "count": len(results), "results": results}, ensure_ascii=False, indent=2))
+            else:
+                print(json.dumps(results[0], ensure_ascii=False, indent=2))
             return 0
         finally:
             try:

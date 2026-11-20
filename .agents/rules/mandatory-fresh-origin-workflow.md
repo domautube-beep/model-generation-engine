@@ -7,12 +7,15 @@ description: Mandatory non-skippable 6-stage Fresh-Origin Editorial Workflow (v9
 
 실제 인물 사진(`모델생성` / 인물 화보·포트레이트) 생성·수정 요청을 받으면 **예외 없이 아래 6단계를 순서대로 모두 실행**해야 한다. 어느 한 단계라도 건너뛰거나 구 결과물을 후처리('띡 바꾸기')하는 행위는 금지되며 OS 훅(`원본1생성게이트.py` / `enforce_1origin_1gen_hook.py`)이 차단한다.
 
-1. **Stage 1~2 (`prepare` — 순수 원본 검증 + 25항목 Blueprint 계측 + 광학 눈매 앵커 + 배경 인물 완전 제거)**:
-   - 반드시 CLI 실행:
+1. **Stage 1 (`8방향 마스터 뱅크` 필수 선행 + `prepare` — 절대 건너뛰기 금지, OS 훅 물리 차단)**:
+   - **Step 1-A (8방향 개별 1-Hop 생성 및 마스터 시트 조립 — 1인 1프로젝트 고정)**:
+     - 새 원본(`Gen-0`) 인물은 반드시 먼저 `google_flow_ultra_cli.py --batch-json ... --tier 2K`로 **8방향(`-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°`)**을 순수 `Gen-0` 단독 1-Hop으로 생성하고 `assemble_master_turnaround_sheet`로 마스터 시트(`*_master_8angle_turnaround_sheet.jpg`)를 완성·검증한다.
+     - **1인 1프로젝트 원칙**: 동일 인물(`Gen-0` SHA-256 기준)은 반드시 `~/.model_generation_studio/flow_subject_projects.json`에 저장된 **단일 Google Flow 프로젝트 URL** 안에서 8방향 생성과 화보 생성을 계속 진행한다(프로젝트 난립 금지).
+   - **Step 1-B (`prepare --turnaround-sheet` — 25항목 Blueprint + 광학 눈매·턱선 앵커 + 매니페스트)**:
      ```bash
-     PYTHONPATH="/Volumes/DOMA/Project/모델생성" /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow python3 /Volumes/DOMA/Project/모델생성/scripts/run_fresh_origin_workflow.py prepare --gen0 <순수원본> --location <배경원본> --work-dir <작업폴더> --scene "<장면>" --outfit "<의상>" --aspect 3:4 --best-of 3
+     PYTHONPATH="/Volumes/DOMA/Project/모델생성" /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow python3 /Volumes/DOMA/Project/모델생성/scripts/run_fresh_origin_workflow.py prepare --gen0 <순수원본> --turnaround-sheet <검증된_8방향_마스터_시트> --work-dir <작업폴더> --scene "<장면>" --outfit "<의상>" --aspect 3:4 --best-of 3
      ```
-   - `AnatomicalBlueprint`가 18항목 두상/턱각도/볼면적/하관면적 + **7항목 눈매/쌍꺼풀 높이/홍채-흰자 비율/눈꼬리 각도(`OcularAnatomyProfile`)**를 동적 계측하고, **무손실 순수 광학 눈매 디테일 앵커(`gen0_optical_ocular_detail_anchor.jpg`, AI 0% · Upscayl 0%)**와 **배경 인물 완전 제거(`loc*_clean.jpg`)**를 자동 생성한다.
+   - `--turnaround-sheet` 없는 `prepare` 또는 8방향 뱅크 미첨부 장면 생성은 `v11.0` OS 훅(`원본1생성게이트.py`)이 즉시 `deny` 차단한다.
 2. **Stage 3 (`Best-of-3` 순수 처음 원본 병렬 생성 — Google Flow ULTRA 4K CLI 우선)**:
    - **외부 유료 API 절대 금지.**
    - **우선 엔진 — Google Flow ULTRA 4K 자동 CLI (`scripts/google_flow_ultra_cli.py`, Google AI Ultra 구독 직결, API 과금 0원)**:

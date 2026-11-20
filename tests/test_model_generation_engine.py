@@ -1690,7 +1690,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                     "args": {
                         "TypeName": "image-generator",
                         "Role": "Fresh Editorial",
-                        "Prompt": "Use /tmp/.user_uploaded/gen0.jpg",
+                        "Prompt": "Use /tmp/.user_uploaded/gen0.jpg and /tmp/s03_8dir_06_right_45.png",
                     },
                 },
             },
@@ -1838,8 +1838,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             r_stale_audit = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 -c \"guard.audit(g0, '{stale_f}')\""}}})
             self.assertEqual(r_stale_audit["decision"], "deny")
 
-            # 2) Calling image-generator BEFORE Stage 1 `prepare` -> MUST DENY!
-            r_skip_s1 = _call("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Skip S1", "Prompt": "Use /tmp/.user_uploaded/gen0.jpg"}}})
+            # 2) Calling image-generator BEFORE Stage 1 `prepare` (even with 8dir attached) -> MUST DENY!
+            r_skip_s1 = _call("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Skip S1", "Prompt": "Use /tmp/.user_uploaded/gen0.jpg and /tmp/s03_8dir_06_right_45.png"}}})
             self.assertEqual(r_skip_s1["decision"], "deny")
             self.assertIn("Stage 1", r_skip_s1["reason"])
 
@@ -1847,14 +1847,59 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             r_stop_block = _call("stop", {"fullyIdle": True, "terminationReason": "NO_TOOL_CALL"})
             self.assertEqual(r_stop_block.get("decision"), "continue")
 
-            # 4) Execute Stage 1 prepare -> Stage 3 fresh gen -> Stage 5 finalize -> Stage 6 read_file -> Stop ALLOWED!
-            _call("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py prepare --gen0 /tmp/.user_uploaded/gen0.jpg"}}})
-            r_gen_ok = _call("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Fresh", "Prompt": "Use /tmp/.user_uploaded/gen0.jpg"}}})
+            # 4) Execute Stage 1 prepare (with --turnaround-sheet) -> Stage 3 fresh gen (with 8dir) -> Stage 5 finalize -> Stage 6 read_file -> Stop ALLOWED!
+            _call("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py prepare --gen0 /tmp/.user_uploaded/gen0.jpg --turnaround-sheet /tmp/s03_8dir_06_right_45.png"}}})
+            r_gen_ok = _call("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Fresh", "Prompt": "Use /tmp/.user_uploaded/gen0.jpg and /tmp/s03_8dir_06_right_45.png"}}})
             self.assertEqual(r_gen_ok["decision"], "allow")
             _call("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py finalize --stem hero"}}})
             _call("post_tool", {"toolCall": {"name": "read_file", "args": {"Path": "/tmp/hero_silhouette_overlay.jpg"}}})
             r_stop_ok = _call("stop", {"fullyIdle": True, "terminationReason": "NO_TOOL_CALL"})
             self.assertNotEqual(r_stop_ok.get("decision"), "continue")
+
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st = json.loads(st_p.read_text(encoding="utf-8"))
+            st.pop(conv_id, None)
+            st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_30_v11_mandatory_8dir_bank_hook_enforcement(self) -> None:
+        """Verify v11.0 OS hook physically blocks skipping Step 1 (8-Dir Bank) on prepare, image-generator, and google_flow_ultra_cli.py."""
+        import json
+        import subprocess
+
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        conv_id = "unit-test-v11-8dir-mandatory"
+
+        def _call(ev: str, pl: dict) -> dict:
+            pl.setdefault("conversationId", conv_id)
+            pl.setdefault("workspacePaths", ["/Volumes/DOMA/Project/모델생성"])
+            pl.setdefault("lastUserInput", "새 화보 생성해줘")
+            p = subprocess.run(["python3", str(hook_py), "--event", ev], input=json.dumps(pl), text=True, capture_output=True, check=True)
+            return json.loads(p.stdout.strip())
+
+        _call("pre_invocation", {})
+
+        # 1) prepare WITHOUT --turnaround-sheet -> MUST DENY!
+        r_no_8dir_prep = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py prepare --gen0 /tmp/.user_uploaded/gen0.jpg"}}})
+        self.assertEqual(r_no_8dir_prep["decision"], "deny")
+        self.assertIn("8방향", r_no_8dir_prep["reason"])
+
+        # 2) Step-2 scene via google_flow_ultra_cli.py with ONLY Gen-0 (skipping 8-dir bank) -> MUST DENY!
+        r_no_8dir_flow = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/google_flow_ultra_cli.py --images /tmp/.user_uploaded/gen0.jpg --output /tmp/editorial.png --prompt 'red dress'"}}})
+        self.assertEqual(r_no_8dir_flow["decision"], "deny")
+        self.assertIn("8방향", r_no_8dir_flow["reason"])
+
+        # 3) Step-1 8-dir turnaround generation itself with ONLY Gen-0 -> MUST ALLOW!
+        r_step1_ok = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/google_flow_ultra_cli.py --images /tmp/.user_uploaded/gen0.jpg --output /tmp/s03_8dir_01_left_90.png --prompt 'left profile'"}}})
+        self.assertEqual(r_step1_ok["decision"], "allow")
+
+        # 4) Step-2 scene WITH 9-panel collage strip -> MUST DENY (causes multi-face identity drop)!
+        r_collage_deny = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/google_flow_ultra_cli.py --images /tmp/.user_uploaded/gen0.jpg /tmp/s03_master_8angle_turnaround_sheet.jpg --output /tmp/editorial.png --prompt 'red dress'"}}})
+        self.assertEqual(r_collage_deny["decision"], "deny")
+
+        # 5) Step-2 scene WITH Gen-0 + verified single-face 8-dir portrait -> MUST ALLOW!
+        r_step2_ok = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/google_flow_ultra_cli.py --images /tmp/.user_uploaded/gen0.jpg /tmp/s03_8dir_06_right_45.png --output /tmp/editorial.png --prompt 'red dress'"}}})
+        self.assertEqual(r_step2_ok["decision"], "allow")
 
         st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
         if st_p.exists():

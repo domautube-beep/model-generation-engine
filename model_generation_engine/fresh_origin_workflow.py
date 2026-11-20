@@ -95,6 +95,7 @@ class FreshOriginEditorialWorkflow:
         scene_instruction: str,
         outfit_instruction: str,
         location_reference_path: Optional[Path] = None,
+        turnaround_8dir_sheet_path: Optional[Path] = None,
         extra_raw_asset_paths: Sequence[Path] = (),
         aspect_ratio_label: str = "3:4",
         best_of_k: int = 3,
@@ -102,7 +103,7 @@ class FreshOriginEditorialWorkflow:
         attach_ocular_detail_anchor: bool = True,
         subject: Optional[SubjectProfile] = None,
     ) -> Dict[str, object]:
-        """Stages 1 & 2: Validate Gen-0, extract 25-metric Blueprint + optical ocular anchor, clean location, emit K prompts."""
+        """Stages 1 & 2: Validate Gen-0, attach 1-Hop 8-Direction Bank + optical anchor, clean location, emit K prompts."""
         gen0_p = Path(gen0_portrait_path).resolve()
         if not gen0_p.is_file():
             raise FileNotFoundError(f"Gen-0 portrait not found: {gen0_p}")
@@ -132,9 +133,28 @@ class FreshOriginEditorialWorkflow:
         ]
         role_lines: List[str] = [
             "Image 1 (SUPREME IDENTITY, JAWLINE-ANGLE, CHEEK-AREA & CRANIAL DOME AUTHORITY — UNTOUCHED Gen-0): "
-            "100% absolute ground-truth authority for cranial dome, hairline, hair parting/tuck, soft cheek surface area, "
-            "mandibular jawline angle, nose tip, philtrum, lips, and natural skin tone"
+            "100% absolute ground-truth authority for cranial dome, hairline, hair parting/tuck, exact cheek contour, "
+            "exact mandibular jawline angle & chin taper (do NOT round or widen the jaw), nose tip, philtrum, lips, and natural skin tone"
         ]
+
+        turnaround_p: Optional[Path] = None
+        if turnaround_8dir_sheet_path is not None and Path(turnaround_8dir_sheet_path).is_file():
+            turnaround_p = Path(turnaround_8dir_sheet_path).resolve()
+            self.origin_guard.register_approved_origin(turnaround_p, kind="8dir_face", depth=1)
+            ordered_refs.append(
+                {
+                    "slot": f"Image {len(ordered_refs) + 1}",
+                    "role": "verified_1hop_8dir_turnaround_bank",
+                    "path": str(turnaround_p),
+                    "sha256": _sha256_file(turnaround_p),
+                    "label": "Verified 1-Hop 4K 8-Direction Master Turnaround Bank (-90°..+90°)",
+                }
+            )
+            role_lines.append(
+                f"Image {len(ordered_refs)} (VERIFIED 1-HOP 8-DIRECTION 3D BONE-STRUCTURE & JAWLINE-ANGLE BANK, -90°..+90°): "
+                "3D multi-angle reference of the exact same person from Image 1 across all 8 frontal-hemisphere yaw angles; "
+                "match the exact 3D mandibular corner angle, lower-jaw taper, chin length, cheekbone projection, and ear/neck transition"
+            )
 
         ocular_anchor_p: Optional[Path] = None
         if attach_ocular_detail_anchor:
@@ -212,23 +232,29 @@ class FreshOriginEditorialWorkflow:
         subj_label = subject.subject_identity_label if subject is not None else "exact real person from Image 1"
         k_count = max(1, int(best_of_k))
         prompts: List[Dict[str, str]] = []
+        # Concise photographic prompt (~1,500 chars) prevents Nano Banana Pro's >5,500-char reference-attention collapse!
+        ocular_short = (
+            "tight thin in-line eyelid fold flush against the lash line, natural medium dark-brown irises with visible white sclera, delicate eyebrows"
+            if (blueprint.ocular_profile is not None and float(getattr(blueprint.ocular_profile, "avg_crease_gap_ratio", 0.35)) <= 0.36)
+            else "exact natural eyelid fold, iris proportion, visible white sclera, and natural eyebrows from Image 1"
+        )
         for i in range(k_count):
             seed_tag, cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
             p_text = (
                 f"{cam_hdr} ({aspect_ratio_label} aspect ratio). "
-                f"Place the {subj_label} naturally into the scene: {scene_instruction.strip()}. "
-                "Attached Untouched Original Roles: " + "; ".join(role_lines) + ". "
-                f"{clause_25pt} "
-                f"Head Orientation & Gaze: {yaw_clause} "
-                f"Outfit & Natural Body Scale: {outfit_instruction.strip()}; discard Image 1's original clothing completely; "
-                "maintain balanced adult 7.5-to-7.8-head proportions with facial breadth ~32%-34% of natural soft unpadded shoulders "
-                "(NEVER inflated big-head and NEVER tiny pinhead). "
-                "Lighting & Eye-Level Fill: directional editorial key light paired with a generous eye-level silver-white bounce reflector "
-                "keeping the cheeks softly modeled (zero gaunt shadows under cheekbones) and keeping the eyes brightly lit with crisp "
-                "white sclera, natural dark-brown iris catchlights, unretouched natural matte skin texture, zero plastic shine, zero text, zero watermarks."
+                f"Feature the {subj_label} from the attached reference photos: " + "; ".join(role_lines) + ". "
+                "Preserve their exact real face 1:1 with zero beautification or alteration: "
+                "exact mandibular jawline angle, lower-jaw taper, and chin contour from Image 1 and the angle reference "
+                "(do NOT widen, puff out, round, or lengthen the lower jaw or chin, and do NOT hollow the cheeks), "
+                f"Measured Ocular Anatomy Lock: {ocular_short}, exact nose bridge/tip, compact philtrum, natural lips, hairline, parting, and ear tuck. "
+                f"Scene & Pose: {scene_instruction.strip()}. {yaw_clause} "
+                f"Outfit & Natural Body Scale: {outfit_instruction.strip()} (discarding reference clothing completely); "
+                "balanced natural 7.5-to-7.8-head editorial proportions with natural unpadded shoulder width "
+                "(facial breadth ~32%-35% of shoulders, neither oversized nor tiny head). "
+                "Balanced soft editorial key light and eye-level fill, unretouched natural matte skin pores, zero plastic gloss, zero text, zero watermarks."
             )
             PromptFirewall.validate_prompt(p_text)
-            prompts.append({"candidate_tag": f"c{i + 1}_{seed_tag}", "prompt": p_text})
+            prompts.append({"candidate_tag": f"c{i + 1}_{seed_tag}", "prompt": p_text, "full_blueprint_clause": clause_25pt})
 
         manifest = {
             "workflow_version": "9.0",

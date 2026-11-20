@@ -205,38 +205,20 @@ class AnatomicalBlueprint:
     ocular_profile: Optional[object] = None
 
     def to_3d_invariance_clause(self) -> str:
-        """Emit a universal, zero-hardcoding 3D Craniofacial + Jawline-Angle + Cheek-Area + Ocular Anatomy + Cranial Dome Lock."""
-        if self.cheek_area_norm >= 3.85:
-            cheek_desc = (
-                "soft, full, gently rounded malar and lower-cheek surface area (NEVER hollow out the cheeks, "
-                "NEVER apply gaunt western cheekbone contouring, and NEVER pinch the lower face into a narrow V-line)"
-            )
-        elif self.cheek_area_norm <= 3.30:
-            cheek_desc = "lean, slender cheek planes with defined lower-face taper matching Image 1 without artificial puffiness"
-        else:
-            cheek_desc = "balanced, natural mid-cheek and lower-cheek surface area matching Image 1 exactly"
-
-        if self.avg_gonion_deg >= 133.0:
-            jaw_desc = (
-                f"gentle, soft-curved obtuse mandibular jawline angle (~{self.avg_gonion_deg:.0f} deg, "
-                f"left {self.left_gonion_deg:.0f} deg / right {self.right_gonion_deg:.0f} deg) flowing smoothly into a soft "
-                "rounded chin curve without sharp angular cornering or pinched tapering"
-            )
-        elif self.avg_gonion_deg <= 122.0:
-            jaw_desc = (
-                f"structured, crisply angled mandibular jawline corner (~{self.avg_gonion_deg:.0f} deg, "
-                f"left {self.left_gonion_deg:.0f} deg / right {self.right_gonion_deg:.0f} deg) matching Image 1"
-            )
-        else:
-            jaw_desc = (
-                f"natural moderate jawline angle (~{self.avg_gonion_deg:.0f} deg, "
-                f"left {self.left_gonion_deg:.0f} deg / right {self.right_gonion_deg:.0f} deg) matching Image 1"
-            )
-
+        """Emit a universal, zero-hardcoding, zero-bias 3D Craniofacial + Jawline-Angle + Cheek-Area + Ocular Anatomy + Cranial Dome Lock."""
+        cheek_desc = (
+            "exact 1:1 mid-cheek and lower-cheek surface area directly from Image 1 "
+            "(NEVER widen, puff out, or inflate the cheeks/lower jaw beyond Image 1, and NEVER hollow out or gaunt-contour the cheeks)"
+        )
+        jaw_desc = (
+            f"exact 1:1 mandibular jawline angle and outer jaw-corner contour (~{self.avg_gonion_deg:.1f} deg, "
+            f"left {self.left_gonion_deg:.1f} deg / right {self.right_gonion_deg:.1f} deg) and exact chin taper/length directly from Image 1 "
+            "(NEVER bow, round out, soften, or droop the jawline corner or chin tip wider/lower than Image 1, and NEVER artificially shave into a sharp V-line)"
+        )
         philtrum_desc = (
-            "short, compact philtrum gap between nose base and upper lip"
+            "exact compact philtrum gap between nose base and upper lip matching Image 1"
             if self.philtrum_to_eye_chin_ratio <= 0.125
-            else "natural philtrum length matching Image 1"
+            else "exact natural philtrum length matching Image 1"
         )
 
         ocular_clause = (
@@ -343,11 +325,11 @@ class RealPersonTurnaroundEngine:
         face = self.detector.detect(bgr)
         fx, fy, fw, fh = face.bbox
         cx = fx + 0.50 * fw
-        cy = fy + 0.42 * fh
-        cw = min(float(w), max(fw * 1.28, fh * 1.05))
-        ch = min(float(h), cw * 0.78)
+        cy = fy + 0.49 * fh
+        cw = min(float(w), max(fw * 1.34, fh * 1.06))
+        ch = min(float(h), cw * 1.14)
         x1 = int(round(np.clip(cx - 0.5 * cw, 0.0, max(0.0, float(w) - cw))))
-        y1 = int(round(np.clip(cy - 0.46 * ch, 0.0, max(0.0, float(h) - ch))))
+        y1 = int(round(np.clip(cy - 0.48 * ch, 0.0, max(0.0, float(h) - ch))))
         x2 = min(w, x1 + max(32, int(round(cw))))
         y2 = min(h, y1 + max(32, int(round(ch))))
         crop = bgr[y1:y2, x1:x2]

@@ -42,6 +42,7 @@ def main() -> int:
     p_prep.add_argument("--scene", required=True, type=str)
     p_prep.add_argument("--outfit", required=True, type=str)
     p_prep.add_argument("--location", type=Path, default=None)
+    p_prep.add_argument("--turnaround-sheet", type=Path, default=None, help="Verified 1-Hop 4K 8-Direction Master Turnaround Sheet (-90..+90 deg)")
     p_prep.add_argument("--extra-assets", nargs="*", type=Path, default=[])
     p_prep.add_argument("--aspect", default="3:4")
     p_prep.add_argument("--best-of", type=int, default=3)
@@ -70,6 +71,7 @@ def main() -> int:
             scene_instruction=args.scene,
             outfit_instruction=args.outfit,
             location_reference_path=args.location,
+            turnaround_8dir_sheet_path=args.turnaround_sheet,
             extra_raw_asset_paths=args.extra_assets,
             aspect_ratio_label=args.aspect,
             best_of_k=args.best_of,
