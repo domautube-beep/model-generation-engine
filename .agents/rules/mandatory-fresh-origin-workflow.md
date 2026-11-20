@@ -13,8 +13,15 @@ description: Mandatory non-skippable 6-stage Fresh-Origin Editorial Workflow (v9
      PYTHONPATH="/Volumes/DOMA/Project/모델생성" /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow python3 /Volumes/DOMA/Project/모델생성/scripts/run_fresh_origin_workflow.py prepare --gen0 <순수원본> --location <배경원본> --work-dir <작업폴더> --scene "<장면>" --outfit "<의상>" --aspect 3:4 --best-of 3
      ```
    - `AnatomicalBlueprint`가 18항목 두상/턱각도/볼면적/하관면적 + **7항목 눈매/쌍꺼풀 높이/홍채-흰자 비율/눈꼬리 각도(`OcularAnatomyProfile`)**를 동적 계측하고, **무손실 순수 광학 눈매 디테일 앵커(`gen0_optical_ocular_detail_anchor.jpg`, AI 0% · Upscayl 0%)**와 **배경 인물 완전 제거(`loc*_clean.jpg`)**를 자동 생성한다.
-2. **Stage 3 (`Best-of-3` 순수 처음 원본 병렬 생성)**:
-   - 외부 유료 API 절대 금지. `workflow_manifest.json`에 허용된 순수 원본 이미지들만 첨부해 병렬 `K=3` 후보를 `image-generator`로 처음부터 새로 생성한다.
+2. **Stage 3 (`Best-of-3` 순수 처음 원본 병렬 생성 — Google Flow ULTRA 4K CLI 우선)**:
+   - **외부 유료 API 절대 금지.**
+   - **우선 엔진 — Google Flow ULTRA 4K 자동 CLI (`scripts/google_flow_ultra_cli.py`, Google AI Ultra 구독 직결, API 과금 0원)**:
+     ```bash
+     /Users/doma/Projects/shorts-automation/.venv/bin/python /Volumes/DOMA/Project/모델생성/scripts/google_flow_ultra_cli.py --manifest <work_dir>/workflow_manifest.json --output <out.png> --model "Nano Banana Pro" --aspect 3:4 --count 1 --headed
+     ```
+     - 사용자 Chrome 프로필(`~/.shorts-factory/browser`)로 자동 실행(업로드 권한 팝업 0회), **`Nano Banana Pro` + `4K 업스케일링됨` (`3584×4800`)** 네이티브 4K 다운로드로 전신/의자 샷의 눈매 열화(`896×1200` + `Upscayl` 뭉개짐)를 근본 차단.
+     - 배경은 사용자가 "재생성해도 된다"고 할 때 배경 레퍼런스 사진을 빼고 **얼굴 2장(`Gen-0` + 무손실 광학 눈매 크롭)**만 첨부해 얼굴 토큰 집중도를 극대화한다.
+   - 보조 엔진 — Antigravity 내장 `image-generator` 병렬 `K=3` (반신·바스트샷 등).
    - 이전 턴 생성물 재투입, `8dir -> 8dir` 체이닝, 사전 Upscayl 입력 절대 금지.
 3. **Stage 4 (`rank` — 25항목 네이티브 채점 & 우승 후보 선정)**:
    - `run_fresh_origin_workflow.py rank --manifest ... --candidates c1 c2 c3` 실행.
