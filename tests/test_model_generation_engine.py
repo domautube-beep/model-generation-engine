@@ -1954,6 +1954,52 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             st.pop(conv_id, None)
             st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def test_32_v13_headless_mesh_composer_and_zero_halo_pyramid(self) -> None:
+        """Verify v13.2 HeadlessMeshComposer: arbitrary odd-dimension ROI pyramid blend, zero exterior halo bleed, Stage 2A & Stage 2C mesh lock."""
+        import tempfile
+        from model_generation_engine.headless_mesh_composer import HeadlessMeshComposer, _multiband_pyramid_blend_roi
+
+        # 1) Odd-dimension ROI Burt-Adelson pyramid (`503x617`) + exterior pre-fill zero-halo test
+        fg = np.full((503, 617, 3), (35, 42, 165), dtype=np.uint8)
+        bg = np.full((503, 617, 3), (24, 18, 95), dtype=np.uint8)
+        mask = np.zeros((503, 617), dtype=np.float32)
+        cv2.circle(mask, (300, 250), 70, 1.0, -1)
+        mask = cv2.GaussianBlur(mask, (21, 21), 5.0)
+        # Exterior of fg matches bg -> far-field error MUST be exact 0!
+        fg_pref = np.where((mask > 0.01)[:, :, None], fg, bg)
+        blended = _multiband_pyramid_blend_roi(fg_pref, bg, mask, levels=4)
+        self.assertEqual(blended.shape, (503, 617, 3))
+        self.assertEqual(int(np.max(np.abs(blended[:80, :80].astype(np.int32) - bg[:80, :80].astype(np.int32)))), 0)
+
+        # 2) End-to-end Stage 2A + Stage 2C mesh lock invariance on real portrait
+        comp = HeadlessMeshComposer()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            hl_p = tdir / "stage1_headless_plate_4k.png"
+            pre_p = tdir / "stage2a_mesh_precomposite_4k.png"
+            meta_p = tdir / "stage2a_meta.json"
+            fin_p = tdir / "final_4k.png"
+            meta = comp.prepare_stage2a_precomposite(
+                gen0_path=self.ref_face,
+                body_plate_path=self.ref_face,
+                output_headless_path=hl_p,
+                output_precomp_path=pre_p,
+                output_meta_path=meta_p,
+                target_head_to_shoulder_ratio=0.325,
+            )
+            self.assertTrue(hl_p.is_file())
+            self.assertTrue(pre_p.is_file())
+            self.assertTrue(any(tdir.glob("*stage2a_mesh_precomposite*.jpg")))
+            self.assertGreater(meta["target_face_w_px"], 50.0)
+            s2c = comp.finalize_stage2c_mesh_lock(
+                gen0_path=self.ref_face,
+                stage2b_harmonized_path=pre_p,
+                stage2a_meta_path=meta_p,
+                output_final_4k_path=fin_p,
+            )
+            self.assertTrue(fin_p.is_file())
+            self.assertAlmostEqual(s2c["target_iod_px"], s2c["final_iod_px"], delta=6.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -223,30 +223,36 @@ class FreshOriginEditorialWorkflow:
         yaw_deg = float(blueprint.source_signed_yaw_deg)
         if match_gen0_yaw and abs(yaw_deg) >= 8.0:
             side_word = "image-right" if yaw_deg > 0 else "image-left"
-            yaw_clause = f"Head turned ~{abs(yaw_deg):.0f} deg toward {side_word} matching Image 1, chin level, calm direct gaze."
+            yaw_clause = (
+                f"Head turned only a subtle ~{min(20.0, abs(yaw_deg)):.0f} deg toward {side_word} matching Image 1, "
+                "chin level, BOTH eyes looking DIRECTLY into the camera lens with crisp visible white sclera matching Image 1."
+            )
         else:
-            yaw_clause = "Head facing cleanly forward matching Image 1, chin level, calm direct gaze."
+            yaw_clause = "Head facing cleanly forward matching Image 1, chin level, BOTH eyes looking DIRECTLY into the camera lens."
 
         subj_label = subject.subject_identity_label if subject is not None else "exact same real person from Image 1 and Image 2"
         k_count = max(1, int(best_of_k))
         prompts: List[Dict[str, str]] = []
-        # 5-Slot Positive Prompt Allocator (~1,050-1,250 chars total: top-loaded 8-head framing, ZERO numeric spam, ZERO pink-elephant 'NEVER' bloat!)
+        # 5-Slot Positive Prompt Allocator (~1,050-1,250 chars total: top-loaded 50mm wide 8-head framing, ZERO numeric spam, ZERO pink-elephant 'NEVER' bloat!)
         ocular_short = (
             "sleek flatter almond upper eyelids with tight thin in-line fold, crisp dark lash root, visible white sclera, natural fuller brow density"
             if (blueprint.ocular_profile is not None and float(getattr(blueprint.ocular_profile, "avg_crease_gap_ratio", 0.35)) <= 0.36)
             else "exact natural eyelid arch, iris size, visible white sclera, and natural brow density from Image 1"
         )
-        ref_note = "Image 1 (untouched portrait) and Image 2 (angle reference)" if turnaround_p is not None else "Image 1 (untouched portrait)"
+        ref_note = "Image 1 (primary portrait & gaze) and Image 2 (jawline angle reference)" if turnaround_p is not None else "Image 1 (untouched portrait)"
         for i in range(k_count):
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
             slot1_camera = (
-                f"Hasselblad X2D 85mm f/4 full-three-quarter to knee-up distant editorial portrait ({aspect_ratio_label}), "
-                "pulled back generously with ample margin so true 8-head proportion holds (small graceful head, face ~1/3 of open shoulder width)."
+                f"Hasselblad X2D 50mm f/4 wide full-length studio editorial shot ({aspect_ratio_label}), camera pulled far back "
+                "showing the entire chair down to its legs on the floor and generous wall headroom above, true 8.2-head model proportion "
+                "(petite compact skull & small head ~31% of open shoulder span, sleek flat-hugging hair roots at crown and temples)."
             )
             slot2_identity = (
                 f"Subject: {subj_label} ({ref_note}). "
-                "Exact 1:1 facial fidelity: crisp steep chin-to-ear mandibular diagonal with clean shadow beneath jaw, taut lower cheek, "
-                f"Measured Ocular Anatomy Lock ({ocular_short}), exact nose, hydrated natural lips, hairline parting & ear tuck."
+                "Exact 1:1 craniofacial & lip fidelity: compact cranial dome with sleek flat-lying temple hair hugging cheekbones, "
+                "exact horizontal face width & vertical length, crisp steep chin-to-ear mandibular diagonal with clean shadow beneath jaw, "
+                f"Measured Ocular Anatomy Lock ({ocular_short}), exact nose, "
+                "and Image 1's exact lip shape (delicate M-shaped Cupid's bow upper lip with soft central fullness, compact mouth corners, hydrated coral-rose sheen)."
             )
             slot3_pose = f"Scene & Pose: {scene_instruction.strip()}. {yaw_clause}"
             slot4_outfit = f"Outfit: {outfit_instruction.strip()} (replacing reference clothing completely)."

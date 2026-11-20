@@ -74,6 +74,7 @@ from .ocular_anatomy import OcularAnatomyAnalyzer, OcularAnatomyProfile
 from .face_exaggeration_guard import FaceExaggerationGuard, FacialOrganExaggerationMetrics
 from .pipeline import ModelGenerationPipeline, PortraitIdentityPipeline
 from .fresh_origin_workflow import CandidateScore, FreshOriginEditorialWorkflow
+from .headless_mesh_composer import HeadlessMeshComposer
 
 __all__ = [
     "EngineConfig",
@@ -148,5 +149,6 @@ __all__ = [
     "PortraitIdentityPipeline",
     "CandidateScore",
     "FreshOriginEditorialWorkflow",
+    "HeadlessMeshComposer",
 ]
-__version__ = "9.0.0"
+__version__ = "13.2.0"

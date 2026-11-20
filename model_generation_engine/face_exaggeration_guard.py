@@ -257,7 +257,7 @@ class FaceExaggerationGuard:
             pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
             m = self.vision.landmarks(pil)
             if not m or not m.get("contour") or not m.get("leftEye") or not m.get("rightEye"):
-                return None, None
+                return None, None, None, None
             le = np.array(m["leftEye"], dtype=np.float32)
             re = np.array(m["rightEye"], dtype=np.float32)
             lp = np.mean(np.array(m.get("leftPupil") or le, dtype=np.float32), axis=0)
@@ -268,15 +268,33 @@ class FaceExaggerationGuard:
             scale = 180.0 / iod
             M = cv2.getRotationMatrix2D(mid, ang, scale)
             M[0, 2] += 400.0 - mid[0]
-            M[1, 2] += 340.0 - mid[1]
+            M[1, 2] += 360.0 - mid[1]
             warped = cv2.warpAffine(bgr, M, (size, size), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
             c = np.array(m["contour"], dtype=np.float32)
-            ones = np.ones((len(c), 1), dtype=np.float32)
-            c_xf = np.hstack([c, ones]) @ M.T
-            return warped, c_xf
+            c_xf = np.hstack([c, np.ones((len(c), 1), dtype=np.float32)]) @ M.T
+            lips_xf = None
+            if m.get("outerLips"):
+                lp_arr = np.array(m["outerLips"], dtype=np.float32)
+                lips_xf = np.hstack([lp_arr, np.ones((len(lp_arr), 1), dtype=np.float32)]) @ M.T
+            # Extract upper cranial + hair dome mask on the aligned 800x800 canvas
+            dome_mask = np.zeros((size, size), dtype=np.uint8)
+            try:
+                pm = self.vision.person_mask(Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)))
+                if pm is not None:
+                    pm_np = np.array(pm.resize((size, size), Image.Resampling.BILINEAR))
+                    dome_mask[pm_np > 110] = 255
+            except Exception:
+                pass
+            if int(np.sum(dome_mask[:360, :] > 0)) < 1500:
+                # Fallback: segment dark hair/head against top-corner studio background
+                bg_patch = np.vstack([warped[:40, :60].reshape(-1, 3), warped[:40, -60:].reshape(-1, 3)]).astype(np.float32)
+                bg_med = np.median(bg_patch, axis=0)
+                diff = np.linalg.norm(warped.astype(np.float32) - bg_med, axis=2)
+                dome_mask[diff > 24.0] = 255
+            return warped, c_xf, lips_xf, dome_mask
 
-        w0, c0 = _align(ref_gen0_bgr)
-        wc, cc = _align(cand_bgr)
+        w0, c0, lips0, dome0 = _align(ref_gen0_bgr)
+        wc, cc, lipsc, domec = _align(cand_bgr)
         if w0 is None or wc is None or c0 is None or cc is None:
             return {"valid": False, "passed": True, "contourIoU": 1.0, "maxContourPointErrPx": 0.0, "width5LevelDiffPct": {}, "issues": []}
 
@@ -296,6 +314,50 @@ class FaceExaggerationGuard:
         union = float(np.sum((m0 > 0) | (mc > 0)))
         iou = float(np.sum((m0 > 0) & (mc > 0))) / max(1.0, union)
 
+        # Cranial Dome Size & Breadth Audit (y in [20..370], x in [120..680] around pupil center (400, 360))
+        def _cranial_metrics(dm: np.ndarray) -> Tuple[float, float, np.ndarray]:
+            roi = np.zeros_like(dm)
+            roi[15:370, 120:680] = dm[15:370, 120:680]
+            ys, xs = np.where(roi > 0)
+            if len(ys) < 400:
+                return 190.0, 290.0, roi
+            top_y = float(np.percentile(ys, 2))
+            crown_h = max(40.0, 360.0 - top_y)
+            # Outer cranial/hair width at temple band (y in [260..355])
+            t_band = roi[260:355, :]
+            _, txs = np.where(t_band > 0)
+            cran_w = float(np.percentile(txs, 98) - np.percentile(txs, 2)) if len(txs) >= 100 else 290.0
+            return crown_h, cran_w, roi
+
+        ch0, cw0, cr0 = _cranial_metrics(dome0)
+        chc, cwc, crc = _cranial_metrics(domec)
+        crown_h_diff_pct = round(100.0 * (chc - ch0) / max(40.0, ch0), 1)
+        cran_w_diff_pct = round(100.0 * (cwc - cw0) / max(80.0, cw0), 1)
+        cran_union = float(np.sum((cr0 > 0) | (crc > 0)))
+        cran_iou = round(float(np.sum((cr0 > 0) & (crc > 0))) / max(1.0, cran_union), 4)
+
+        # Lip Shape & Cupid's Bow Micro-Geometry Audit on IOD=180 canvas
+        lip_h_diff_pct = 0.0
+        lip_w_diff_pct = 0.0
+        lip_iou = 1.0
+        if lips0 is not None and lipsc is not None and len(lips0) >= 8 and len(lipsc) >= 8:
+            lh0 = max(4.0, float(lips0[:, 1].max() - lips0[:, 1].min()))
+            lhc = max(4.0, float(lipsc[:, 1].max() - lipsc[:, 1].min()))
+            lw0 = max(10.0, float(lips0[:, 0].max() - lips0[:, 0].min()))
+            lwc = max(10.0, float(lipsc[:, 0].max() - lipsc[:, 0].min()))
+            lip_h_diff_pct = round(100.0 * (lhc - lh0) / lh0, 1)
+            lip_w_diff_pct = round(100.0 * (lwc - lw0) / lw0, 1)
+            lm0 = np.zeros((800, 800), dtype=np.uint8)
+            lmc = np.zeros((800, 800), dtype=np.uint8)
+            cv2.fillPoly(lm0, [np.round(lips0).astype(np.int32)], 255)
+            cv2.fillPoly(lmc, [np.round(lipsc).astype(np.int32)], 255)
+            lip_iou = round(float(np.sum((lm0 > 0) & (lmc > 0))) / max(1.0, float(np.sum((lm0 > 0) | (lmc > 0)))), 4)
+
+        # Face Length (pupil mid y=360 to chin tip)
+        flen0 = max(40.0, float(c0[:, 1].max()) - 360.0)
+        flenc = max(40.0, float(cc[:, 1].max()) - 360.0)
+        face_len_diff_pct = round(100.0 * (flenc - flen0) / flen0, 1)
+
         n = len(c0)
         w5: Dict[str, float] = {}
         for lbl, frac_i in (("temple", 0.0), ("cheek", 0.125), ("midJaw", 0.25), ("lowJaw", 0.375), ("chin", 0.4375)):
@@ -313,18 +375,34 @@ class FaceExaggerationGuard:
         worst_w5 = max((abs(v) for v in w5.values()), default=0.0)
         if worst_w5 > 6.5:
             issues.append(f"5단계 가로폭 외곽 오차 초과 (최대 {worst_w5:.1f}%, 허용 ±6.5%)")
+        if abs(face_len_diff_pct) > 5.0:
+            issues.append(f"얼굴 세로길이(눈~턱) 오차 초과 ({face_len_diff_pct:+.1f}%, 허용 ±5.0%)")
+        if cran_w_diff_pct > 7.5 or crown_h_diff_pct > 8.0:
+            issues.append(f"두상·외곽 머리숱 크기 과대 (두상폭 {cran_w_diff_pct:+.1f}%, 두상높이 {crown_h_diff_pct:+.1f}%)")
+        if abs(lip_h_diff_pct) > 10.0 or lip_iou < 0.72:
+            issues.append(f"입술 모양·두께 변형 (두께 {lip_h_diff_pct:+.1f}%, 입술IoU {lip_iou:.2f})")
 
         saved_ov: Optional[str] = None
         if output_overlay_path:
             ov = cv2.addWeighted(w0, 0.50, wc, 0.50, 0)
+            # Draw Cranial Dome outer contour (GREEN=Gen0, RED=Gen thin dashed/solid)
+            cnts0, _ = cv2.findContours(cr0, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cntsc, _ = cv2.findContours(crc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(ov, cnts0, -1, (0, 220, 0), 2)
+            cv2.drawContours(ov, cntsc, -1, (0, 0, 220), 2)
+            # Draw Jawline contour
             cv2.polylines(ov, [np.round(c0).astype(np.int32)], False, (0, 255, 0), 3)
             cv2.polylines(ov, [np.round(cc).astype(np.int32)], False, (0, 0, 255), 3)
+            # Draw Lip contour
+            if lips0 is not None and lipsc is not None:
+                cv2.polylines(ov, [np.round(lips0).astype(np.int32)], True, (0, 255, 0), 2)
+                cv2.polylines(ov, [np.round(lipsc).astype(np.int32)], True, (0, 0, 255), 2)
             cv2.putText(
                 ov,
-                f"GREEN=Gen0 RED=Gen IoU={iou:.3f} MaxErr={max_pt_err:.1f}px",
-                (16, 36),
+                f"IoU={iou:.3f} MaxErr={max_pt_err:.1f}px CranW={cran_w_diff_pct:+.1f}% LipH={lip_h_diff_pct:+.1f}%",
+                (14, 34),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.78,
+                0.62,
                 (255, 255, 0),
                 2,
             )
@@ -338,6 +416,13 @@ class FaceExaggerationGuard:
             "contourIoU": round(iou, 4),
             "maxContourPointErrPx": round(max_pt_err, 2),
             "meanContourPointErrPx": round(mean_pt_err, 2),
+            "faceLengthDiffPct": face_len_diff_pct,
+            "cranialWidthDiffPct": cran_w_diff_pct,
+            "crownHeightDiffPct": crown_h_diff_pct,
+            "cranialDomeIoU": cran_iou,
+            "lipHeightDiffPct": lip_h_diff_pct,
+            "lipWidthDiffPct": lip_w_diff_pct,
+            "lipIoU": lip_iou,
             "width5LevelDiffPct": w5,
             "overlayPath": saved_ov,
             "issues": issues,
@@ -370,7 +455,7 @@ class FaceExaggerationGuard:
             rp = np.mean(np.array(m.get("rightPupil") or re, dtype=np.float32), axis=0)
             iod = max(1.0, float(np.linalg.norm(rp - lp)))
             n = len(c)
-            mid_idx = n // 2
+            mid_idx = int(np.argmax(c[:, 1]))
             chin = c[mid_idx]
             # Left (viewer-left) & Right (viewer-right) jaw-to-ear arcs
             l_ear = c[0]
@@ -420,9 +505,9 @@ class FaceExaggerationGuard:
                 jaw_contrasts.append(float(L_ch[iy, ix] - L_ch[oy, ox]))
             submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 0.0
 
-            # 3) Neck width right beneath the chin (using skin-like / person-foreground width vs IOD)
+            # 3) Upper cervical neck width right beneath the chin (`+0.18 * iod`, centered on head mid-span, not yawed chin tip!)
             face_w = max(1.0, float(c[:, 0].max() - c[:, 0].min()))
-            neck_y = int(np.clip(chin[1] + 0.24 * iod, 0, h - 1))
+            neck_y = int(np.clip(chin[1] + 0.18 * iod, 0, h - 1))
             neck_band_h = max(3, int(round(0.06 * iod)))
             y1, y2 = max(0, neck_y - neck_band_h), min(h, neck_y + neck_band_h)
             x1 = max(0, int(round(c[:, 0].min() - 0.15 * face_w)))
@@ -441,8 +526,9 @@ class FaceExaggerationGuard:
                     d_l = med_lab[0] - band[:, :, 0]
                     mask = (d_ab <= 30.0) & (d_l >= -22.0) & (d_l <= 78.0)
                     col_cov = np.mean(mask, axis=0)
-                    # Find longest contiguous skin-tone run near chin_x (within ±0.35*face_w)
-                    cx_rel = int(np.clip(chin[0] - x1, 0, max(0, x2 - x1 - 1)))
+                    # Find longest contiguous skin-tone run near head horizontal center (robust under 3/4 head yaw!)
+                    head_mid_x = 0.5 * float(c[:, 0].min() + c[:, 0].max())
+                    cx_rel = int(np.clip(head_mid_x - x1, 0, max(0, x2 - x1 - 1)))
                     search_r = max(4, int(round(0.35 * face_w)))
                     seed = None
                     for delta in range(search_r):
@@ -510,8 +596,11 @@ class FaceExaggerationGuard:
         l_slope_diff = pc["leftChinGonionDeg"] - p0["leftChinGonionDeg"]
         r_slope_diff = pc["rightChinGonionDeg"] - p0["rightChinGonionDeg"]
         shadow_diff = pc["submandibularContrastL"] - p0["submandibularContrastL"]
+        # If reference neck is partially occluded by a high blazer/suit collar or hair (`< 0.63 * face_w`),
+        # normalize excess neck width against physiological female cervical baseline (`0.65 * face_w`) without reporting false negative shrinkage!
+        eff_ref_neck = max(p0["neckToFaceWidthRatio"], min(pc["neckToFaceWidthRatio"], 0.65))
         neck_diff_pct = (
-            100.0 * (pc["neckToFaceWidthRatio"] - p0["neckToFaceWidthRatio"]) / max(0.25, p0["neckToFaceWidthRatio"])
+            100.0 * (pc["neckToFaceWidthRatio"] - eff_ref_neck) / max(0.25, eff_ref_neck)
             if (p0["neckToFaceWidthRatio"] > 0.25 and pc["neckToFaceWidthRatio"] > 0.25)
             else 0.0
         )

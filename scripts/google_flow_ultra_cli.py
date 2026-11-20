@@ -141,19 +141,42 @@ def _dismiss_popups(page) -> None:
             pass
 
 
-def _check_auth_or_bot_block(page) -> Optional[str]:
+def _snapshot_marker_counts(page) -> Dict[str, int]:
+    """Snapshot baseline text marker counts BEFORE submitting (driver.py D-047: only newly added markers count!)."""
+    try:
+        body = (page.locator("body").inner_text(timeout=3000) or "").lower()
+    except Exception:
+        body = ""
+    markers = ("unusual activity", "비정상적인 활동", "verify you are human", "로봇이 아닙니다")
+    return {m: body.count(m) for m in markers}
+
+
+def _check_auth_or_bot_block(page, baseline: Optional[Dict[str, int]] = None) -> Optional[str]:
     url = (page.url or "").lower()
     if "accounts.google.com" in url or "servicelogin" in url:
         return "GOOGLE_SIGNIN_REQUIRED"
+    # Check for an actually visible active challenge iframe (>100px)
+    try:
+        ch_frames = page.locator("iframe[src*='recaptcha/api2/bframe'], iframe[src*='hcaptcha'], iframe[src*='challenges.cloudflare']")
+        for fi in range(ch_frames.count()):
+            el = ch_frames.nth(fi)
+            if el.is_visible():
+                box = el.bounding_box()
+                if box and box["width"] >= 100 and box["height"] >= 100:
+                    return "BOT_OR_VERIFICATION_GATE"
+    except Exception:
+        pass
     try:
         body = (page.locator("body").inner_text(timeout=3000) or "").lower()
     except Exception:
         body = ""
     if any(k in body for k in ("sign in to continue", "다시 로그인", "로그인이 필요", "세션이 만료")):
         return "GOOGLE_SIGNIN_REQUIRED"
-    # Exclude static legal footer text ("protected by reCAPTCHA"); only flag real active bot/challenge alerts
-    if any(k in body for k in ("unusual activity", "비정상적인 활동", "verify you are human", "로봇이 아닙니다")):
-        return "BOT_OR_VERIFICATION_GATE"
+    # Inherited from adapters/flow/driver.py D-047: ONLY flag text toast if count STRICTLY INCREASED vs pre-submit baseline!
+    if baseline is not None:
+        for k, prev_n in baseline.items():
+            if body.count(k) > prev_n:
+                return "FLOW_UNUSUAL_ACTIVITY_TOAST"
     return None
 
 
@@ -226,7 +249,7 @@ def _count_prompt_bar_chips(page) -> int:
     """Count attached reference thumbnail `<img>` chips inside the bottom Google Flow prompt bar."""
     tbox = None
     try:
-        tb = page.locator("[role='textbox'][contenteditable='true'], textarea").first
+        tb = page.locator("[role='textbox'][contenteditable='true']").first
         tbox = tb.bounding_box()
     except Exception:
         pass
@@ -267,7 +290,7 @@ def _first_visible(page, selector: str, min_x: float = 0.0, min_y: float = 0.0):
 
 def _open_prompt_bar_media_popover(page) -> bool:
     """Click the exact `+` button immediately to the LEFT of the bottom prompt textbox (`무엇을 만들고 싶으신가요?`)."""
-    tb = page.locator("[role='textbox'][contenteditable='true'], textarea").first
+    tb = page.locator("[role='textbox'][contenteditable='true']").first
     tb.wait_for(state="visible", timeout=20000)
     tbox = tb.bounding_box()
     if not tbox:
@@ -305,7 +328,10 @@ def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
     before_chips = _count_prompt_bar_chips(page)
     target_chips = before_chips + len(resolved_paths)
 
-    upload_btn_sel = "button:has-text('미디어 업로드'), button:has-text('이미지 업로드'), button:has-text('Upload media'), button:has-text('Upload image')"
+    upload_btn_sel = (
+        "button:has-text('미디어 업로드'), button:has-text('이미지 업로드'), button:has-text('소재 업로드'), "
+        "button:has-text('Upload media'), button:has-text('Upload image')"
+    )
     add_prompt_btn_sel = "button:has-text('프롬프트에 추가'), button:has-text('Add to prompt')"
     popover_toggle_sel = "button[aria-label='프롬프트 상자에 소재 추가'], button[aria-label*='Add to prompt'], button[aria-label*='소재 추가']"
 
@@ -321,8 +347,9 @@ def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
         _open_prompt_bar_media_popover(page)
 
     def _find_asset_item_by_name(fname: str):
-        # Match asset button by filename prefix (Google Flow truncates very long filenames with ellipsis in UI)
-        prefix = fname[:24]
+        # Match asset button by full filename or stem (only fall back to 36-char prefix if Flow truncated with '...')
+        stem = Path(fname).stem
+        prefix36 = fname[:36]
         btns = page.locator("button")
         for bi in range(btns.count()):
             try:
@@ -333,7 +360,10 @@ def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
                 if not box or box["x"] < 300 or box["y"] > 840 or box["y"] < 150:
                     continue
                 txt = (b.inner_text() or "").strip()
-                if fname in txt or prefix in txt:
+                if re.search(r"\b\d{1,3}%", txt):
+                    # Still server-transcoding ("99%" / "100%" blurred placeholder) — wait until thumbnail is ready!
+                    continue
+                if fname in txt or stem in txt or (("..." in txt or "…" in txt) and prefix36 in txt):
                     return b
             except Exception:
                 pass
@@ -341,10 +371,20 @@ def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
 
     for p in resolved_paths:
         _ensure_popover_open()
+        time.sleep(0.9)
         item_btn = _find_asset_item_by_name(p.name)
+        if item_btn is None:
+            # Never blindly click the `+` button again if the popover is already open (that toggles it closed!)
+            _ensure_popover_open()
+            time.sleep(0.6)
+            item_btn = _find_asset_item_by_name(p.name)
         if item_btn is None:
             # Upload this single missing asset into the project cleanly
             vis_up = _first_visible(page, upload_btn_sel, min_x=240.0)
+            if vis_up is None:
+                _open_prompt_bar_media_popover(page)
+                time.sleep(1.2)
+                vis_up = _first_visible(page, upload_btn_sel, min_x=240.0)
             file_inps = page.locator("input[type='file']")
             if vis_up is not None:
                 try:
@@ -361,11 +401,11 @@ def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
             else:
                 raise RuntimeError("Google Flow upload button/input not found")
 
-            # Wait up to 35s for upload to finish and appear in the popover asset list (or auto-attach as chip!)
+            # Wait up to 75s for upload to reach 100% and appear in the `+` media popover (or auto-attach as chip!)
             t_wait = time.time()
             cur_before_this = _count_prompt_bar_chips(page)
-            while time.time() - t_wait < 35.0:
-                time.sleep(1.5)
+            while time.time() - t_wait < 75.0:
+                time.sleep(1.8)
                 if _count_prompt_bar_chips(page) > cur_before_this:
                     item_btn = "AUTO_ATTACHED"
                     break
@@ -759,15 +799,16 @@ def main() -> int:
                 time.sleep(3.5)
                 before_srcs = {src for _, src, _, _ in _snapshot_result_images(page)}
 
-                box = page.locator("[role='textbox'][contenteditable='true'], textarea").first
+                box = page.locator("[role='textbox'][contenteditable='true']").first
                 box.wait_for(state="visible", timeout=20000)
-                box.click(timeout=5000, force=True)
+                box.click(timeout=5000)
                 time.sleep(0.4)
                 box.fill(job["prompt"])
                 time.sleep(0.8)
 
-                send_btn = page.locator("button:has-text('arrow_forward'), button[type='submit']").last
-                send_btn.click(timeout=8000, force=True)
+                baseline_markers = _snapshot_marker_counts(page)
+                send_btn = page.locator("button:has-text('arrow_forward')").last
+                send_btn.click(timeout=8000)
 
                 # Refresh `before_srcs` during the first 6s (uploaded tiles settle quickly; real Nano Banana generation takes >= 10s)
                 time.sleep(5.0)
@@ -778,7 +819,7 @@ def main() -> int:
                 t0 = time.time()
                 while time.time() - t0 < args.timeout:
                     time.sleep(2.5)
-                    blk = _check_auth_or_bot_block(page)
+                    blk = _check_auth_or_bot_block(page, baseline=baseline_markers)
                     if blk:
                         print(json.dumps({"status": "blocked", "reason": blk, "url": page.url}, ensure_ascii=False))
                         return 3

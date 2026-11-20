@@ -53,4 +53,26 @@ PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-h
   --location-image /path/to/place1.jpg \
   --location-image /path/to/place2.jpg \
   --pose-preset seated_armchair --head-azimuth 45 --torso-azimuth 30
+
+# 3. Commercial 3-Stage Headless 8.2-Head Body + 1:1 Mesh-Locked Head Workflow (v13.3)
+# Stage 1 + 2A: Erase placeholder head & rig -> isotropic 8.2-head (0.325) neck-centered Gen-0 pre-composite
+PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
+  python3 scripts/run_headless_mesh_workflow.py prepare \
+  --gen0 /path/to/gen0_origin.jpg \
+  --body-plate /path/to/stage1_body_plate_4k.png \
+  --work-dir /path/to/work_dir --head-ratio 0.325
+
+# Stage 2B: Harmonize neck, collarbone, and shoulder hair drape in pinned 1-person Google Flow project (Nano Banana Pro 4K)
+/Users/doma/Projects/shorts-automation/.venv/bin/python scripts/google_flow_ultra_cli.py \
+  --images /path/to/work_dir/work_dir_stage2a_mesh_precomposite.jpg \
+  --prompt "..." --output /path/to/work_dir/stage2b_flow_harmonized_4k.png \
+  --project-url "https://flow.google.com/project/<subject-uuid>" --model "Nano Banana Pro" --aspect "3:4" --tier "4K" --headed
+
+# Stage 2C: Inward-only Crown/Jaw RBF Snap + Skin-Masked Relighting + Zero-Halo 4-Level Pyramid + 10-Gate & 400% Strips
+PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
+  python3 scripts/run_headless_mesh_workflow.py finalize \
+  --gen0 /path/to/gen0_origin.jpg \
+  --harmonized /path/to/work_dir/stage2b_flow_harmonized_4k.png \
+  --meta /path/to/work_dir/stage2a_meta.json \
+  --output-dir /path/to/work_dir --stem "final_output"
 ```

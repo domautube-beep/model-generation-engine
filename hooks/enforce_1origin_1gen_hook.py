@@ -56,8 +56,10 @@ SAFE_ORIGIN_PATTERNS = [
     re.compile(r"[/\\]originals[/\\]", re.IGNORECASE),
     re.compile(r"[/\\]loc\d+.*_clean\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
     re.compile(r"[/\\]gen0_optical_ocular_detail_anchor\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
+    re.compile(r"[/\\]stage2a_mesh_precomposite.*\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
 ]
 
+HEADLESS_TARGET_PATTERN = re.compile(r"(?:headless_body|body_plate|stage2b_flow_harmonized|stage1_body)", re.IGNORECASE)
 TURNAROUND_TARGET_PATTERN = re.compile(r"(?:8dir|turn_|angle_[mp]\d|turnaround)", re.IGNORECASE)
 TURNAROUND_GENERATED_INPUT_PATTERN = re.compile(
     r"(?:^|[/\\])(?:t2_turn_|crisp_gen1_turn_|subj\d+_turn_|s\d+_8dir_|angle_[mp]\d|.*master_8angle)", re.IGNORECASE
@@ -79,12 +81,12 @@ STALE_TOUCH_CMD_PATTERN = re.compile(
 )
 
 STAGE1_PREPARE_CMD_PATTERN = re.compile(
-    r"(?:run_fresh_origin_workflow\.py\s+prepare|prepare_origin_bundle)",
+    r"(?:run_fresh_origin_workflow\.py\s+prepare|prepare_origin_bundle|run_headless_mesh_workflow\.py)",
     re.IGNORECASE,
 )
 
 FINALIZE_SUCCESS_CMD_PATTERN = re.compile(
-    r"(?:run_fresh_origin_workflow\.py\s+finalize|finalize_native_winner_4k)",
+    r"(?:run_fresh_origin_workflow\.py\s+finalize|finalize_native_winner_4k|run_headless_mesh_workflow\.py\s+finalize)",
     re.IGNORECASE,
 )
 
@@ -441,7 +443,7 @@ def main() -> int:
 
             # Enforce `--turnaround-sheet` on Stage 1 `run_fresh_origin_workflow.py prepare` (ZERO skipping 8-dir bank!)
             if STAGE1_PREPARE_CMD_PATTERN.search(cmd) and not re.search(r"\b(?:unittest|pytest)\b", cmd):
-                if "--turnaround-sheet" not in cmd:
+                if "run_fresh_origin_workflow.py" in cmd and "--turnaround-sheet" not in cmd:
                     print(
                         json.dumps(
                             {
@@ -481,7 +483,7 @@ def main() -> int:
                     )
                     return 0
 
-        is_turn_target = bool(TURNAROUND_TARGET_PATTERN.search(target_name))
+        is_turn_target = bool(TURNAROUND_TARGET_PATTERN.search(target_name) or HEADLESS_TARGET_PATTERN.search(target_name))
         if candidates:
             ledger = _load_json(LEDGER_PATH)
             for cp in candidates:
