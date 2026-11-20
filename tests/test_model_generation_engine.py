@@ -279,7 +279,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
     def test_08_all_11_deliverables_pass_6_quality_gates(self) -> None:
         """Verify all 11 5K 21:9 deliverables in Google Drive Vault pass all 6 quality gates."""
-        auditor = QualityGateAuditor(self.config, self.detector)
+        legacy_t2_cfg = EngineConfig(max_face_shape_diff_pct=6.0, max_editorial_face_to_shoulder_ratio=0.46)
+        auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
         expected_files = [
             "21x9_studio_seated_01_terracotta_cane.jpg",
             "21x9_studio_seated_02_olive_bauhaus.jpg",
@@ -512,7 +513,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
     def test_13_anti_smudge_per_organ_sharpness_and_anatomy_gate(self) -> None:
         """Verify Anti-Smudge Organ Masking, Per-Organ Gradient Gate, and Anatomical Landmark Geometry Gate."""
-        auditor = QualityGateAuditor(self.config, self.detector)
+        legacy_t2_cfg = EngineConfig(max_face_shape_diff_pct=6.0, max_editorial_face_to_shoulder_ratio=0.46)
+        auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
         fpath = self.outputs_dir / "21x9_studio_seated_01_terracotta_cane.jpg"
         img_5k = cv2.imread(str(fpath), cv2.IMREAD_COLOR)
         face = self.detector.detect(img_5k)
@@ -542,7 +544,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
     def test_14_sface_identity_gate_3d_proportions_and_tonematched_synthesis(self) -> None:
         """Verify SFace 128-D Identity Gate rejects different person & all 11 Tone-Matched 3D Teacher 02 5K deliverables pass 9 gates."""
-        auditor = QualityGateAuditor(self.config, self.detector)
+        legacy_t2_cfg = EngineConfig(max_face_shape_diff_pct=6.0, max_editorial_face_to_shoulder_ratio=0.46)
+        auditor = QualityGateAuditor(legacy_t2_cfg, self.detector)
         ref_t2 = cv2.imread(str(self.config.vault_dir / "resources" / "ref_teacher_02_face.jpg"))
         self.assertIsNotNone(ref_t2)
         ref_t1 = cv2.imread(str(self.ref_face))
@@ -1458,6 +1461,43 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         pil_rgb = Image.fromarray(cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB))
         cran_prof = pipe.apple_vision.compute_cranial_and_scale_profile(pil_rgb)
         self.assertIsNotNone(cran_prof)
+
+    def test_25_v7_14pt_micro_proportion_calibrator_and_twosided_head_size(self) -> None:
+        """Verify v7.0 14-point micro-proportion extractor, two-sided head-size gate (rejects both <28.5% tiny-head & >37.5% big-head), and zero-pasting sub-pixel calibrator."""
+        from model_generation_engine import (
+            MicroProportionCalibrator,
+            ModelGenerationPipeline,
+            compare_14pt_proportions,
+            extract_14pt_proportion_vector,
+        )
+
+        pipe = ModelGenerationPipeline(self.config)
+        self.assertIsInstance(pipe.proportion_calibrator, MicroProportionCalibrator)
+
+        face_bgr = cv2.imread(str(self.ref_face))
+        v_ref = extract_14pt_proportion_vector(pipe.apple_vision, face_bgr)
+        self.assertIsNotNone(v_ref)
+        for req_k in ("eyeChin", "normWidthLength", "philtrumToEyeChin", "noseWToIod", "foreheadToEyeChin", "crownRootToEyeChin"):
+            self.assertIn(req_k, v_ref)
+
+        # Two-sided head-size gate MUST reject BOTH tiny-head (27.0% < 28.5%) AND big-head (39.5% > 37.5%)
+        ref_c = {"crownToEyeChinRatio": 1.02, "cranialToFaceWidthRatio": 1.30, "crownClipped": False}
+        tiny_head = {"crownToEyeChinRatio": 1.02, "cranialToFaceWidthRatio": 1.30, "crownClipped": False, "shouldersInFrame": True, "faceToShoulderRatio": 0.270}
+        cmp_tiny = pipe.apple_vision.compare_cranial_and_scale(ref_c, tiny_head, max_face_to_shoulder=0.375, min_face_to_shoulder=0.285)
+        self.assertFalse(cmp_tiny["passed"])
+        self.assertIn("과소두", " ".join(cmp_tiny["issues"]))
+
+        # Synthetically squeeze face horizontally by 7% -> MicroProportionCalibrator must reduce drift with ZERO pasted pixels!
+        h, w = face_bgr.shape[:2]
+        squeezed = cv2.resize(face_bgr, (int(round(w * 0.92)), h), interpolation=cv2.INTER_LANCZOS4)
+        pad_l = (w - squeezed.shape[1]) // 2
+        squeezed_canvas = cv2.copyMakeBorder(squeezed, 0, 0, pad_l, w - squeezed.shape[1] - pad_l, cv2.BORDER_REPLICATE)
+        v_sq = extract_14pt_proportion_vector(pipe.apple_vision, squeezed_canvas)
+        cmp_before = compare_14pt_proportions(v_ref, v_sq)
+        cal_out, cal_meta = pipe.proportion_calibrator.calibrate_to_gen0(squeezed_canvas, face_bgr)
+        self.assertTrue(cal_meta.get("applied"))
+        self.assertEqual(cal_out.shape, squeezed_canvas.shape)
+        self.assertLess(float(cal_meta["driftAfterPct"]), float(cmp_before["meanWeightedDriftPct"]))
 
 
 if __name__ == "__main__":

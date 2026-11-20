@@ -28,6 +28,11 @@ from .upscaler import SuperResolutionEngine
 from .compositor import Seamless5KCompositor
 from .apple_vision import AppleVisionAnalyzer, AppleVisionError
 from .face_reattach import FaceLockCompositor, HeadRedrawCompositor, RelitOpticalFaceIntegrator
+from .proportion_calibrator import (
+    MicroProportionCalibrator,
+    compare_14pt_proportions,
+    extract_14pt_proportion_vector,
+)
 from .identity_turnaround import (
     TURNAROUND_5_VIEWS,
     TURNAROUND_8_VIEWS,
@@ -96,6 +101,9 @@ __all__ = [
     "FaceLockCompositor",
     "HeadRedrawCompositor",
     "RelitOpticalFaceIntegrator",
+    "MicroProportionCalibrator",
+    "extract_14pt_proportion_vector",
+    "compare_14pt_proportions",
     "TURNAROUND_5_VIEWS",
     "TURNAROUND_8_VIEWS",
     "TURNAROUND_FULL_SWEEP",

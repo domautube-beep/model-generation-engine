@@ -337,6 +337,7 @@ class QualityGateAuditor:
                     ref_cran if yaw_diff <= 0.24 else None,
                     dst_cran,
                     max_face_to_shoulder=self.config.max_editorial_face_to_shoulder_ratio,
+                    min_face_to_shoulder=self.config.min_editorial_face_to_shoulder_ratio,
                     max_dome_diff_pct=self.config.max_cranial_dome_diff_pct + (6.0 if tilt_diff >= 8.0 else 0.0),
                 )
                 if cran_cmp.get("note"):

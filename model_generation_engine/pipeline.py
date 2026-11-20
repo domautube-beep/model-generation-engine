@@ -14,6 +14,7 @@ from .detector import DynamicFaceDetector
 from .face_reattach import FaceLockCompositor, HeadRedrawCompositor, RelitOpticalFaceIntegrator
 from .identity_turnaround import RealPersonTurnaroundEngine
 from .multi_asset_composer import MultiSceneBatchComposer
+from .proportion_calibrator import MicroProportionCalibrator
 from .scene_radiometry import PostGenCohesionMasterer, SingleLensRadiometricSpec
 from .skin_processor import MatteSkinProcessor
 from .upscaler import SuperResolutionEngine
@@ -37,6 +38,7 @@ class ModelGenerationPipeline:
         self.facelock = FaceLockCompositor(self.apple_vision)
         self.head_redraw = HeadRedrawCompositor(self.apple_vision)
         self.relit_integrator = RelitOpticalFaceIntegrator(self.apple_vision)
+        self.proportion_calibrator = MicroProportionCalibrator(self.apple_vision)
         self.turnaround = RealPersonTurnaroundEngine(
             self.config, self.detector, self.apple_vision, self.upscaler
         )
@@ -60,6 +62,7 @@ class ModelGenerationPipeline:
         reference_scene_path: Optional[Path] = None,
         radiometric_spec: Optional[SingleLensRadiometricSpec] = None,
         angle_bank: Optional[Dict[str, Path]] = None,
+        calibrate_micro_proportions: bool = True,
     ) -> Dict[str, object]:
         """Execute Single-Pass Pure From-Scratch 5K Pipeline with Post-Gen Optical Cohesion Mastering & 9-Gate Audit."""
         ref_bgr: Optional[np.ndarray] = None
@@ -116,6 +119,12 @@ class ModelGenerationPipeline:
                     ro_meta["chosenSourceLabel"] = chosen_lbl
                     ro_meta.update(turn_meta)
                     reattach_info["relit_optical"] = ro_meta
+            elif calibrate_micro_proportions and reattach_mode == "none" and ref_bgr is not None:
+                try:
+                    canvas_5k, cal_meta = self.proportion_calibrator.calibrate_to_gen0(canvas_5k, ref_bgr)
+                    reattach_info["micro_proportion_calibration"] = cal_meta
+                except Exception:
+                    pass
 
             face_5k = self.detector.detect(canvas_5k)
             crop_box_5k = self.detector.compute_upper_body_crop_box(

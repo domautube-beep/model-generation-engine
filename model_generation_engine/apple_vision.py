@@ -303,29 +303,47 @@ class AppleVisionAnalyzer:
             left_lobe, right_lobe = 0.12, 0.12
         cranial_to_face_w = float(np.clip(cranial_w / fw, 1.0, 2.0))
 
-        # 4. Perspective- & 3D-Yaw-Normalized Bi-deltoid Shoulder Span at `chin_y + 0.85 * fw`
+        # 4. True Skeletal Bi-Deltoid Shoulder Span (uses Vision Body Pose joints immune to arms on armrests, falling back to person_mask)
         eyes_px = max(1.0, math.dist(lp, rp))
         nose_pts = eff_marks.get("nose") or []
         nose_x = (sum(p[0] for p in nose_pts) / len(nose_pts)) if nose_pts else mid_x
         turn_est = (nose_x - mid_x) / eyes_px
-        # When torso/head rotates toward profile, projected 2D shoulder span foreshortens by ~cos(yaw)
         cos_torso = math.sqrt(max(0.58, 1.0 - min(0.42, (turn_est * 1.25) ** 2)))
 
-        sh_y1 = int(round(chin_y + 0.75 * fw))
-        sh_y2 = min(h - 1, int(round(chin_y + 1.55 * fw)))
         shoulders_in_frame = False
         face_to_shoulder = 0.32
-        if sh_y2 < int(h * 0.95) and sh_y2 > sh_y1 + 4 and (fw / float(min(w, h))) < 0.24:
-            tx1 = max(0, int(round(mid_x - 2.25 * fw)))
-            tx2 = min(w, int(round(mid_x + 2.25 * fw)))
-            band_mask = np.any(pm_arr[sh_y1:sh_y2, tx1:tx2], axis=0)
-            xs_torso = np.where(band_mask)[0]
-            if len(xs_torso) >= 10:
-                tl_x, tr_x = float(tx1 + xs_torso.min()), float(tx1 + xs_torso.max())
-                if tl_x > w * 0.03 and tr_x < w * 0.97:
-                    shoulders_in_frame = True
-                    raw_fts = float(fw / max(fw, tr_x - tl_x))
-                    face_to_shoulder = raw_fts * cos_torso
+        if (fw / float(min(w, h))) < 0.24:
+            try:
+                bj = self.body_and_hand_points(work_pil)
+                for body in bj.get("bodies") or []:
+                    jmap = {str(j["name"]): (float(j["x"]), float(j["y"])) for j in body if float(j.get("conf", 0.0)) >= 0.25}
+                    ls = jmap.get("left_shoulder_1_joint")
+                    rs = jmap.get("right_shoulder_1_joint")
+                    if ls and rs:
+                        if min(ls[0], rs[0]) > w * 0.04 and max(ls[0], rs[0]) < w * 0.96 and max(ls[1], rs[1]) < h * 0.93:
+                            acromion_span = math.hypot(rs[0] - ls[0], rs[1] - ls[1])
+                            if acromion_span > fw * 1.1:
+                                # Outer bi-deltoid span ~= 1.48 * inner glenohumeral shoulder joint-center distance (ANSUR II anthropometry)
+                                bi_deltoid = acromion_span * 1.48
+                                shoulders_in_frame = True
+                                face_to_shoulder = float(fw / bi_deltoid) * cos_torso
+                                break
+            except Exception:
+                pass
+
+        if not shoulders_in_frame:
+            sh_y1 = int(round(chin_y + 0.75 * fw))
+            sh_y2 = min(h - 1, int(round(chin_y + 1.30 * fw)))
+            if sh_y2 < int(h * 0.95) and sh_y2 > sh_y1 + 4 and (fw / float(min(w, h))) < 0.24:
+                tx1 = max(0, int(round(mid_x - 2.05 * fw)))
+                tx2 = min(w, int(round(mid_x + 2.05 * fw)))
+                band_mask = np.any(pm_arr[sh_y1:sh_y2, tx1:tx2], axis=0)
+                xs_torso = np.where(band_mask)[0]
+                if len(xs_torso) >= 10:
+                    tl_x, tr_x = float(tx1 + xs_torso.min()), float(tx1 + xs_torso.max())
+                    if tl_x > w * 0.03 and tr_x < w * 0.97:
+                        shoulders_in_frame = True
+                        face_to_shoulder = float(fw / max(fw, tr_x - tl_x)) * cos_torso
 
         return {
             "crownToEyeChinRatio": round(crown_to_eye, 3),
@@ -343,10 +361,11 @@ class AppleVisionAnalyzer:
     def compare_cranial_and_scale(
         ref_cranial: Optional[Dict[str, object]],
         dst_cranial: Optional[Dict[str, object]],
-        max_face_to_shoulder: float = 0.365,
+        max_face_to_shoulder: float = 0.375,
+        min_face_to_shoulder: float = 0.285,
         max_dome_diff_pct: float = 18.0,
     ) -> Dict[str, object]:
-        """Audit 8-Head Face-to-Shoulder Scale (rejecting big-head inflation) and Cranial Dome height/width invariance."""
+        """Audit Two-Sided 8-Head Face-to-Shoulder Scale (rejecting BOTH big-head AND tiny-head drift) and Cranial Dome invariance."""
         if not dst_cranial:
             return {"passed": True, "note": "두상 미계측"}
 
@@ -358,7 +377,11 @@ class AppleVisionAnalyzer:
             notes.append(f"어깨대비얼굴 {fts * 100:.1f}%")
             if fts > max_face_to_shoulder:
                 issues.append(
-                    f"대두 비율 발생 (어깨 대비 얼굴 폭 {fts * 100:.1f}% > 최대 {max_face_to_shoulder * 100:.1f}% — 7.5~8등신 소두 비율 위반)"
+                    f"대두 비율 발생 (어깨 대비 얼굴 폭 {fts * 100:.1f}% > 최대 {max_face_to_shoulder * 100:.1f}% — 7.5~8등신 비율 위반)"
+                )
+            elif fts < min_face_to_shoulder:
+                issues.append(
+                    f"과소두 비율 발생 (어깨 대비 얼굴 폭 {fts * 100:.1f}% < 최소 {min_face_to_shoulder * 100:.1f}% — 어깨 과확장·얼굴 축소 위반)"
                 )
 
         if ref_cranial and not bool(ref_cranial.get("crownClipped")) and not bool(dst_cranial.get("crownClipped")):
