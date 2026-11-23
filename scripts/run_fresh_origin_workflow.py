@@ -53,11 +53,14 @@ def main() -> int:
     p_rank.add_argument("--manifest", required=True, type=Path)
     p_rank.add_argument("--candidates", required=True, nargs="+", type=Path)
 
-    p_fin = sub.add_parser("finalize", help="Stage 5: Single Upscayl 4x + 10-Gate Audit + 4K/closeup/macro/400% eye strip + Vault sync")
+    p_fin = sub.add_parser("finalize", help="Stage 5: Pure Optical Lanczos-4 (v2.1 default) or Upscayl 4x + P88 MatteSkin + Cohesion + 10-Gate Audit")
     p_fin.add_argument("--manifest", required=True, type=Path)
     p_fin.add_argument("--winner", required=True, type=Path)
     p_fin.add_argument("--output-dir", required=True, type=Path)
     p_fin.add_argument("--stem", required=True, type=str)
+    p_fin.add_argument("--upscale-mode", choices=("optical_lanczos", "upscayl"), default="optical_lanczos")
+    p_fin.add_argument("--reference-scene", type=Path, default=None)
+    p_fin.add_argument("--cohesion-mode", type=str, default="auto")
     p_fin.add_argument("--no-vault-sync", action="store_true")
     p_fin.add_argument("--allow-audit-fail", action="store_true")
 
@@ -101,6 +104,9 @@ def main() -> int:
             min_created_epoch=float(manifest.get("created_at", 0.0)),
             sync_to_vault=not args.no_vault_sync,
             strict_10gate=not args.allow_audit_fail,
+            upscale_mode=args.upscale_mode,
+            reference_scene_path=args.reference_scene,
+            cohesion_mode=args.cohesion_mode,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0

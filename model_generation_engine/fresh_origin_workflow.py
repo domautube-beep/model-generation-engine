@@ -35,6 +35,7 @@ from .origin_guard import OriginOnlyOneShotGuard
 from .pipeline import ModelGenerationPipeline
 from .prompt_builder import PromptFirewall
 from .proportion_calibrator import compare_14pt_proportions, extract_14pt_proportion_vector
+from .scene_radiometry import PostGenCohesionMasterer
 
 
 def _sha256_file(path: Path) -> str:
@@ -430,8 +431,11 @@ class FreshOriginEditorialWorkflow:
         min_created_epoch: float = 0.0,
         sync_to_vault: bool = True,
         strict_10gate: bool = True,
+        upscale_mode: str = "optical_lanczos",
+        reference_scene_path: Optional[Path] = None,
+        cohesion_mode: str = "auto",
     ) -> Dict[str, object]:
-        """Stage 5: Single final Upscayl 4x + matte glare control + 10-Gate Audit + 4K/closeup/macro/400% eye strip + signed receipt."""
+        """Stage 5: Pure Optical Lanczos-4 (`v2.1` default) or Upscayl 4x + P88 MatteSkin + CohesionMasterer + 10-Gate Audit + strips."""
         gen0_p = Path(gen0_portrait_path).resolve()
         win_p = Path(winner_candidate_path).resolve()
         if not win_p.is_file():
@@ -454,13 +458,17 @@ class FreshOriginEditorialWorkflow:
         if raw_bgr is None or ref_bgr is None:
             raise RuntimeError("Failed to decode winner or Gen-0 portrait.")
 
-        # Measure HONEST pre-upscale face resolution BEFORE Upscayl 4x
+        # Measure HONEST pre-upscale face resolution BEFORE 4K scaling
         raw_face_det = self.pipeline.detector.detect(raw_bgr)
         raw_fw, raw_fh = round(float(raw_face_det.bbox[2]), 1), round(float(raw_face_det.bbox[3]), 1)
         raw_iod_px = round(float(raw_face_det.inter_ocular_distance), 1)
 
-        # 1. SINGLE Final Upscayl 4x pass (`high-fidelity-4x` Photo / `digital-art-4x` Illustration) — ZERO warp, ZERO face-pasting!
-        up_bgr, up_model = self.pipeline.upscaler.upscale_with_upscayl(raw_bgr, style="auto", scale=4)
+        # 1. Pure Optical Lanczos-4 (`v2.1` default — avoids GAN eye/sclera darkening) OR Upscayl 4x — ZERO warp, ZERO face-pasting!
+        if upscale_mode == "optical_lanczos":
+            up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
+            up_model = "optical_lanczos4"
+        else:
+            up_bgr, up_model = self.pipeline.upscaler.upscale_with_upscayl(raw_bgr, style="auto", scale=4)
         uh, uw = up_bgr.shape[:2]
 
         # 2. Gentle luminance-only matte specular roll-off (keeping 100% scene lighting untouched)
@@ -474,6 +482,22 @@ class FreshOriginEditorialWorkflow:
         roi = up_bgr[vy1:vy2, vx1:vx2].copy()
         roi_matte, _ = self.pipeline.skin_processor.process(roi, seed=42, reference_skin_profile=None)
         up_bgr[vy1:vy2, vx1:vx2] = roi_matte
+
+        # 2b. Authentic v2.1 Single-Camera Radiometric & Tonal Cohesion Mastering
+        cohesion_meta: Dict[str, object] = {"mode": cohesion_mode, "applied": False}
+        if cohesion_mode != "off":
+            ref_scene_bgr = (
+                cv2.imread(str(reference_scene_path))
+                if (reference_scene_path is not None and Path(reference_scene_path).is_file())
+                else None
+            )
+            up_bgr, cohesion_meta = PostGenCohesionMasterer.master(
+                up_bgr,
+                face_det=face_4k,
+                reference_scene_bgr=ref_scene_bgr,
+                mode=cohesion_mode,
+                seed=42,
+            )
 
         # 3. Full 10-Gate Quality Audit at exact native 4K dimensions
         cfg_4k = dataclasses.replace(
@@ -524,7 +548,9 @@ class FreshOriginEditorialWorkflow:
             "stage": "FINALIZED_10GATES_PASSED" if all_passed else "FINALIZED_10GATES_FAILED",
             "timestamp": time.time(),
             "passed_10gates": all_passed,
+            "upscale_mode": upscale_mode,
             "upscayl_model": up_model,
+            "cohesion_meta": cohesion_meta,
             "resolution": [uw, uh],
             "raw_pre_upscale_canvas": [int(raw_bgr.shape[1]), int(raw_bgr.shape[0])],
             "raw_pre_upscale_face_px": [raw_fw, raw_fh],

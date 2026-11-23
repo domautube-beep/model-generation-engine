@@ -2040,6 +2040,33 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertGreaterEqual(neck_drop, 0.28 * float(meta["solved_head_h_px"]))
             self.assertLessEqual(neck_drop, 0.42 * float(meta["solved_head_h_px"]))
 
+    def test_35_v21_optical_lanczos_cohesion_finalize_mode(self) -> None:
+        """Verify v2.1 Pure Optical Lanczos-4 + P88 MatteSkin + PostGenCohesionMasterer finalize mode avoids GAN eye darkening."""
+        import shutil
+        import tempfile
+        from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+
+        wf = FreshOriginEditorialWorkflow()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            fresh_cand = tdir / "fresh_cand.jpg"
+            shutil.copy2(self.ref_face, fresh_cand)
+            receipt = wf.finalize_native_winner_4k(
+                gen0_portrait_path=self.ref_face,
+                winner_candidate_path=fresh_cand,
+                output_dir=tdir / "out",
+                output_stem="v21_opt_test",
+                sync_to_vault=False,
+                strict_10gate=False,
+                upscale_mode="optical_lanczos",
+                cohesion_mode="auto",
+            )
+            self.assertEqual(receipt["upscale_mode"], "optical_lanczos")
+            self.assertEqual(receipt["upscayl_model"], "optical_lanczos4")
+            self.assertGreaterEqual(receipt["resolution"][1], 4800)
+            self.assertTrue(Path(receipt["deliverables"]["hero_4k"]).is_file())
+            self.assertTrue(Path(receipt["deliverables"]["macro"]).is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
