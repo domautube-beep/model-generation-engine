@@ -31,6 +31,7 @@ from .config import CanvasSpec, EngineConfig, SubjectProfile
 from .face_exaggeration_guard import FaceExaggerationGuard
 from .identity_turnaround import AnatomicalBlueprint
 from .ocular_anatomy import OcularAnatomyAnalyzer
+from .organ_depth_anatomy import OrganAndDepthAnatomyAnalyzer
 from .origin_guard import OriginOnlyOneShotGuard
 from .pipeline import ModelGenerationPipeline
 from .prompt_builder import PromptFirewall
@@ -51,6 +52,7 @@ class CandidateScore:
     candidate_path: str
     sface_similarity: float
     contour_iou: float
+    organ_depth_drift: float
     multi_segment_head_err_pct: float
     mean_weighted_drift_pct: float
     cheek_area_diff_pct: float
@@ -88,6 +90,7 @@ class FreshOriginEditorialWorkflow:
     def __init__(self, pipeline: Optional[ModelGenerationPipeline] = None) -> None:
         self.pipeline = pipeline or ModelGenerationPipeline(EngineConfig())
         self.ocular = OcularAnatomyAnalyzer(self.pipeline.apple_vision)
+        self.organ_depth = OrganAndDepthAnatomyAnalyzer(self.pipeline.apple_vision)
         self.exaggeration_guard = FaceExaggerationGuard(self.pipeline.apple_vision)
         self.origin_guard = OriginOnlyOneShotGuard()
 
@@ -122,8 +125,12 @@ class FreshOriginEditorialWorkflow:
             raise ValueError(f"Cannot decode Gen-0 image: {gen0_p}")
 
         blueprint: AnatomicalBlueprint = self.pipeline.turnaround.extract_anatomical_blueprint(ref_bgr)
+        organ_profile = self.organ_depth.extract_profile(ref_bgr)
         clause_25pt = blueprint.to_3d_invariance_clause()
+        organ_depth_clause = organ_profile.to_dynamic_organ_depth_clause() if organ_profile is not None else ""
         PromptFirewall.validate_prompt(clause_25pt)
+        if organ_depth_clause:
+            PromptFirewall.validate_prompt(organ_depth_clause)
 
         ordered_refs: List[Dict[str, str]] = [
             {
@@ -167,6 +174,10 @@ class FreshOriginEditorialWorkflow:
             if match_gen0_yaw
             else float((loc_pose_meta or {}).get("auto_yaw_deg", blueprint.source_signed_yaw_deg))
         )
+        yaw_delta_from_gen0 = abs(target_yaw_for_bank - float(blueprint.source_signed_yaw_deg))
+        needs_rotated_8dir_ref = self.pipeline.turnaround.requires_intermediate_turnaround_hop(
+            float(blueprint.source_signed_yaw_deg), target_yaw_for_bank, max_direct_delta_deg=25.0
+        )
 
         turnaround_p: Optional[Path] = None
         turnaround_master_sheet_meta: Optional[str] = None
@@ -176,35 +187,38 @@ class FreshOriginEditorialWorkflow:
             raw_turn_p = Path(turnaround_8dir_sheet_path).resolve()
             if raw_turn_p.is_file():
                 turnaround_master_sheet_meta = str(raw_turn_p)
-            indiv = self.pipeline.turnaround.resolve_nearest_individual_8dir_portrait(raw_turn_p, target_yaw_for_bank)
-            if indiv is not None:
-                turnaround_p, matched_8dir_view, matched_8dir_yaw = indiv[0].resolve(), indiv[1], indiv[2]
-            elif raw_turn_p.is_file() and "master_8angle" not in raw_turn_p.name.lower():
-                turnaround_p = raw_turn_p
-            if turnaround_p is not None and turnaround_p.is_file():
-                self.origin_guard.register_approved_origin(turnaround_p, kind="8dir_face", depth=1)
-                ordered_refs.append(
-                    {
-                        "slot": f"Image {len(ordered_refs) + 1}",
-                        "role": "verified_1hop_8dir_individual_portrait",
-                        "path": str(turnaround_p),
-                        "sha256": _sha256_file(turnaround_p),
-                        "view_key": matched_8dir_view or "custom",
-                        "label": (
-                            f"Verified 1-Hop Individual 8-Direction Portrait ({matched_8dir_view}, {matched_8dir_yaw:+.1f}°)"
-                            if matched_8dir_yaw is not None
-                            else "Verified 1-Hop Individual 8-Direction Portrait"
-                        ),
-                    }
-                )
-                role_lines.append(
-                    f"Image {len(ordered_refs)} (VERIFIED 1-HOP INDIVIDUAL 3D JAWLINE & CHEEK VOLUME AUTHORITY): "
-                    "angle-matched 1-hop portrait of the exact same person from Image 1; "
-                    "match the exact 3D mandibular corner angle, lower-jaw taper, chin length, cheekbone projection, and ear/neck transition"
-                )
+            # Zero-Dilution Angular Gate: ONLY attach 1-Hop AI 8-dir portrait when |target_yaw - gen0_yaw| > 25 deg!
+            # For near-frontal / angle-matched shots (<= 25 deg), keep 100% pure camera Gen-0 + lossless optical organ macro!
+            if needs_rotated_8dir_ref:
+                indiv = self.pipeline.turnaround.resolve_nearest_individual_8dir_portrait(raw_turn_p, target_yaw_for_bank)
+                if indiv is not None:
+                    turnaround_p, matched_8dir_view, matched_8dir_yaw = indiv[0].resolve(), indiv[1], indiv[2]
+                elif raw_turn_p.is_file() and "master_8angle" not in raw_turn_p.name.lower():
+                    turnaround_p = raw_turn_p
+                if turnaround_p is not None and turnaround_p.is_file():
+                    self.origin_guard.register_approved_origin(turnaround_p, kind="8dir_face", depth=1)
+                    ordered_refs.append(
+                        {
+                            "slot": f"Image {len(ordered_refs) + 1}",
+                            "role": "verified_1hop_8dir_individual_portrait",
+                            "path": str(turnaround_p),
+                            "sha256": _sha256_file(turnaround_p),
+                            "view_key": matched_8dir_view or "custom",
+                            "label": (
+                                f"Verified 1-Hop Individual 8-Direction Portrait ({matched_8dir_view}, {matched_8dir_yaw:+.1f}°)"
+                                if matched_8dir_yaw is not None
+                                else "Verified 1-Hop Individual 8-Direction Portrait"
+                            ),
+                        }
+                    )
+                    role_lines.append(
+                        f"Image {len(ordered_refs)} (VERIFIED 1-HOP INDIVIDUAL 3D JAWLINE & CHEEK VOLUME AUTHORITY): "
+                        "angle-matched 1-hop portrait of the exact same person from Image 1; "
+                        "match the exact 3D mandibular corner angle, lower-jaw taper, chin length, cheekbone projection, and ear/neck transition"
+                    )
 
         ocular_anchor_p: Optional[Path] = None
-        # Keep STRICTLY <=2 face refs when an individual 8-dir portrait is attached so facial identity never dilutes!
+        # When yaw_delta <= 25 deg (turnaround_p is None), attach lossless pure-optical Gen-0 organ/skin close-up (0% AI dilution!)
         if attach_ocular_detail_anchor and turnaround_p is None:
             ocular_anchor_p = wdir / "gen0_optical_ocular_detail_anchor.jpg"
             self.pipeline.turnaround.prepare_pure_gen0_ocular_detail_anchor(gen0_p, ocular_anchor_p)
@@ -215,13 +229,12 @@ class FreshOriginEditorialWorkflow:
                     "role": "gen0_optical_ocular_detail",
                     "path": str(ocular_anchor_p),
                     "sha256": _sha256_file(ocular_anchor_p),
-                    "label": "Pure lossless optical Gen-0 ocular/eye-to-lip close-up crop (0% AI, 0% Upscayl)",
+                    "label": "Pure lossless optical Gen-0 eye-nose-lip-skin close-up crop (0% AI, 0% Upscayl)",
                 }
             )
             role_lines.append(
-                f"Image {len(ordered_refs)} (LOSSLESS OPTICAL OCULAR & FACIAL MICRO-DETAIL AUTHORITY — DIRECT Gen-0 CROP): "
-                "pure unmodified optical zoom of Image 1's exact eyes, thin in-line eyelid fold, visible white sclera, "
-                "natural medium iris diameter, inner corner, delicate eyebrows, nose tip, and lips"
+                f"Image {len(ordered_refs)} (LOSSLESS OPTICAL ORGAN & SKIN MICRO-DETAIL AUTHORITY — DIRECT Gen-0 CROP): "
+                "pure unmodified optical zoom of Image 1's exact eyes, nasal bridge/tip, lips, 3D cheek volume, and skin texture"
             )
 
         if clean_loc_p is not None and clean_loc_p.is_file():
@@ -256,59 +269,60 @@ class FreshOriginEditorialWorkflow:
                     f"Image {len(ordered_refs)} (RAW ORIGINAL STYLING ASSET): preserve exact garment/accessory silhouette and hardware naturally"
                 )
 
-        yaw_deg = float(blueprint.source_signed_yaw_deg)
-        if match_gen0_yaw and abs(yaw_deg) >= 8.0:
+        # Natural Gaze-Head Coupling (character-sheet law: NEVER force eyes to twist opposite to head turn!)
+        yaw_deg = float(target_yaw_for_bank)
+        if abs(yaw_deg) >= 8.0:
             side_word = "image-right" if yaw_deg > 0 else "image-left"
             yaw_clause = (
-                f"Head turned only a subtle ~{min(20.0, abs(yaw_deg)):.0f} deg toward {side_word} matching Image 1, "
-                "chin level, BOTH eyes looking DIRECTLY into the camera lens with crisp visible white sclera matching Image 1."
+                f"Head and gaze naturally aligned at ~{min(45.0, abs(yaw_deg)):.0f} deg toward {side_word} "
+                "with level chin and calm relaxed eye alignment matching Image 1 (zero forced eye-twist or squinting)."
             )
         else:
-            yaw_clause = "Head facing cleanly forward matching Image 1, chin level, BOTH eyes looking DIRECTLY into the camera lens."
+            yaw_clause = "Head and calm relaxed gaze naturally aligned forward matching Image 1 without eye-strain."
 
-        subj_label = subject.subject_identity_label if subject is not None else "exact same real person from Image 1 and Image 2"
+        has_second_face_ref = turnaround_p is not None or ocular_anchor_p is not None
+        subj_label = (
+            subject.subject_identity_label
+            if subject is not None
+            else ("exact same real person from Image 1 and Image 2" if has_second_face_ref else "exact same real person from Image 1")
+        )
         k_count = max(1, int(best_of_k))
         prompts: List[Dict[str, str]] = []
-        # 5-Slot Positive Prompt Allocator (~1,050-1,250 chars total: top-loaded 50mm wide 8-head framing, ZERO numeric spam, ZERO pink-elephant 'NEVER' bloat!)
-        ocular_short = (
-            "sleek flatter almond upper eyelids with tight thin in-line fold, crisp dark lash root, visible white sclera, natural fuller brow density"
-            if (blueprint.ocular_profile is not None and float(getattr(blueprint.ocular_profile, "avg_crease_gap_ratio", 0.35)) <= 0.36)
-            else "exact natural eyelid arch, iris size, visible white sclera, and natural brow density from Image 1"
-        )
-        ref_note = "Image 1 (primary portrait & gaze) and Image 2 (3D jawline angle reference)" if turnaround_p is not None else "Image 1 (untouched portrait)"
+        if turnaround_p is not None:
+            ref_note = "Image 1 (primary portrait) and Image 2 (angle-matched 3D jawline reference)"
+        elif ocular_anchor_p is not None:
+            ref_note = "Image 1 (full portrait) and Image 2 (pure optical eye-nose-lip-skin close-up of Image 1)"
+        else:
+            ref_note = "Image 1 (untouched portrait)"
+
+        loc_slot_num = len(ordered_refs)
         loc_light_desc = (
-            f"natural ambient {loc_radio_spec.lighting_regime.replace('_', ' ')} (~{int(loc_radio_spec.kelvin_est)}K) matching the exact room mood of Image {len(ordered_refs)}"
+            f"soft volumetric front-45-degree facial illumination harmonized with the ambient ~{int(loc_radio_spec.kelvin_est)}K room atmosphere of Image {loc_slot_num} "
+            "(preserving Image 1's clear 3D cheek, nasal-tip, and lip relief without dark under-eye or under-nose shadows)"
             if (loc_radio_spec is not None and clean_loc_p is not None)
-            else "directional 45-degree soft editorial key light with clean jaw-to-neck separation shadow"
+            else "balanced soft front-45-degree key light preserving clear 3D cheek, nasal-tip, and lip relief with clean jaw-to-neck separation"
         )
         for i in range(k_count):
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
-            lens_mm = (75, 80, 85)[i % 3]
+            lens_mm = (80, 85, 90)[i % 3]
             slot1_camera = (
                 f"Hasselblad X2D {lens_mm}mm f/3.5 medium-telephoto optical editorial photograph ({aspect_ratio_label}), "
                 "natural undistorted perspective with zero wide-angle foreground hand or leg enlargement, "
-                "realistic adult 7.45-head multi-segment body proportion (harmonized seated/standing trunk, upper arm, hand, thigh, "
+                "realistic adult 7.45-head multi-segment body proportion (harmonized trunk, upper arm, hand, thigh, "
                 "natural anatomical neck length and neck width ~52% of face width, sleek flat-hugging hair roots at crown and temples)."
             )
             slot2_identity = (
                 f"Subject: {subj_label} ({ref_note}). "
-                "Exact 1:1 unadorned documentary craniofacial & lip fidelity: compact cranial dome with sleek flat-lying temple hair, "
-                f"exact horizontal face width & vertical length, exact {blueprint.avg_gonion_deg:.0f}-degree mandibular jaw angle and cheek surface area "
-                "with clean shadow beneath jaw, "
-                f"Measured Ocular Anatomy Lock ({ocular_short}), exact nasal bridge and tip, "
-                "and Image 1's exact calm natural coral-rose lip shape without beauty exaggeration."
+                f"{organ_depth_clause if organ_depth_clause else clause_25pt}"
             )
             clean_note = (
-                f" Replace the person-erased area in Image {len(ordered_refs)} seamlessly while keeping the exact furniture geometry and restoring crisp soft-bokeh background detail behind the subject."
+                f" Replace the person-erased area in Image {loc_slot_num} seamlessly while keeping the exact furniture geometry and restoring crisp soft-bokeh background detail behind the subject."
                 if clean_loc_p is not None
                 else ""
             )
             slot3_pose = f"Scene & Pose: {scene_instruction.strip()}.{clean_note} {yaw_clause}"
             slot4_outfit = f"Outfit: {outfit_instruction.strip()} (replacing reference clothing completely)."
-            slot5_light = (
-                f"Lighting & Texture: {loc_light_desc}, "
-                "authentic unretouched matte skin pores, single-camera filmic tonal cohesion."
-            )
+            slot5_light = f"Lighting & Skin Fidelity: {loc_light_desc}, single-camera filmic tonal cohesion."
             p_text = f"{slot1_camera} {slot2_identity} {slot3_pose} {slot4_outfit} {slot5_light}"
             PromptFirewall.validate_prompt(p_text)
             prompts.append(
@@ -324,6 +338,7 @@ class FreshOriginEditorialWorkflow:
                         "slot5_light": len(slot5_light),
                     },
                     "full_blueprint_clause": clause_25pt,
+                    "organ_depth_skin_clause": organ_depth_clause,
                 }
             )
 
@@ -448,6 +463,8 @@ class FreshOriginEditorialWorkflow:
             ex_idx = float(ex_cmp.get("exaggerationIndex", 0.0))
             sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(ref_bgr, bgr, output_overlay_path=None)
             c_iou = float(sil_cmp.get("contourIoU", 0.90))
+            od_cmp = self.organ_depth.compare(ref_bgr, bgr)
+            od_drift = float(od_cmp.get("organDepthDrift", 0.0))
             ms_err_pct = self._estimate_multisegment_head_error_pct(bgr, dst_face)
 
             ca_diff = float(diffs.get("cheekAreaNorm", 0.0))
@@ -482,16 +499,19 @@ class FreshOriginEditorialWorkflow:
                 issues.extend(str(x) for x in oc_cmp.get("issues", []))
             if not ex_cmp.get("passed", True):
                 issues.extend(str(x) for x in ex_cmp.get("issues", []))
+            if not od_cmp.get("passed", True):
+                issues.extend(str(x) for x in od_cmp.get("issues", []))
 
             native_ok = len(issues) == 0
-            # Higher composite_rank_score is better: prioritize native_ok, high SFace, high 1:1 contour IoU, multi-segment body harmony, eye NCC
+            # Higher composite_rank_score is better: strongly prioritize SFace identity, 4-organ+3D-depth+skin fidelity, eye NCC, and body harmony
             rank_score = (
                 (100.0 if native_ok else 0.0)
-                + sface_sim * 55.0
-                + c_iou * 30.0
-                + oc_ncc * 25.0
+                + sface_sim * 85.0
+                + c_iou * 22.0
+                + oc_ncc * 28.0
+                - od_drift * 1.4
                 - min(25.0, abs(ms_err_pct)) * 0.6
-                - float(cmp18["meanWeightedDriftPct"]) * 2.5
+                - float(cmp18["meanWeightedDriftPct"]) * 2.2
                 - oc_drift * 1.8
                 - ex_idx * 2.0
                 - abs(ca_diff) * 0.9
@@ -502,6 +522,7 @@ class FreshOriginEditorialWorkflow:
                     candidate_path=str(p),
                     sface_similarity=round(sface_sim, 4),
                     contour_iou=round(c_iou, 4),
+                    organ_depth_drift=round(od_drift, 2),
                     multi_segment_head_err_pct=ms_err_pct,
                     mean_weighted_drift_pct=float(cmp18["meanWeightedDriftPct"]),
                     cheek_area_diff_pct=round(ca_diff, 1),
@@ -603,7 +624,8 @@ class FreshOriginEditorialWorkflow:
         roi_matte, _ = self.pipeline.skin_processor.process(roi, seed=42, reference_skin_profile=None)
         up_bgr[vy1:vy2, vx1:vx2] = roi_matte
 
-        # 2b. Authentic v2.1 Single-Camera Radiometric & Tonal Cohesion Mastering
+        # 2b. Single-Camera Radiometric & Tonal Cohesion Mastering on scene,
+        #     FOLLOWED BY Intrinsic Gen-0 Skin Tone (`피부색감`) & Velvety Pore Micro-Texture (`피부질감`) Mastering!
         cohesion_meta: Dict[str, object] = {"mode": cohesion_mode, "applied": False}
         if cohesion_mode != "off":
             ref_scene_bgr = (
@@ -618,6 +640,10 @@ class FreshOriginEditorialWorkflow:
                 mode=cohesion_mode,
                 seed=42,
             )
+
+        up_bgr, skin_albedo_meta = self.pipeline.skin_processor.harmonize_intrinsic_skin_albedo_and_texture(
+            up_bgr, ref_bgr, ambient_blend_ratio=0.28, seed=42
+        )
 
         # 3. Full 10-Gate Quality Audit at exact native 4K dimensions
         cfg_4k = dataclasses.replace(
@@ -643,6 +669,7 @@ class FreshOriginEditorialWorkflow:
             ref_bgr, macro_bgr, output_overlay_path=str(out_sil_ov)
         )
         ex_cmp = self.exaggeration_guard.audit(ref_bgr, macro_bgr)
+        od_cmp = self.organ_depth.compare(ref_bgr, macro_bgr)
 
         all_passed = bool(report.passed and sil_cmp.get("passed", True))
         fail_msg = report.message
@@ -672,6 +699,8 @@ class FreshOriginEditorialWorkflow:
             "upscayl_model": up_model,
             "optical_acuity_meta": acuity_meta,
             "cohesion_meta": cohesion_meta,
+            "skin_albedo_texture_meta": skin_albedo_meta,
+            "organ_depth_summary": od_cmp,
             "resolution": [uw, uh],
             "raw_pre_upscale_canvas": [int(raw_bgr.shape[1]), int(raw_bgr.shape[0])],
             "raw_pre_upscale_face_px": [raw_fw, raw_fh],

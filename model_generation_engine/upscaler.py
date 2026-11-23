@@ -237,6 +237,12 @@ class SuperResolutionEngine:
         - Cheek/Jaw Skin Transition: 72% Optical + 28% tone-locked Ultramix-Balanced-4x (smooth anti-aliased jawline, matte pores)
         - Hair, Suit/Garments, Hands, Furniture & Architecture: 100% Lossless PNG Upscayl 4x ('ultramix-balanced-4x', 16.4x sharper weave)
         """
+        sh, sw = src_bgr.shape[:2]
+        if target_min_height > 0 and sh >= int(target_min_height * 0.92):
+            # Already Native 4K (e.g. Google Flow ULTRA 3584x4800): NEVER 4x-upscale & downscale!
+            opt_acuity, acuity_meta = self.enhance_optical_organ_acuity(src_bgr)
+            return opt_acuity, {"mode": "native_4k_passthrough_acuity", "model": "native_4k_acuity_v22", "acuity": acuity_meta}
+
         opt_bgr = self.upscale_bgr_in_memory(src_bgr, target_min_height=target_min_height)
         opt_acuity, acuity_meta = self.enhance_optical_organ_acuity(opt_bgr)
         uh, uw = opt_acuity.shape[:2]

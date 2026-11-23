@@ -2104,6 +2104,33 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             lap_hyb = float(cv2.Laplacian(cv2.cvtColor(hyb_bgr[int(h * 0.72):, :], cv2.COLOR_BGR2GRAY), cv2.CV_32F).var())
             self.assertGreater(lap_hyb, lap_opt * 2.5)
 
+    def test_37_v22_zero_hardcoding_4organ_depth_and_intrinsic_skin(self) -> None:
+        """Verify dynamic 4-organ + 3D depth + skin tone/texture analyzer and intrinsic skin albedo restoration."""
+        import cv2
+        import numpy as np
+        from model_generation_engine.organ_depth_anatomy import OrganAndDepthAnatomyAnalyzer
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+
+        pipe = ModelGenerationPipeline()
+        analyzer = OrganAndDepthAnatomyAnalyzer(pipe.apple_vision)
+        ref = cv2.imread(str(self.ref_face))
+        prof = analyzer.extract_profile(ref)
+        self.assertIsNotNone(prof)
+        clause = prof.to_dynamic_organ_depth_clause()
+        self.assertIn("3D malar depth", clause)
+        self.assertIn("skin ITA", clause)
+
+        # Simulate olive-grey color cast on face and verify harmonize_intrinsic_skin_albedo_and_texture restores undertone
+        lab = cv2.cvtColor(ref, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab[:, :, 1] = np.clip(lab[:, :, 1] - 7.0, 0.0, 255.0)
+        lab[:, :, 2] = np.clip(lab[:, :, 2] - 8.0, 0.0, 255.0)
+        cast_bgr = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+        restored_bgr, skin_meta = pipe.skin_processor.harmonize_intrinsic_skin_albedo_and_texture(cast_bgr, ref)
+        self.assertTrue(skin_meta["applied"])
+        cmp_before = analyzer.compare(ref, cast_bgr)
+        cmp_after = analyzer.compare(ref, restored_bgr)
+        self.assertLess(cmp_after["diffs"]["skinUndertoneDeltaAB"], cmp_before["diffs"]["skinUndertoneDeltaAB"])
+
 
 if __name__ == "__main__":
     unittest.main()

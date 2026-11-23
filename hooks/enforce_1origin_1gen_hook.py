@@ -59,6 +59,11 @@ SAFE_ORIGIN_PATTERNS = [
     re.compile(r"[/\\]stage2a_mesh_precomposite.*\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
 ]
 
+NON_FACE_CLEAN_PLATE_PATTERN = re.compile(
+    r"[/\\](?:loc\d+.*_clean|stage2a_mesh_precomposite.*)\.(?:jpg|jpeg|png|webp)$",
+    re.IGNORECASE,
+)
+
 HEADLESS_TARGET_PATTERN = re.compile(r"(?:headless_body|body_plate|stage2b_flow_harmonized|stage1_body)", re.IGNORECASE)
 TURNAROUND_TARGET_PATTERN = re.compile(r"(?:8dir|turn_|angle_[mp]\d|turnaround)", re.IGNORECASE)
 TURNAROUND_GENERATED_INPUT_PATTERN = re.compile(
@@ -343,6 +348,8 @@ def main() -> int:
                     if not re.search(r"\b(?:unittest|pytest)\b", cmd):
                         if STAGE1_PREPARE_CMD_PATTERN.search(cmd):
                             entry["stage1_prepare_ran"] = True
+                            if "--turnaround-sheet" in cmd:
+                                entry["stage1_8dir_verified"] = True
                             state[conv_id] = entry
                             _save_json(STATE_PATH, state)
                         if FINALIZE_SUCCESS_CMD_PATTERN.search(cmd):
@@ -495,7 +502,9 @@ def main() -> int:
         # Enforce Stage 1 `prepare`, Mandatory Verified 8-Direction Bank, AND Max-2 Face Refs on Google Flow!
         if is_image_gen_call and not is_turn_target:
             has_gen0_portrait = any(_is_safe_origin(c) for c in candidates)
-            has_8dir_bank_ref = any(VERIFIED_8DIR_BANK_REF_PATTERN.search(c) for c in candidates)
+            has_8dir_bank_ref = any(VERIFIED_8DIR_BANK_REF_PATTERN.search(c) for c in candidates) or bool(
+                entry.get("stage1_8dir_verified")
+            )
             if has_gen0_portrait and not has_8dir_bank_ref:
                 print(
                     json.dumps(
@@ -504,7 +513,7 @@ def main() -> int:
                             "reason": (
                                 "[8방향 필수 선행 훅 차단] Step 1(원본 Gen-0 → -90°~+90° 8방향 마스터 뱅크 생성·조립·검증)을 "
                                 "건너뛰고 2D 원본 사진만으로 바로 화보/장면 생성을 호출할 수 없습니다! "
-                                "반드시 먼저 8방향 1-Hop 뱅크를 완성한 뒤, Gen-0 + 검증된 8방향 단독 포트레이트를 함께 첨부해 생성하세요."
+                                "반드시 먼저 8방향 1-Hop 뱅크를 완성하고 `prepare --turnaround-sheet`를 실행하세요."
                             ),
                         },
                         ensure_ascii=False,
@@ -512,7 +521,12 @@ def main() -> int:
                 )
                 return 0
             if t_name == "run_command" and FLOW_CLI_CMD_PATTERN.search(str(args.get("CommandLine") or args.get("commandLine") or "")):
-                unique_face_refs = {Path(c).name for c in candidates if _is_safe_origin(c) or VERIFIED_8DIR_BANK_REF_PATTERN.search(c)}
+                unique_face_refs = {
+                    Path(c).name
+                    for c in candidates
+                    if (_is_safe_origin(c) or VERIFIED_8DIR_BANK_REF_PATTERN.search(c))
+                    and not NON_FACE_CLEAN_PLATE_PATTERN.search(c)
+                }
                 if len(unique_face_refs) > 2:
                     print(
                         json.dumps(

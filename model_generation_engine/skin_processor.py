@@ -302,3 +302,146 @@ class MatteSkinProcessor:
             p88_luminance=p88,
             skin_pixel_count=int(len(skin_L)),
         )
+
+    def harmonize_intrinsic_skin_albedo_and_texture(
+        self,
+        canvas_bgr: np.ndarray,
+        reference_face_bgr: np.ndarray,
+        ambient_blend_ratio: float = 0.28,
+        seed: int = 42,
+    ) -> Tuple[np.ndarray, dict]:
+        """v2.2 Universal Zero-Hardcoding Skin Color (`피부색감`) & Skin Texture (`피부질감`) Mastering.
+
+        1. Measures the reference person's true CIE L*a*b* cheek skin undertone and IOD-normalized micro-pore texture
+           directly from `reference_face_bgr` (`Gen-0`).
+        2. Builds a seamless Face + Exposed-Neck/Collarbone + Exposed-Hand skin mask on `canvas_bgr` (excluding eyes,
+           sclera, eyebrows, nostrils, lip vermilion, hair, and garments) so zero face-vs-neck seam can ever appear.
+        3. Restores the subject's alive rosy/melanin undertone (`1 - ambient_blend_ratio` intrinsic `Gen-0` albedo +
+           `ambient_blend_ratio` local scene lighting), eliminating corpse-grey/olive cast and `de_yellow` over-cooling.
+        4. Matches fine velvety pore micro-texture (`[0.8..2.2px]` at canonical IOD) to `Gen-0` while damping blotchy
+           mid-frequency AI wax mottle and rolling off shiny plastic cheekbone hotspots.
+        """
+        ref_det = self.detector.detect(reference_face_bgr)
+        dst_det = self.detector.detect(canvas_bgr)
+        _, ref_core = self.build_dynamic_skin_mask(reference_face_bgr, ref_det)
+        ref_lab = cv2.cvtColor(reference_face_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        if int(np.sum(ref_core)) < 40:
+            return canvas_bgr, {"applied": False, "reason": "insufficient_ref_skin"}
+
+        ref_l_med = float(np.median(ref_lab[:, :, 0][ref_core]))
+        ref_a_med = float(np.median(ref_lab[:, :, 1][ref_core]))
+        ref_b_med = float(np.median(ref_lab[:, :, 2][ref_core]))
+
+        ref_iod = max(12.0, float(ref_det.inter_ocular_distance))
+        dst_iod = max(12.0, float(dst_det.inter_ocular_distance))
+        ref_sig_fine = max(0.65, 1.35 * (ref_iod / 130.0))
+        ref_pore_band = ref_lab[:, :, 0] - cv2.GaussianBlur(ref_lab[:, :, 0], (0, 0), ref_sig_fine)
+        ref_pore_std = float(np.clip(np.std(ref_pore_band[ref_core]), 0.75, 2.80))
+
+        # Work inside a generous upper-body ROI covering head, neck, collarbones, and hands for fast 4K execution
+        H, W = canvas_bgr.shape[:2]
+        fx, fy, fw, fh = dst_det.bbox
+        rx1 = max(0, int(round(fx - 2.2 * fw)))
+        ry1 = max(0, int(round(fy - 0.8 * fh)))
+        rx2 = min(W, int(round(fx + 3.2 * fw)))
+        ry2 = min(H, int(round(fy + 4.2 * fh)))
+
+        roi = canvas_bgr[ry1:ry2, rx1:rx2].copy()
+        rh, rw = roi.shape[:2]
+        roi_det = self.detector.detect(roi)
+        face_skin_mask, face_core = self.build_dynamic_skin_mask(roi, roi_det)
+        if int(np.sum(face_core)) < 40:
+            return canvas_bgr, {"applied": False, "reason": "insufficient_dst_skin"}
+
+        roi_lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).astype(np.float32)
+        L, A, B = roi_lab[:, :, 0], roi_lab[:, :, 1], roi_lab[:, :, 2]
+
+        cur_l_med = float(np.median(L[face_core]))
+        cur_a_med = float(np.median(A[face_core]))
+        cur_b_med = float(np.median(B[face_core]))
+
+        # Extend skin mask seamlessly onto exposed neck/collarbone/hand pixels that match the current skin distribution
+        rfx, rfy, rfw, rfh = roi_det.bbox
+        body_skin_zone = np.zeros((rh, rw), dtype=np.float32)
+        cv2.ellipse(
+            body_skin_zone,
+            (int(round(rfx + 0.50 * rfw)), int(round(rfy + 1.15 * rfh))),
+            (max(12, int(round(1.65 * rfw))), max(16, int(round(2.10 * rfh)))),
+            0.0,
+            0,
+            360,
+            1.0,
+            -1,
+        )
+        organ_excl = self.build_anatomical_organ_mask((rh, rw), roi_det)
+        skin_dist = np.sqrt(
+            ((L - cur_l_med) / 28.0) ** 2 + ((A - cur_a_med) / 7.5) ** 2 + ((B - cur_b_med) / 9.5) ** 2
+        )
+        chrom_sim = np.clip(1.35 - skin_dist, 0.0, 1.0) * body_skin_zone * (1.0 - np.clip(organ_excl * 1.15, 0.0, 1.0))
+        full_skin_mask = np.maximum(face_skin_mask, chrom_sim * 0.88)
+        k_feather = max(9, int(round(0.16 * dst_iod)) | 1)
+        full_skin_mask = cv2.GaussianBlur(full_skin_mask, (k_feather, k_feather), max(2.2, 0.05 * dst_iod))
+        # Taper ROI borders to 0 so ROI paste is 100% invisible
+        b_pad = max(8, int(round(0.12 * dst_iod)))
+        border_w = np.ones((rh, rw), dtype=np.float32)
+        for bi in range(min(b_pad, rh // 4, rw // 4)):
+            w_val = float(bi) / float(b_pad)
+            border_w[bi, :] = np.minimum(border_w[bi, :], w_val)
+            border_w[rh - 1 - bi, :] = np.minimum(border_w[rh - 1 - bi, :], w_val)
+            border_w[:, bi] = np.minimum(border_w[:, bi], w_val)
+            border_w[:, rw - 1 - bi] = np.minimum(border_w[:, rw - 1 - bi], w_val)
+        full_skin_mask *= border_w
+
+        # 1. Illuminant-aware Skin Color (`피부색감`) restoration
+        keep_w = float(np.clip(1.0 - ambient_blend_ratio, 0.50, 0.85))
+        da = float(np.clip((ref_a_med - cur_a_med) * keep_w, -7.5, 8.5))
+        db = float(np.clip((ref_b_med - cur_b_med) * keep_w, -8.5, 9.5))
+        dl = float(np.clip((ref_l_med - cur_l_med) * 0.26, -6.0, 9.5))
+
+        L_new = np.clip(L + full_skin_mask * dl, 0.0, 255.0)
+        A_new = np.clip(A + full_skin_mask * da, 0.0, 255.0)
+        B_new = np.clip(B + full_skin_mask * db, 0.0, 255.0)
+
+        # 2. Subsurface Smoothness + Scale-Matched Velvety Pore Micro-Texture (`피부질감`)
+        dst_sig_fine = max(0.75, 1.35 * (dst_iod / 130.0))
+        dst_sig_mid = max(2.20, 3.80 * (dst_iod / 130.0))
+        l_blur_fine = cv2.GaussianBlur(L_new, (0, 0), dst_sig_fine)
+        l_blur_mid = cv2.GaussianBlur(L_new, (0, 0), dst_sig_mid)
+        pore_layer = L_new - l_blur_fine
+        mottle_layer = l_blur_fine - l_blur_mid
+
+        cur_pore_std = float(np.std(pore_layer[face_core])) + 1e-5
+        target_pore_gain = float(np.clip(ref_pore_std / cur_pore_std, 0.78, 1.32))
+        # Gently calm blotchy AI mid-frequency wax mottle by 18% while matching exact fine pore amplitude
+        L_tex = l_blur_mid + 0.82 * mottle_layer + target_pore_gain * pore_layer
+
+        # If upscaled low-pixel candidate lacks fine micro-grain, add ultra-subtle optical velvety pore grain
+        if cur_pore_std < ref_pore_std * 0.82:
+            rng = np.random.default_rng(seed)
+            n_raw = rng.normal(0.0, 1.0, (rh, rw)).astype(np.float32)
+            n_bp = cv2.GaussianBlur(n_raw, (0, 0), 0.45 * (dst_iod / 130.0 + 0.5)) - cv2.GaussianBlur(
+                n_raw, (0, 0), 1.15 * (dst_iod / 130.0 + 0.5)
+            )
+            n_bp /= float(np.std(n_bp) + 1e-6)
+            synth_amp = float(np.clip((ref_pore_std - cur_pore_std) * 0.45, 0.0, 0.85))
+            L_tex = L_tex + synth_amp * n_bp
+
+        # Velvety specular highlight roll-off (> P98.8) so shiny plastic cheekbone patches become soft natural sheen
+        p_knee = float(np.percentile(L_tex[face_core], 98.8))
+        excess = np.maximum(0.0, L_tex - p_knee)
+        L_tex = np.where(L_tex > p_knee, p_knee + 3.2 * np.tanh(excess / 8.0), L_tex)
+
+        L_final = np.clip((1.0 - full_skin_mask) * L + full_skin_mask * L_tex, 0.0, 255.0)
+        roi_out = cv2.cvtColor(
+            np.stack([L_final, A_new, B_new], axis=-1).astype(np.uint8),
+            cv2.COLOR_LAB2BGR,
+        )
+        out_canvas = canvas_bgr.copy()
+        out_canvas[ry1:ry2, rx1:rx2] = roi_out
+        return out_canvas, {
+            "applied": True,
+            "ref_lab_med": [round(ref_l_med, 1), round(ref_a_med - 128.0, 2), round(ref_b_med - 128.0, 2)],
+            "applied_delta_lab": [round(dl, 2), round(da, 2), round(db, 2)],
+            "ref_pore_std": round(ref_pore_std, 3),
+            "pore_gain": round(target_pore_gain, 3),
+        }
