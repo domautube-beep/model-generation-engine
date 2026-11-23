@@ -2015,6 +2015,31 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         r_good = AppleVisionAnalyzer.compare_cranial_and_scale(ref_c, matched_c)
         self.assertTrue(r_good["passed"])
 
+    def test_34_v15_coupled_sizekorea_solver_and_body_compatibility_gate(self) -> None:
+        """Verify v15.0 coupled SizeKorea 8th Survey solver outputs body compatibility telemetry & coupled cervical drop."""
+        import tempfile
+        from model_generation_engine.headless_mesh_composer import HeadlessMeshComposer
+
+        comp = HeadlessMeshComposer()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            meta = comp.prepare_stage2a_precomposite(
+                gen0_path=self.ref_face,
+                body_plate_path=self.ref_face,
+                output_headless_path=tdir / "hl.png",
+                output_precomp_path=tdir / "pre.png",
+                output_meta_path=tdir / "meta.json",
+                target_head_to_shoulder_ratio=0.325,
+            )
+            self.assertIn("visible_shoulder_2d_px", meta)
+            self.assertIn("body_compatible", meta)
+            self.assertIn("inter_segment_cv", meta)
+            self.assertIn("neck_len_to_head_h", meta)
+            # Coupled cervical drop `sh_y - dst_chin_y` must be bounded within `[0.28, 0.42] * solved_head_h_px`
+            neck_drop = float(meta["shoulder_y_px"]) - float(meta["target_chin"][1])
+            self.assertGreaterEqual(neck_drop, 0.28 * float(meta["solved_head_h_px"]))
+            self.assertLessEqual(neck_drop, 0.42 * float(meta["solved_head_h_px"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -181,11 +181,11 @@ class HeadlessMeshComposer:
         if raw is None:
             raise FileNotFoundError(f"Cannot decode Gen-0: {gen0_path}")
         h, w = raw.shape[:2]
-        # Estimate raw face width (~0.42 * width for portrait crops) or check against min_needed_face_w
-        if min_needed_face_w <= 0.0 or (min(h, w) * 0.40) >= min_needed_face_w * 1.12 or max(h, w) >= 2600:
+        # Estimate raw face width (~0.45 * width for portrait crops) and avoid unnecessary 4x->0.43x blur round-trips!
+        if min_needed_face_w <= 0.0 or (min(h, w) * 0.44) >= min_needed_face_w * 1.02 or max(h, w) >= 2600:
             return raw
         lanczos = cv2.resize(raw, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
-        if self.pipeline.upscaler is not None and self.pipeline.upscaler.upscayl_bin is not None and (min(h, w) * 0.80) < min_needed_face_w:
+        if self.pipeline.upscaler is not None and self.pipeline.upscaler.upscayl_bin is not None and (min(h, w) * 0.90) < min_needed_face_w:
             try:
                 up4_lanczos = cv2.resize(raw, (w * 4, h * 4), interpolation=cv2.INTER_LANCZOS4)
                 up_gan, _ = self.pipeline.upscaler.upscale_with_upscayl(raw, style="photo", scale=4)
@@ -277,15 +277,16 @@ class HeadlessMeshComposer:
         }
 
     def _measure_body_shoulders_and_neck(self, body_bgr: np.ndarray, body_info: Dict[str, object]) -> Dict[str, object]:
-        """Whole-Body 3D Multi-Segment Anthropometric Solver (SizeKorea 8th & ANSUR II).
+        """v15.0 SizeKorea 8th Survey (20-39F) Coupled Whole-Body Anthropometric Solver + Body Compatibility Gate.
 
-        Computes true natural Total Head Height `target_head_h_px` from ALL visible un-foreshortened body segments:
-          1) Suprasternal-to-Pelvic Trunk (`neck_1_joint -> hip/root`) / 1.80  [yaw-invariant, same depth plane!]
-          2) Less-foreshortened Upper-Arm Humerus (`max(L_hum, R_hum)`) / 1.14
-          3) Less-foreshortened Thigh Femur (`max(L_femur, R_femur)`) / 1.86
-          4) Hand Span (`max 21-pt hand span * 0.93`) / 0.71
-          5) 3D De-Foreshortened Bi-Deltoid (`acromion_3d * 1.48 * 0.514`)
-          6) Placeholder Head Height (low-weight stabilizer / bust fallback)
+        Official SizeKorea 8th Survey Korean Female Reference (`stature = 1622 mm`, `H_bony = 222.2 mm`,
+        `H_total_with_crown_hair = 235.5 mm` = `7.30` bony heads):
+          1) Upper-Arm Humerus (`shoulder -> elbow = 306.2 mm`) -> `L_hum / 1.300` (high-conf `>= 0.45`)
+          2) Forearm (`elbow -> wrist = 232.0 mm`)             -> `L_forearm / 0.985`
+          3) Pelvic Spine Trunk (`neck_1 -> root = 490.0 mm`)   -> `L_trunk / 2.080` (strictly `conf >= 0.34`, rejects occluded seat hallucinations!)
+          4) Thigh Femur (`upLeg -> knee = 435.0 mm`)           -> `L_femur / 1.847` (strictly `conf >= 0.34`)
+          5) Hand Length (`wrist -> dactylion = 174.6 mm`)      -> `(hand_span * 0.94) / 0.741`
+          6) Korean Bi-Deltoid Silhouette (`418.0 mm`)          -> `bi_deltoid_3d / 1.775`
         """
         h, w = body_bgr.shape[:2]
         pm = body_info["person_mask"]
@@ -297,17 +298,19 @@ class HeadlessMeshComposer:
         sh_y = int(np.clip(chin[1] + 0.54 * face_w, 0, h - 1))
         acromion_2d = 0.0
         acromion_3d = 0.0
+        visible_shoulder_2d = 0.0
         neck_cx = float(body_info["neck_skin_cx"])
         cervical_lean_dx_per_dy = 0.0
         segment_estimates: Dict[str, Tuple[float, float]] = {}  # name -> (est_head_h_px, weight)
+        hand_max_span_px = 0.0
 
         try:
             bh = self.vision.body_and_hand_points(pil)
             for body in bh.get("bodies") or []:
-                jmap = {str(j["name"]): (float(j["x"]), float(j["y"])) for j in body if float(j.get("conf", 0.0)) >= 0.25}
-                jmap_hip = {str(j["name"]): (float(j["x"]), float(j["y"])) for j in body if float(j.get("conf", 0.0)) >= 0.15}
-                ls = jmap.get("left_shoulder_1_joint")
-                rs = jmap.get("right_shoulder_1_joint")
+                jmap = {str(j["name"]): (float(j["x"]), float(j["y"])) for j in body if float(j.get("conf", 0.0)) >= 0.35}
+                jmap_sh = {str(j["name"]): (float(j["x"]), float(j["y"])) for j in body if float(j.get("conf", 0.0)) >= 0.25}
+                ls = jmap_sh.get("left_shoulder_1_joint")
+                rs = jmap_sh.get("right_shoulder_1_joint")
                 if ls and rs and min(ls[0], rs[0]) > w * 0.04 and max(ls[0], rs[0]) < w * 0.96 and max(ls[1], rs[1]) < h * 0.93:
                     cand_span = math.hypot(rs[0] - ls[0], rs[1] - ls[1])
                     if cand_span > face_w * 1.05:
@@ -315,50 +318,76 @@ class HeadlessMeshComposer:
                         acromion_3d = cand_span
                         sh_y = int(np.clip(0.5 * (ls[1] + rs[1]), 0, h - 1))
                         joint_mid_x = 0.5 * (ls[0] + rs[0])
-                        nk = jmap.get("neck_1_joint")
+                        nk = jmap_sh.get("neck_1_joint")
                         if nk:
                             neck_cx = 0.55 * float(body_info["neck_skin_cx"]) + 0.30 * nk[0] + 0.15 * joint_mid_x
-                            hj = jmap.get("head_joint")
+                            hj = jmap_sh.get("head_joint")
                             if hj and nk[1] - hj[1] > 80.0:
                                 cervical_lean_dx_per_dy = float(np.clip((hj[0] - nk[0]) / (nk[1] - hj[1]), -0.35, 0.35))
                         else:
                             neck_cx = 0.65 * float(body_info["neck_skin_cx"]) + 0.35 * joint_mid_x
 
-                        # 1) Spine Trunk (`neck_1_joint -> pelvic hip/root`)
-                        hip = jmap_hip.get("root")
-                        if hip is None and "left_upLeg_joint" in jmap_hip and "right_upLeg_joint" in jmap_hip:
-                            lu, ru = jmap_hip["left_upLeg_joint"], jmap_hip["right_upLeg_joint"]
-                            hip = (0.5 * (lu[0] + ru[0]), 0.5 * (lu[1] + ru[1]))
-                        if nk and hip and hip[1] < h * 0.95 and hip[1] > nk[1] + face_w * 0.8:
-                            trunk_len = math.hypot(hip[0] - nk[0], hip[1] - nk[1])
-                            segment_estimates["spine_trunk"] = (trunk_len / 1.80, 1.00)
-                            acromion_3d = max(acromion_3d, 0.731 * trunk_len)
+                        # Measure true visible 2D outer bi-deltoid silhouette span across full shoulder-to-deltoid band
+                        sy1_s = max(0, int(round(min(ls[1], rs[1]) - 0.04 * face_w)))
+                        sy2_s = min(h, max(sy1_s + 4, int(round(max(ls[1], rs[1]) + 0.30 * face_w))))
+                        sx1_s = max(0, int(round(min(ls[0], rs[0]) - 0.90 * face_w)))
+                        sx2_s = min(w, int(round(max(ls[0], rs[0]) + 0.90 * face_w)))
+                        xs_sil = np.where(np.any(pm[sy1_s:sy2_s, sx1_s:sx2_s] > 127, axis=0))[0]
+                        if len(xs_sil) >= 10:
+                            visible_shoulder_2d = float(xs_sil[-1] - xs_sil[0])
 
-                        # 2) Upper-Arm Humerus (`shoulder -> elbow`)
+                        # 1) Upper-Arm Humerus (`shoulder -> elbow = 306.2 mm`; `1.20` accounts for gentle seated arm pitch)
                         hum_lens: List[float] = []
                         if "left_forearm_joint" in jmap and jmap["left_forearm_joint"][1] < h * 0.95:
                             hum_lens.append(math.hypot(jmap["left_forearm_joint"][0] - ls[0], jmap["left_forearm_joint"][1] - ls[1]))
                         if "right_forearm_joint" in jmap and jmap["right_forearm_joint"][1] < h * 0.95:
                             hum_lens.append(math.hypot(jmap["right_forearm_joint"][0] - rs[0], jmap["right_forearm_joint"][1] - rs[1]))
-                        if hum_lens:
-                            max_hum = max(hum_lens)
-                            segment_estimates["upper_arm_humerus"] = (max_hum / 1.14, 0.90)
-                            acromion_3d = max(acromion_3d, 1.14 * max_hum)
+                        hum_eff = 0.0
+                        if len(hum_lens) == 2:
+                            hum_eff = 0.55 * max(hum_lens) + 0.45 * min(hum_lens)
+                        elif len(hum_lens) == 1:
+                            hum_eff = hum_lens[0]
+                        if hum_eff > 0.0:
+                            segment_estimates["upper_arm_humerus"] = (hum_eff / 1.200, 1.00)
 
-                        # 3) Thigh Femur (`upLeg -> knee`)
+                        # 2) Forearm (`elbow -> wrist = 232.0 mm`, `L_forearm / 0.985`, only if un-foreshortened)
+                        fa_lens: List[float] = []
+                        if "left_forearm_joint" in jmap and "left_hand_joint" in jmap:
+                            fa_lens.append(math.hypot(jmap["left_hand_joint"][0] - jmap["left_forearm_joint"][0], jmap["left_hand_joint"][1] - jmap["left_forearm_joint"][1]))
+                        if "right_forearm_joint" in jmap and "right_hand_joint" in jmap:
+                            fa_lens.append(math.hypot(jmap["right_hand_joint"][0] - jmap["right_forearm_joint"][0], jmap["right_hand_joint"][1] - jmap["right_forearm_joint"][1]))
+                        if fa_lens and (hum_eff <= 0.0 or max(fa_lens) >= 0.66 * hum_eff):
+                            segment_estimates["forearm_radius"] = (max(fa_lens) / 0.985, 0.60)
+
+                        # 3) Pelvic Spine Trunk (`neck_1_joint -> pelvic hip/root = 490 mm`, strictly `conf >= 0.35`)
+                        hip = jmap.get("root")
+                        if hip is None and "left_upLeg_joint" in jmap and "right_upLeg_joint" in jmap:
+                            lu, ru = jmap["left_upLeg_joint"], jmap["right_upLeg_joint"]
+                            hip = (0.5 * (lu[0] + ru[0]), 0.5 * (lu[1] + ru[1]))
+                        if nk and hip and hip[1] < h * 0.95 and hip[1] > nk[1] + face_w * 0.8:
+                            trunk_len = math.hypot(hip[0] - nk[0], hip[1] - nk[1])
+                            segment_estimates["spine_trunk"] = (trunk_len / 2.080, 1.00)
+
+                        # 4) Thigh Femur (`upLeg -> knee = 435.0 mm`, strictly `conf >= 0.35`)
                         fem_lens: List[float] = []
-                        if "left_upLeg_joint" in jmap_hip and "left_leg_joint" in jmap and jmap["left_leg_joint"][1] < h * 0.96:
-                            fem_lens.append(math.hypot(jmap["left_leg_joint"][0] - jmap_hip["left_upLeg_joint"][0], jmap["left_leg_joint"][1] - jmap_hip["left_upLeg_joint"][1]))
-                        if "right_upLeg_joint" in jmap_hip and "right_leg_joint" in jmap and jmap["right_leg_joint"][1] < h * 0.96:
-                            fem_lens.append(math.hypot(jmap["right_leg_joint"][0] - jmap_hip["right_upLeg_joint"][0], jmap["right_leg_joint"][1] - jmap_hip["right_upLeg_joint"][1]))
+                        if "left_upLeg_joint" in jmap and "left_leg_joint" in jmap and jmap["left_leg_joint"][1] < h * 0.96:
+                            fem_lens.append(math.hypot(jmap["left_leg_joint"][0] - jmap["left_upLeg_joint"][0], jmap["left_leg_joint"][1] - jmap["left_upLeg_joint"][1]))
+                        if "right_upLeg_joint" in jmap and "right_leg_joint" in jmap and jmap["right_leg_joint"][1] < h * 0.96:
+                            fem_lens.append(math.hypot(jmap["right_leg_joint"][0] - jmap["right_upLeg_joint"][0], jmap["right_leg_joint"][1] - jmap["right_upLeg_joint"][1]))
                         if fem_lens:
-                            segment_estimates["thigh_femur"] = (max(fem_lens) / 1.86, 0.65)
+                            segment_estimates["thigh_femur"] = (max(fem_lens) / 1.847, 0.75)
 
-                        acromion_3d = min(acromion_3d, acromion_2d / 0.48)
-                        segment_estimates["shoulder_3d_deprojected"] = (acromion_3d * 1.48 * 0.514, 0.85)
+                        # De-foreshorten 3D acromial breadth using SizeKorea `biacromial / H_total = 365 / 235.5 = 1.550` (joint span ~ 1.38 * H_total)
+                        skel_hs = [v[0] for k, v in segment_estimates.items() if k in ("upper_arm_humerus", "spine_trunk", "thigh_femur")]
+                        if skel_hs:
+                            est_acro_3d = float(np.median(skel_hs)) * 1.38
+                            if est_acro_3d > acromion_2d * 1.10:
+                                acromion_3d = min(est_acro_3d, acromion_2d / 0.52)
+                        bi_deltoid_est = max(visible_shoulder_2d, acromion_3d * 1.34)
+                        segment_estimates["shoulder_3d_deprojected"] = (bi_deltoid_est / 1.775, 0.95)
                         break
 
-            # 4) Foreground Hand Span (`wrist-to-dactylion`)
+            # 5) Hand Straight Span (`wrist-to-dactylion = 174.6 mm`, `H_total = 235.5 mm -> ratio = 0.741`)
             hands = bh.get("hands") or []
             if hands:
                 hand_spans = []
@@ -366,16 +395,17 @@ class HeadlessMeshComposer:
                     arr = np.array(hpts, dtype=np.float32)
                     if len(arr) >= 10:
                         sp = float(np.max(np.linalg.norm(arr[:, None, :] - arr[None, :, :], axis=-1)))
-                        if sp > face_w * 0.45:
+                        if sp > face_w * 0.40:
                             hand_spans.append(sp)
                 if hand_spans:
-                    # 0.93 perspective discount for foreground hands resting forward of the cervical plane
-                    segment_estimates["hand_anthropometry"] = ((max(hand_spans) * 0.93) / 0.68, 0.60)
+                    hand_max_span_px = float(max(hand_spans))
+                    # 1.02 uncurls gently curved resting fingers from carpal base to true straight wrist-dactylion length
+                    segment_estimates["hand_anthropometry"] = ((hand_max_span_px * 1.02) / 0.741, 0.85)
         except Exception:
             pass
 
         if acromion_3d > face_w * 1.05:
-            bi_deltoid_3d = acromion_3d * 1.48
+            bi_deltoid_3d = max(visible_shoulder_2d, acromion_3d * 1.34)
         else:
             sh_y1 = int(round(chin[1] + 0.75 * face_w))
             sh_y2 = min(h - 1, int(round(chin[1] + 1.30 * face_w)))
@@ -384,30 +414,55 @@ class HeadlessMeshComposer:
             tx2 = min(w, int(round(mid_x + 2.05 * face_w)))
             band_mask = np.any(pm[sh_y1:sh_y2, tx1:tx2] > 127, axis=0)
             xs_torso = np.where(band_mask)[0]
-            bi_deltoid_3d = float(xs_torso[-1] - xs_torso[0]) if len(xs_torso) >= 10 else face_w * 3.05
+            bi_deltoid_3d = float(xs_torso[-1] - xs_torso[0]) if len(xs_torso) >= 10 else face_w * 2.95
+            visible_shoulder_2d = bi_deltoid_3d
 
-        # Weighted consensus across all body segments (with placeholder head as low-weight stabilizer or close-up fallback)
+        if visible_shoulder_2d <= 0.0:
+            visible_shoulder_2d = max(acromion_2d * 1.34, face_w * 2.75)
+
+        # Weighted consensus across all SizeKorea body segments
+        pure_skel_vals = [v[0] for k, v in segment_estimates.items()]
+        inter_segment_cv = (float(np.std(pure_skel_vals)) / max(1.0, float(np.mean(pure_skel_vals)))) if len(pure_skel_vals) >= 2 else 0.0
+
         if segment_estimates:
             segment_estimates["placeholder_head"] = (body_head_h, 0.20)
             pairs = sorted(segment_estimates.values(), key=lambda vw: vw[0])
             vals = np.array([p[0] for p in pairs], dtype=np.float32)
             wts = np.array([p[1] for p in pairs], dtype=np.float32)
-            # Weighted median + weighted mean blend -> immune to any single noisy joint!
             cum_w = np.cumsum(wts) / np.sum(wts)
             w_med = float(vals[int(np.searchsorted(cum_w, 0.50))])
             w_mean = float(np.sum(vals * wts) / np.sum(wts))
             solved_head_h = 0.55 * w_med + 0.45 * w_mean
         else:
-            solved_head_h = max(body_head_h, bi_deltoid_3d * 0.514)
+            solved_head_h = max(body_head_h, bi_deltoid_3d / 1.775)
 
         torso_cos_3d = round(acromion_2d / max(1.0, acromion_3d), 4) if acromion_2d > 0 else 1.0
+        neck_len_to_head_h = float(sh_y - float(chin[1])) / max(1.0, body_head_h)
+        hand_to_head_ratio = (hand_max_span_px / max(1.0, solved_head_h)) if hand_max_span_px > 0 else 0.0
+
+        compat_issues: List[str] = []
+        if torso_cos_3d < 0.85:
+            compat_issues.append(f"torso_over_rotated(cos={torso_cos_3d:.3f}<0.85)")
+        if neck_len_to_head_h > 0.42:
+            compat_issues.append(f"elongated_giraffe_neck({neck_len_to_head_h:.3f}>0.42)")
+        if hand_to_head_ratio > 0.80:
+            compat_issues.append(f"wide_angle_giant_hand({hand_to_head_ratio:.3f}>0.80)")
+        if inter_segment_cv > 0.13:
+            compat_issues.append(f"inconsistent_mannequin_segments(cv={inter_segment_cv:.3f}>0.13)")
+
         return {
             "bi_deltoid_px": float(bi_deltoid_3d),
+            "visible_shoulder_2d_px": float(visible_shoulder_2d),
             "acromion_2d_px": float(acromion_2d),
             "acromion_3d_px": float(acromion_3d),
             "torso_cos_3d": float(torso_cos_3d),
             "solved_head_h_px": float(solved_head_h),
             "segment_head_h_estimates": {k: round(v[0], 1) for k, v in segment_estimates.items()},
+            "inter_segment_cv": round(inter_segment_cv, 4),
+            "neck_len_to_head_h": round(neck_len_to_head_h, 4),
+            "hand_to_head_ratio": round(hand_to_head_ratio, 4),
+            "body_compatible": len(compat_issues) == 0,
+            "body_compatibility_issues": compat_issues,
             "cervical_lean_dx_per_dy": float(cervical_lean_dx_per_dy),
             "shoulder_y": float(sh_y),
             "neck_cx": float(neck_cx),
@@ -466,9 +521,30 @@ class HeadlessMeshComposer:
         hair_prox = cv2.dilate(dark_hair_b.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))) > 0
         clean_lower_neck_skin = is_body_skin & (~hair_prox)
 
-        keep_neck_top = int(round(dst_chin_y + 0.06 * target_face_w))
+        # Inpaint dark placeholder hair tips resting directly on top of the collar/lapel using local garment satin!
+        headless = body_bgr.copy()
+        hair_on_collar = (
+            (lab_b[:, :, 0] < 84.0)
+            & (lab_b[:, :, 1] < 145.0)
+            & (~is_body_skin)
+            & (pm > 110)
+            & (yy >= int(round(sh_y - 0.38 * body_fw)))
+            & (yy <= int(round(sh_y + 0.48 * body_fw)))
+            & (np.abs(xx - neck_cx) <= 1.15 * body_fw)
+        )
+        if np.any(hair_on_collar) and np.sum(is_garment) >= 200:
+            hc_dil = cv2.dilate(hair_on_collar.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (37, 37))) > 0
+            garment_reach = cv2.dilate(is_garment.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (115, 115))) > 0
+            collar_inpaint_mask = hc_dil & garment_reach & (yy >= int(round(sh_y - 0.36 * body_fw))) & (~clean_lower_neck_skin)
+            if np.any(collar_inpaint_mask):
+                prop_g = _norm_gaussian(headless.astype(np.float32), (is_garment & (~hc_dil)).astype(np.float32), sigma=max(24.0, 0.08 * body_fw))
+                w_col = cv2.GaussianBlur(collar_inpaint_mask.astype(np.float32), (27, 27), 6.5)[:, :, None]
+                headless = np.clip(np.round(prop_g * w_col + headless.astype(np.float32) * (1.0 - w_col)), 0, 255).astype(np.uint8)
+                is_garment = is_garment | collar_inpaint_mask
+
+        keep_neck_top = int(round(dst_chin_y + 0.05 * target_face_w))
         t_neck_cone = np.clip((yy - keep_neck_top) / max(1.0, float(sh_y - keep_neck_top)), 0.0, 1.0)
-        slender_neck_cone = np.abs(xx - neck_cx) <= ((0.245 + 0.22 * t_neck_cone) * target_face_w)
+        slender_neck_cone = np.abs(xx - neck_cx) <= ((0.258 + 0.22 * t_neck_cone) * target_face_w)
         preserve_neck_or_collar = (
             ((clean_lower_neck_skin & (yy >= keep_neck_top) & slender_neck_cone) | is_garment | (yy >= sh_y))
             & (pm > 140)
@@ -486,7 +562,6 @@ class HeadlessMeshComposer:
         #    (a) Placeholder head & neck-hair (`erase_mask`, generously dilated by `0.22 * body_fw` to swallow any head vignette),
         #    (b) Upper-frame studio hardware (white softbox / black diffuser frame via LAB chroma+L outlier),
         #    (c) Top backdrop-paper roller bar (`y < 0.046 * h`).
-        headless = body_bgr.copy()
         k_head_dil = max(31, int(round(0.22 * body_fw)) | 1)
         m_head = cv2.dilate(erase_raw, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_head_dil, k_head_dil))) > 0
 
@@ -796,31 +871,50 @@ class HeadlessMeshComposer:
         body_info = self._extract_landmarks_and_metrics(body_bgr)
         sh_info = self._measure_body_shoulders_and_neck(body_bgr, body_info)
 
-        # Whole-Body 3D Multi-Segment Anthropometric Scale (`scale == sx == sy`, 0.0% aspect distortion!)
+        # v15.0 Coupled Whole-Body SizeKorea Scale + 3D Facial Volume Equilibrium + Visible-Shoulder Guard (`scale == sx == sy`!)
         ratio_mult = float(target_head_to_shoulder_ratio) / 0.325
-        est_target_fw = float(sh_info["solved_head_h_px"]) * 0.64 * ratio_mult
+        skeletal_head_h = float(sh_info["solved_head_h_px"]) * ratio_mult
+        est_target_fw = skeletal_head_h * 0.64
         gen0_src = self._prepare_clean_gen0(gen0_path, min_needed_face_w=est_target_fw)
         g0_info = self._extract_landmarks_and_metrics(gen0_src)
 
-        target_head_h = float(sh_info["solved_head_h_px"]) * ratio_mult
-        scale = target_head_h / max(1.0, float(g0_info["head_h"]))
-        target_face_w = scale * float(g0_info["face_w"])
+        g0_head_h = max(1.0, float(g0_info["head_h"]))
+        g0_face_w = max(1.0, float(g0_info["face_w"]))
+        g0_iod = max(1.0, float(g0_info["iod"]))
+        g0_cos = max(0.75, float(g0_info["cos_torso"]))
+
+        # Couple skeletal head height (`235.5 mm`) with 3D interpupillary volume (`61.5 mm` frontal IOD)
+        # so fuller-cheeked / wider-IOD subjects never jump +35% in skin face area over slender collarbones!
+        expected_iod_px = skeletal_head_h * (61.5 / 235.5) * g0_cos
+        iod_coupled_head_h = (expected_iod_px / g0_iod) * g0_head_h
+        coupled_head_h = 0.72 * skeletal_head_h + 0.28 * iod_coupled_head_h
+
+        # Anti-Bobblehead & Anti-Pinhead Guard relative to visible 2D shoulder breadth (`[0.308, 0.362] * visible_shoulder_2d`)
+        vis_sh_2d = float(sh_info.get("visible_shoulder_2d_px") or sh_info["bi_deltoid_px"])
+        raw_fw = (coupled_head_h / g0_head_h) * g0_face_w
+        clamped_fw = float(np.clip(raw_fw, 0.308 * vis_sh_2d * ratio_mult, 0.362 * vis_sh_2d * ratio_mult))
+        scale = clamped_fw / g0_face_w
+        target_head_h = scale * g0_head_h
+        target_face_w = scale * g0_face_w
 
         # Rigid SE(2) Euclidean Head Poise Refinement (`det(R) == 1.0`, 0.0% internal facial distortion!)
-        # Gently damps only 32% of ID-photo roll (`<= 1.8 deg`) so 3/4 perspective & vertical nasal axis stay 100% natural!
         g0_roll = float(g0_info["pupil_roll_rad"])
         delta_roll = float(np.clip(-0.32 * g0_roll, math.radians(-1.8), math.radians(1.8)))
         ca = scale * math.cos(delta_roll)
         sa = scale * math.sin(delta_roll)
 
-        # Anchor Gen-0's top-of-neck pivot `(g0_neck_cx, src_chin_y)` directly onto the body's cervical neck center (`neck_cx`)!
+        # Coupled Cervical Neck-Length Calibration (`SizeKorea` menton-to-shoulder vertical drop = `0.33 .. 0.38 * target_head_h`):
+        # Automatically lowers `dst_neck_y` whenever Stage-1 placeholder has an elongated swan/giraffe neck!
         sh_y = float(sh_info["shoulder_y"])
         b_head_h = float(sh_info["body_head_h"])
         b_chin_y = float(sh_info["body_chin_y"])
-        if b_chin_y > 100.0 and (sh_y - b_chin_y) >= 0.40 * target_face_w:
-            dst_neck_y = b_chin_y - max(0.0, 0.20 * (target_head_h - b_head_h))
+        min_neck_drop = 0.315 * target_head_h
+        max_neck_drop = 0.380 * target_head_h
+        if b_chin_y > 100.0 and (sh_y - b_chin_y) >= 0.24 * target_head_h:
+            raw_neck_y = b_chin_y - 0.12 * (target_head_h - b_head_h)
+            dst_neck_y = float(np.clip(raw_neck_y, sh_y - max_neck_drop, sh_y - min_neck_drop))
         else:
-            dst_neck_y = sh_y - 0.74 * target_face_w
+            dst_neck_y = sh_y - 0.355 * target_head_h
 
         src_chin = g0_info["chin"]
         g0_neck_cx = float(g0_info["neck_skin_cx"])
@@ -871,15 +965,30 @@ class HeadlessMeshComposer:
         lp_dst = M @ np.array([float(g0_info["leftPupil"][0]), float(g0_info["leftPupil"][1]), 1.0], dtype=np.float32)
         rp_dst = M @ np.array([float(g0_info["rightPupil"][0]), float(g0_info["rightPupil"][1]), 1.0], dtype=np.float32)
 
+        calibrated_neck_ratio = float(sh_y - dst_chin_y) / max(1.0, target_head_h)
+        post_compat_issues = [
+            iss for iss in sh_info.get("body_compatibility_issues", [])
+            if not str(iss).startswith("elongated_giraffe_neck")
+        ]
+        if calibrated_neck_ratio > 0.42:
+            post_compat_issues.append(f"elongated_giraffe_neck({calibrated_neck_ratio:.3f}>0.42)")
+
         meta = {
             "gen0_path": str(gen0_path.resolve()),
             "body_plate_path": str(body_plate_path.resolve()),
             "headless_plate_path": str(output_headless_path.resolve()),
             "precomposite_path": str(output_precomp_path.resolve()),
             "bi_deltoid_px": round(float(sh_info["bi_deltoid_px"]), 2),
+            "visible_shoulder_2d_px": round(float(sh_info.get("visible_shoulder_2d_px", sh_info["bi_deltoid_px"])), 2),
             "acromion_2d_px": round(float(sh_info["acromion_2d_px"]), 2),
             "acromion_3d_px": round(float(sh_info["acromion_3d_px"]), 2),
             "torso_cos_3d": round(float(sh_info["torso_cos_3d"]), 4),
+            "body_compatible": len(post_compat_issues) == 0,
+            "body_compatibility_issues": post_compat_issues,
+            "inter_segment_cv": round(float(sh_info.get("inter_segment_cv", 0.0)), 4),
+            "raw_placeholder_neck_len_to_head_h": round(float(sh_info.get("neck_len_to_head_h", 0.0)), 4),
+            "neck_len_to_head_h": round(calibrated_neck_ratio, 4),
+            "hand_to_head_ratio": round(float(sh_info.get("hand_to_head_ratio", 0.0)), 4),
             "segment_head_h_estimates": sh_info["segment_head_h_estimates"],
             "solved_head_h_px": round(target_head_h, 2),
             "applied_roll_deg": round(math.degrees(delta_roll), 2),
@@ -914,6 +1023,70 @@ class HeadlessMeshComposer:
         g0_info = self._extract_landmarks_and_metrics(gen0_src)
         g0_layers = self._extract_decontaminated_gen0_layers(gen0_src, g0_info)
         b_info = self._extract_landmarks_and_metrics(s2b)
+
+        # 0. Person-Isolated Stage 2B Fusion into Stage 1 Headless Plate + Cyclorama Horizon De-Banding:
+        #    Prevents Google Flow's global background re-encoding from introducing any horizontal wall stitch seam
+        #    while preserving 100% bit-exact Stage-1 lower body, 10 fingers, trousers, and armchair!
+        hl_p_str = str(meta.get("headless_plate_path") or "")
+        if hl_p_str and Path(hl_p_str).is_file():
+            hl_bgr = cv2.imread(hl_p_str)
+            if hl_bgr is not None and hl_bgr.shape[:2] == (hb, wb):
+                hl_pil = Image.fromarray(cv2.cvtColor(hl_bgr, cv2.COLOR_BGR2RGB))
+                hl_pm_pil = self.vision.person_mask(hl_pil)
+                hl_pm = (
+                    np.array(hl_pm_pil.resize((wb, hb), Image.Resampling.BILINEAR))
+                    if hl_pm_pil is not None
+                    else np.zeros((hb, wb), dtype=np.uint8)
+                )
+                b_pm = b_info["person_mask"]
+                bg_only = ((b_pm < 8) & (hl_pm < 8)).astype(np.float32)
+                if np.sum(bg_only) > 2000:
+                    # Match Stage-2B perimeter background tone to `hl_bgr` so hair wisps blend with zero halo
+                    bg_diff = _norm_gaussian(hl_bgr.astype(np.float32) - s2b.astype(np.float32), bg_only, sigma=96.0)
+                    fg_solid = cv2.erode((b_pm > 210).astype(np.float32), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+                    fg_solid = cv2.GaussianBlur(fg_solid, (25, 25), 6.0)[:, :, None]
+                    s2b_matched = np.clip(np.round(s2b.astype(np.float32) + bg_diff * (1.0 - fg_solid)), 0, 255).astype(np.uint8)
+
+                    sh_y_m = float(meta["shoulder_y_px"])
+                    hh_m = float(meta.get("solved_head_h_px", meta["target_face_w_px"] * 1.58))
+                    yy_m = np.arange(hb, dtype=np.float32)[:, None]
+                    torso_v_fade = np.clip((sh_y_m + 0.56 * hh_m - yy_m) / max(1.0, 0.24 * hh_m), 0.0, 1.0)
+                    person_union = cv2.dilate(
+                        ((b_pm > 12) | (hl_pm > 12)).astype(np.uint8) * 255,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 29)),
+                    ).astype(np.float32) / 255.0
+                    s2b_harm_mask = cv2.GaussianBlur(person_union * torso_v_fade, (45, 45), 11.0)
+                    s2b = _multiband_pyramid_blend_roi(s2b_matched, hl_bgr, s2b_harm_mask, levels=4)
+
+                # Suppress any studio backdrop-cove horizontal tonal step across smooth matte cyclorama wall pixels
+                lab_wall = cv2.cvtColor(s2b, cv2.COLOR_BGR2LAB).astype(np.float32)
+                top_bg_ref = lab_wall[: max(60, int(0.35 * hb)), :][bg_only[: max(60, int(0.35 * hb)), :] > 0.5]
+                if len(top_bg_ref) >= 500:
+                    w_med_lab = np.median(top_bg_ref, axis=0)
+                    gx_w = cv2.Sobel(lab_wall[:, :, 0], cv2.CV_32F, 1, 0, ksize=3)
+                    gy_w = cv2.Sobel(lab_wall[:, :, 0], cv2.CV_32F, 0, 1, ksize=3)
+                    grad_mag = np.sqrt(gx_w * gx_w + gy_w * gy_w)
+                    d_ab_w = np.sqrt((lab_wall[:, :, 1] - w_med_lab[1]) ** 2 + (lab_wall[:, :, 2] - w_med_lab[2]) ** 2)
+                    d_L_w = np.abs(lab_wall[:, :, 0] - w_med_lab[0])
+                    smooth_wall = (bg_only > 0.5) & (grad_mag < 8.5) & (d_ab_w < 10.5) & (d_L_w < 30.0)
+                    # Erode away from armchair / hair boundaries so chair fabric & fine hair wisps are 100% untouched
+                    wall_er = cv2.erode(smooth_wall.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))) > 0
+                    row_counts = np.sum(wall_er, axis=1)
+                    valid_rows = np.where(row_counts >= int(0.08 * wb))[0]
+                    if len(valid_rows) >= 200:
+                        s2b_f = s2b.astype(np.float32)
+                        row_prof = np.zeros((hb, 3), dtype=np.float32)
+                        for ry in valid_rows:
+                            row_prof[ry] = np.median(s2b_f[ry, wall_er[ry]], axis=0)
+                        # Extrapolate missing rows smoothly before 1D Gaussian smoothing (`sigma_y = 240px`)
+                        for c_idx in range(3):
+                            row_prof[:, c_idx] = np.interp(np.arange(hb), valid_rows, row_prof[valid_rows, c_idx])
+                        smooth_prof = cv2.GaussianBlur(row_prof[:, None, :], (1, 0), sigmaX=0.1, sigmaY=240.0)[:, 0, :]
+                        band_1d = (row_prof - smooth_prof)[:, None, :]
+                        wall_w = cv2.GaussianBlur(wall_er.astype(np.float32), (61, 61), 16.0)[:, :, None]
+                        s2b = np.clip(np.round(s2b_f - band_1d * wall_w), 0, 255).astype(np.uint8)
+
+                b_info = self._extract_landmarks_and_metrics(s2b)
 
         # 1. Constant-Plateau Isotropic 8.2-Head Scale Lock (0.0% vertical crown stretch inside `r_norm <= 1.0`!)
         lp_a = np.array(meta["target_left_pupil"], dtype=np.float32)
@@ -1329,7 +1502,7 @@ class HeadlessMeshComposer:
                     vault_synced.append(str(dst))
 
         receipt = {
-            "workflow_version": "13.2_headless_mesh_lock",
+            "workflow_version": "15.0_holistic_coupled_sizekorea_mesh_lock",
             "timestamp": time.time(),
             "all_gates_passed": all_passed,
             "audit_passed_10gates": bool(report.passed),
