@@ -163,13 +163,22 @@ class AppleVisionAnalyzer:
         if not (left and right and nose and contour):
             return None
         eyes = math.dist(left, right)
+        if eyes <= 0:
+            return None
         eye_y = (left[1] + right[1]) / 2.0
         mid_x = (left[0] + right[0]) / 2.0
-        length = max(p[1] for p in contour) - eye_y
-        width = max(p[0] for p in contour) - min(p[0] for p in contour)
-        if eyes <= 0 or length <= 0:
+        # Project onto pupil-aligned orthonormal basis (ux, uy) so rigid SE(2) head tilt never inflates cheek width!
+        ux = (right[0] - left[0]) / eyes
+        uy = (right[1] - left[1]) / eyes
+        if ux < 0:
+            ux, uy = -ux, -uy
+        u_vals = [(p[0] - mid_x) * ux + (p[1] - eye_y) * uy for p in contour]
+        v_vals = [-(p[0] - mid_x) * uy + (p[1] - eye_y) * ux for p in contour]
+        length = max(v_vals)
+        width = max(u_vals) - min(u_vals)
+        if length <= 0:
             return None
-        turn = (nose[0] - mid_x) / eyes
+        turn = ((nose[0] - mid_x) * ux + (nose[1] - eye_y) * uy) / eyes
         # Cosine foreshortening compensation for semi-frontal turns (|turn| < 0.30, ~25 deg) so cheek width is STILL audited!
         cos_comp = math.sqrt(max(0.72, 1.0 - min(0.28, (turn * 1.15) ** 2)))
         norm_wl = (width / length) / cos_comp

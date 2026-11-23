@@ -24,6 +24,7 @@ def main() -> int:
     p_prep.add_argument("--body-plate", required=True, type=Path)
     p_prep.add_argument("--work-dir", required=True, type=Path)
     p_prep.add_argument("--head-ratio", type=float, default=0.325, help="Target faceToShoulderRatio calibrated to apple_vision.py (0.325 = true 8.2-head)")
+    p_prep.add_argument("--upscale-body-4k", action="store_true", help="Upscale sub-2K uploaded scene/body plate to 4K before head erasure and mesh placement")
 
     p_fin = sub.add_parser("finalize", help="Stage 2C: RBF Outer-Rim Snap + Skin-Masked Relighting + 4-Level Pyramid + Full 10-Gate & 400% Forensic Strips")
     p_fin.add_argument("--gen0", required=True, type=Path)
@@ -46,6 +47,7 @@ def main() -> int:
             output_precomp_path=wdir / "stage2a_mesh_precomposite_4k.png",
             output_meta_path=wdir / "stage2a_meta.json",
             target_head_to_shoulder_ratio=args.head_ratio,
+            upscale_body_to_4k=args.upscale_body_4k,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0

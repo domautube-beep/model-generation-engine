@@ -511,9 +511,16 @@ class HeadlessMeshComposer:
         g_valid = (pm[gy1:gy2, gx1:gx2] > 220) & (~is_body_skin[gy1:gy2, gx1:gx2])
         if np.sum(g_valid) >= 100:
             garment_med = np.median(g_roi[g_valid], axis=0)
+            garment_chroma = float(math.hypot(float(garment_med[1]) - 128.0, float(garment_med[2]) - 128.0))
             d_ab_g = np.sqrt((lab_b[:, :, 1] - garment_med[1]) ** 2 + (lab_b[:, :, 2] - garment_med[2]) ** 2)
-            is_garment = (pm > 160) & (~is_body_skin) & (d_ab_g <= 24.0) & (yy >= int(round(dst_chin_y - 0.05 * target_face_w)))
+            d_L_g = np.abs(lab_b[:, :, 0] - garment_med[0])
+            if garment_chroma >= 14.0:
+                is_garment = (pm > 160) & (~is_body_skin) & (d_ab_g <= 24.0) & (yy >= int(round(dst_chin_y - 0.05 * target_face_w)))
+            else:
+                # Neutral dark/charcoal/black wool suit: require lower-torso continuity (`yy >= sh_y - 0.14 * body_fw`) so hair above collar isn't flagged as suit
+                is_garment = (pm > 160) & (~is_body_skin) & (d_ab_g <= 14.0) & (d_L_g <= 38.0) & (yy >= int(round(sh_y - 0.14 * body_fw)))
         else:
+            garment_chroma = 0.0
             is_garment = (pm > 160) & (~is_body_skin) & (yy >= int(round(sh_y - 0.15 * body_fw)))
 
         # Erode preserved neck skin 7px away from dark placeholder hair (`L < 82 & ~is_garment`) so zero dark hair fringe remains
@@ -521,12 +528,14 @@ class HeadlessMeshComposer:
         hair_prox = cv2.dilate(dark_hair_b.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))) > 0
         clean_lower_neck_skin = is_body_skin & (~hair_prox)
 
-        # Inpaint dark placeholder hair tips resting directly on top of the collar/lapel using local garment satin!
+        # Inpaint dark placeholder hair tips resting directly on top of chromatic collar/lapel using local garment fabric!
         headless = body_bgr.copy()
         hair_on_collar = (
-            (lab_b[:, :, 0] < 84.0)
+            (garment_chroma >= 14.0)
+            & (lab_b[:, :, 0] < 84.0)
             & (lab_b[:, :, 1] < 145.0)
             & (~is_body_skin)
+            & (~is_garment)
             & (pm > 110)
             & (yy >= int(round(sh_y - 0.38 * body_fw)))
             & (yy <= int(round(sh_y + 0.48 * body_fw)))
@@ -574,6 +583,48 @@ class HeadlessMeshComposer:
             & (~m_head)
         )
         if np.sum(clean_ref_zone) >= 400:
+            # Auto-detect uniform studio cyclorama vs textured real-world architectural/outdoor scene!
+            ry_chk, rx_chk = np.where(clean_ref_zone)
+            sub_chk = np.linspace(0, len(ry_chk) - 1, min(3000, len(ry_chk))).astype(np.int32)
+            sx_chk = rx_chk[sub_chk].astype(np.float32) / float(w)
+            sy_chk = ry_chk[sub_chk].astype(np.float32) / float(h)
+            samp_chk = headless[ry_chk[sub_chk], rx_chk[sub_chk]].astype(np.float32)
+            c_chk, _ = _fit_huber_cyclorama_surface(sx_chk, sy_chk, samp_chk)
+            A_chk = np.stack([np.ones_like(sx_chk), sx_chk, sy_chk, sx_chk * (1.0 - sx_chk), sy_chk * (1.0 - sy_chk), sx_chk * sy_chk], axis=1)
+            bg_fit_p80 = float(np.percentile(np.linalg.norm(samp_chk - (A_chk @ c_chk), axis=1), 80))
+            is_uniform_cyclorama = bg_fit_p80 <= 11.5
+            self._last_is_uniform_cyclorama = bool(is_uniform_cyclorama)
+
+            if not is_uniform_cyclorama:
+                # Textured Architectural / Location Scene: propagate strictly from exterior background (`pm < 12`),
+                # NEVER letting bright neck skin (`pm >= 12`) bleed upward into the dark scene background!
+                k_tight = max(15, int(round(0.10 * body_fw)) | 1)
+                m_tight = (cv2.dilate(erase_raw, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_tight, k_tight))) > 0) & (~preserve_neck_or_collar)
+                erase_mask = m_tight.astype(np.uint8) * 255
+                if np.any(m_tight):
+                    ext_guard = cv2.dilate(erase_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (35, 35))) > 0
+                    ext_bg_w = ((~ext_guard) & (pm < 12)).astype(np.float32)
+                    ds_inp = 4 if max(h, w) >= 2000 else 2
+                    sm_w_px, sm_h_px = max(16, w // ds_inp), max(16, h // ds_inp)
+                    sm_bgr = cv2.resize(headless.astype(np.float32), (sm_w_px, sm_h_px), interpolation=cv2.INTER_AREA)
+                    sm_ext = cv2.resize(ext_bg_w, (sm_w_px, sm_h_px), interpolation=cv2.INTER_AREA)
+                    # Coarse + local normalized convolution strictly from `pm < 12` scene background
+                    base_sm = _norm_gaussian(sm_bgr, sm_ext, sigma=28.0)
+                    fine_sm = _norm_gaussian(sm_bgr - base_sm, sm_ext, sigma=7.5)
+                    sup_sm = np.clip(cv2.GaussianBlur(sm_ext, (0, 0), 7.5) / 0.06, 0.0, 1.0)[:, :, None]
+                    inp_full = cv2.resize(base_sm + fine_sm * sup_sm, (w, h), interpolation=cv2.INTER_CUBIC)
+                    ring = (cv2.dilate(erase_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (45, 45))) > 0) & (~ext_guard) & (pm < 12)
+                    if np.sum(ring) >= 100:
+                        ring_hp = headless.astype(np.float32) - cv2.GaussianBlur(headless.astype(np.float32), (9, 9), 2.0)
+                        g_std = float(np.clip(np.std(ring_hp[ring]), 0.5, 4.5))
+                        rng = np.random.default_rng(42)
+                        inp_full = np.clip(inp_full + rng.normal(0.0, g_std * 0.70, size=inp_full.shape).astype(np.float32), 0.0, 255.0)
+                    a_inp = cv2.GaussianBlur(m_tight.astype(np.float32), (35, 35), 8.5)
+                    keep_g = cv2.GaussianBlur(preserve_neck_or_collar.astype(np.float32), (9, 9), 2.0)
+                    w_inp = np.clip(a_inp * (1.0 - keep_g), 0.0, 1.0)[:, :, None]
+                    headless = np.clip(np.round(inp_full * w_inp + headless.astype(np.float32) * (1.0 - w_inp)), 0, 255).astype(np.uint8)
+                return headless, erase_mask
+
             bg_med_lab = np.median(lab_b[clean_ref_zone], axis=0)
             up_lim = min(h, int(0.30 * h))
             d_ab_bg = np.sqrt((lab_b[:up_lim, :, 1] - float(bg_med_lab[1])) ** 2 + (lab_b[:up_lim, :, 2] - float(bg_med_lab[2])) ** 2)
@@ -862,16 +913,41 @@ class HeadlessMeshComposer:
         output_precomp_path: Path,
         output_meta_path: Path,
         target_head_to_shoulder_ratio: float = 0.325,
+        upscale_body_to_4k: bool = False,
     ) -> Dict[str, object]:
-        """Stage 1 + Stage 2A: Clean studio plate + place 8.2-head calibrated, neck-centered, decontaminated Gen-0 mesh."""
+        """Stage 1 + Stage 2A: Clean studio/location plate + place SizeKorea-calibrated, neck-centered, decontaminated Gen-0 mesh."""
         body_bgr = cv2.imread(str(body_plate_path))
         if body_bgr is None:
             raise FileNotFoundError(f"Cannot decode body plate: {body_plate_path}")
 
+        if upscale_body_to_4k and max(body_bgr.shape[:2]) < 2400:
+            bh0, bw0 = body_bgr.shape[:2]
+            up4_lan = cv2.resize(body_bgr, (bw0 * 4, bh0 * 4), interpolation=cv2.INTER_LANCZOS4)
+            body_bgr = up4_lan
+            if self.pipeline.upscaler is not None and self.pipeline.upscaler.upscayl_bin is not None:
+                try:
+                    up_gan, _ = self.pipeline.upscaler.upscale_with_upscayl(cv2.imread(str(body_plate_path)), style="photo", scale=4)
+                    if up_gan.shape[:2] == up4_lan.shape[:2]:
+                        body_bgr = cv2.addWeighted(up_gan, 0.55, up4_lan, 0.45, 0.0)
+                except Exception:
+                    pass
+            # Snap near-9:16 plates (`0.54 <= W/H <= 0.58`) to exact 9:16 so Google Flow `--aspect 9:16` has 0.0% crop shift
+            uh, uw = body_bgr.shape[:2]
+            if 0.54 <= (uw / float(uh)) <= 0.58:
+                target_uw = int(round(uh * 9.0 / 16.0))
+                if target_uw > uw:
+                    pad_l = (target_uw - uw) // 2
+                    pad_r = target_uw - uw - pad_l
+                    body_bgr = cv2.copyMakeBorder(body_bgr, 0, 0, pad_l, pad_r, cv2.BORDER_REFLECT_101)
+                elif target_uw < uw:
+                    x0 = (uw - target_uw) // 2
+                    body_bgr = body_bgr[:, x0 : x0 + target_uw].copy()
+
+        self._last_is_uniform_cyclorama = True
         body_info = self._extract_landmarks_and_metrics(body_bgr)
         sh_info = self._measure_body_shoulders_and_neck(body_bgr, body_info)
 
-        # v15.0 Coupled Whole-Body SizeKorea Scale + 3D Facial Volume Equilibrium + Visible-Shoulder Guard (`scale == sx == sy`!)
+        # v15.1 Coupled Whole-Body SizeKorea Scale + 3D Facial Volume Equilibrium + Raised-Arm Safe Shoulder Guard (`scale == sx == sy`!)
         ratio_mult = float(target_head_to_shoulder_ratio) / 0.325
         skeletal_head_h = float(sh_info["solved_head_h_px"]) * ratio_mult
         est_target_fw = skeletal_head_h * 0.64
@@ -884,33 +960,39 @@ class HeadlessMeshComposer:
         g0_cos = max(0.75, float(g0_info["cos_torso"]))
 
         # Couple skeletal head height (`235.5 mm`) with 3D interpupillary volume (`61.5 mm` frontal IOD)
-        # so fuller-cheeked / wider-IOD subjects never jump +35% in skin face area over slender collarbones!
         expected_iod_px = skeletal_head_h * (61.5 / 235.5) * g0_cos
         iod_coupled_head_h = (expected_iod_px / g0_iod) * g0_head_h
         coupled_head_h = 0.72 * skeletal_head_h + 0.28 * iod_coupled_head_h
 
-        # Anti-Bobblehead & Anti-Pinhead Guard relative to visible 2D shoulder breadth (`[0.308, 0.362] * visible_shoulder_2d`)
-        vis_sh_2d = float(sh_info.get("visible_shoulder_2d_px") or sh_info["bi_deltoid_px"])
+        # Guard `vis_sh_2d` against horizontally raised arms / batwing kimono sleeves (`<= max(1.65*acromion_3d, 1.78*skeletal_head_h)`)
+        vis_sh_raw = float(sh_info.get("visible_shoulder_2d_px") or sh_info["bi_deltoid_px"])
+        acro_3d_val = float(sh_info.get("acromion_3d_px", 0.0))
+        vis_sh_2d = min(vis_sh_raw, max(acro_3d_val * 1.65, skeletal_head_h * 1.78)) if acro_3d_val > 0.0 else vis_sh_raw
         raw_fw = (coupled_head_h / g0_head_h) * g0_face_w
         clamped_fw = float(np.clip(raw_fw, 0.308 * vis_sh_2d * ratio_mult, 0.362 * vis_sh_2d * ratio_mult))
         scale = clamped_fw / g0_face_w
         target_head_h = scale * g0_head_h
         target_face_w = scale * g0_face_w
 
-        # Rigid SE(2) Euclidean Head Poise Refinement (`det(R) == 1.0`, 0.0% internal facial distortion!)
+        # Rigid SE(2) Euclidean Head Poise Refinement (`det(R) == 1.0`, 0.0% internal facial distortion!):
+        # Upright poses damp ID-photo roll (`<= 1.8 deg`); intentional leaning poses (`|body_roll| > 6 deg`) align smoothly to cervical tilt!
         g0_roll = float(g0_info["pupil_roll_rad"])
-        delta_roll = float(np.clip(-0.32 * g0_roll, math.radians(-1.8), math.radians(1.8)))
+        body_roll = float(sh_info.get("body_pupil_roll_rad", 0.0))
+        is_leaning_pose = abs(body_roll) > math.radians(6.0)
+        if is_leaning_pose:
+            target_roll = 0.50 * body_roll
+            delta_roll = float(np.clip(target_roll - g0_roll, math.radians(-8.0), math.radians(8.0)))
+        else:
+            delta_roll = float(np.clip(-0.32 * g0_roll, math.radians(-1.8), math.radians(1.8)))
         ca = scale * math.cos(delta_roll)
         sa = scale * math.sin(delta_roll)
 
-        # Coupled Cervical Neck-Length Calibration (`SizeKorea` menton-to-shoulder vertical drop = `0.33 .. 0.38 * target_head_h`):
-        # Automatically lowers `dst_neck_y` whenever Stage-1 placeholder has an elongated swan/giraffe neck!
         sh_y = float(sh_info["shoulder_y"])
         b_head_h = float(sh_info["body_head_h"])
         b_chin_y = float(sh_info["body_chin_y"])
-        min_neck_drop = 0.315 * target_head_h
+        min_neck_drop = 0.295 * target_head_h if is_leaning_pose else 0.315 * target_head_h
         max_neck_drop = 0.380 * target_head_h
-        if b_chin_y > 100.0 and (sh_y - b_chin_y) >= 0.24 * target_head_h:
+        if b_chin_y > 100.0 and (sh_y - b_chin_y) >= 0.22 * target_head_h:
             raw_neck_y = b_chin_y - 0.12 * (target_head_h - b_head_h)
             dst_neck_y = float(np.clip(raw_neck_y, sh_y - max_neck_drop, sh_y - min_neck_drop))
         else:
@@ -918,7 +1000,10 @@ class HeadlessMeshComposer:
 
         src_chin = g0_info["chin"]
         g0_neck_cx = float(g0_info["neck_skin_cx"])
-        dst_neck_x = float(sh_info["neck_cx"])
+        if is_leaning_pose:
+            dst_neck_x = 0.55 * float(sh_info["neck_cx"]) + 0.45 * float(sh_info["body_chin_x"])
+        else:
+            dst_neck_x = float(sh_info["neck_cx"])
 
         M = np.array(
             [
@@ -978,6 +1063,9 @@ class HeadlessMeshComposer:
             "body_plate_path": str(body_plate_path.resolve()),
             "headless_plate_path": str(output_headless_path.resolve()),
             "precomposite_path": str(output_precomp_path.resolve()),
+            "plate_width_px": int(wb),
+            "plate_height_px": int(hb),
+            "is_uniform_cyclorama": bool(getattr(self, "_last_is_uniform_cyclorama", True)),
             "bi_deltoid_px": round(float(sh_info["bi_deltoid_px"]), 2),
             "visible_shoulder_2d_px": round(float(sh_info.get("visible_shoulder_2d_px", sh_info["bi_deltoid_px"])), 2),
             "acromion_2d_px": round(float(sh_info["acromion_2d_px"]), 2),
@@ -1019,18 +1107,45 @@ class HeadlessMeshComposer:
             raise FileNotFoundError(f"Cannot decode Stage 2B harmonized image: {stage2b_harmonized_path}")
         hb, wb = s2b.shape[:2]
 
-        gen0_src = self._prepare_clean_gen0(gen0_path, min_needed_face_w=float(meta["target_face_w_px"]))
+        meta_w = float(meta.get("plate_width_px", wb))
+        meta_h = float(meta.get("plate_height_px", hb))
+
+        # Auto-crop horizontally outpainted Flow 4K canvas (e.g., 3584x4800 3:4 around a 2304x4096 9:16 source)
+        # via lower-body template registration so `sx_ab == sy_ab` to exact sub-pixel isotropic precision!
+        hl_p_str = str(meta.get("headless_plate_path") or "")
+        if abs((wb / float(hb)) - (meta_w / max(1.0, meta_h))) > 0.03:
+            target_wb = int(round(hb * (meta_w / max(1.0, meta_h))))
+            if 200 <= target_wb < wb and hl_p_str and Path(hl_p_str).is_file():
+                hl_raw = cv2.imread(hl_p_str)
+                if hl_raw is not None:
+                    hl_iso = cv2.resize(hl_raw, (target_wb, hb), interpolation=cv2.INTER_LINEAR)
+                    ty1, ty2 = int(0.50 * hb), int(0.92 * hb)
+                    tx1, tx2 = int(0.10 * target_wb), int(0.90 * target_wb)
+                    tpl = hl_iso[ty1:ty2, tx1:tx2]
+                    res_tm = cv2.matchTemplate(s2b[ty1:ty2, :], tpl, cv2.TM_CCOEFF_NORMED)
+                    _, _, _, max_loc = cv2.minMaxLoc(res_tm)
+                    x_off = int(np.clip(max_loc[0] - tx1, 0, wb - target_wb))
+                    s2b = s2b[:, x_off : x_off + target_wb].copy()
+                    hb, wb = s2b.shape[:2]
+
+        sx_ab = wb / max(1.0, meta_w)
+        sy_ab = hb / max(1.0, meta_h)
+        s_ab = 0.5 * (sx_ab + sy_ab)
+        sh_y_4k = float(meta["shoulder_y_px"]) * sy_ab
+        target_fw_4k = float(meta["target_face_w_px"]) * s_ab
+        solved_hh_4k = float(meta.get("solved_head_h_px", meta["target_face_w_px"] * 1.58)) * sy_ab
+
+        gen0_src = self._prepare_clean_gen0(gen0_path, min_needed_face_w=target_fw_4k)
         g0_info = self._extract_landmarks_and_metrics(gen0_src)
         g0_layers = self._extract_decontaminated_gen0_layers(gen0_src, g0_info)
         b_info = self._extract_landmarks_and_metrics(s2b)
 
-        # 0. Person-Isolated Stage 2B Fusion into Stage 1 Headless Plate + Cyclorama Horizon De-Banding:
-        #    Prevents Google Flow's global background re-encoding from introducing any horizontal wall stitch seam
-        #    while preserving 100% bit-exact Stage-1 lower body, 10 fingers, trousers, and armchair!
-        hl_p_str = str(meta.get("headless_plate_path") or "")
+        # 0. Person-Isolated Stage 2B Fusion into Stage 1 Headless Plate + Optional Cyclorama Horizon De-Banding:
         if hl_p_str and Path(hl_p_str).is_file():
             hl_bgr = cv2.imread(hl_p_str)
-            if hl_bgr is not None and hl_bgr.shape[:2] == (hb, wb):
+            if hl_bgr is not None:
+                if hl_bgr.shape[:2] != (hb, wb):
+                    hl_bgr = cv2.resize(hl_bgr, (wb, hb), interpolation=cv2.INTER_LANCZOS4)
                 hl_pil = Image.fromarray(cv2.cvtColor(hl_bgr, cv2.COLOR_BGR2RGB))
                 hl_pm_pil = self.vision.person_mask(hl_pil)
                 hl_pm = (
@@ -1041,16 +1156,13 @@ class HeadlessMeshComposer:
                 b_pm = b_info["person_mask"]
                 bg_only = ((b_pm < 8) & (hl_pm < 8)).astype(np.float32)
                 if np.sum(bg_only) > 2000:
-                    # Match Stage-2B perimeter background tone to `hl_bgr` so hair wisps blend with zero halo
                     bg_diff = _norm_gaussian(hl_bgr.astype(np.float32) - s2b.astype(np.float32), bg_only, sigma=96.0)
                     fg_solid = cv2.erode((b_pm > 210).astype(np.float32), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
                     fg_solid = cv2.GaussianBlur(fg_solid, (25, 25), 6.0)[:, :, None]
                     s2b_matched = np.clip(np.round(s2b.astype(np.float32) + bg_diff * (1.0 - fg_solid)), 0, 255).astype(np.uint8)
 
-                    sh_y_m = float(meta["shoulder_y_px"])
-                    hh_m = float(meta.get("solved_head_h_px", meta["target_face_w_px"] * 1.58))
                     yy_m = np.arange(hb, dtype=np.float32)[:, None]
-                    torso_v_fade = np.clip((sh_y_m + 0.56 * hh_m - yy_m) / max(1.0, 0.24 * hh_m), 0.0, 1.0)
+                    torso_v_fade = np.clip((sh_y_4k + 0.56 * solved_hh_4k - yy_m) / max(1.0, 0.24 * solved_hh_4k), 0.0, 1.0)
                     person_union = cv2.dilate(
                         ((b_pm > 12) | (hl_pm > 12)).astype(np.uint8) * 255,
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 29)),
@@ -1058,39 +1170,38 @@ class HeadlessMeshComposer:
                     s2b_harm_mask = cv2.GaussianBlur(person_union * torso_v_fade, (45, 45), 11.0)
                     s2b = _multiband_pyramid_blend_roi(s2b_matched, hl_bgr, s2b_harm_mask, levels=4)
 
-                # Suppress any studio backdrop-cove horizontal tonal step across smooth matte cyclorama wall pixels
-                lab_wall = cv2.cvtColor(s2b, cv2.COLOR_BGR2LAB).astype(np.float32)
-                top_bg_ref = lab_wall[: max(60, int(0.35 * hb)), :][bg_only[: max(60, int(0.35 * hb)), :] > 0.5]
-                if len(top_bg_ref) >= 500:
-                    w_med_lab = np.median(top_bg_ref, axis=0)
-                    gx_w = cv2.Sobel(lab_wall[:, :, 0], cv2.CV_32F, 1, 0, ksize=3)
-                    gy_w = cv2.Sobel(lab_wall[:, :, 0], cv2.CV_32F, 0, 1, ksize=3)
-                    grad_mag = np.sqrt(gx_w * gx_w + gy_w * gy_w)
-                    d_ab_w = np.sqrt((lab_wall[:, :, 1] - w_med_lab[1]) ** 2 + (lab_wall[:, :, 2] - w_med_lab[2]) ** 2)
-                    d_L_w = np.abs(lab_wall[:, :, 0] - w_med_lab[0])
-                    smooth_wall = (bg_only > 0.5) & (grad_mag < 8.5) & (d_ab_w < 10.5) & (d_L_w < 30.0)
-                    # Erode away from armchair / hair boundaries so chair fabric & fine hair wisps are 100% untouched
-                    wall_er = cv2.erode(smooth_wall.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))) > 0
-                    row_counts = np.sum(wall_er, axis=1)
-                    valid_rows = np.where(row_counts >= int(0.08 * wb))[0]
-                    if len(valid_rows) >= 200:
-                        s2b_f = s2b.astype(np.float32)
-                        row_prof = np.zeros((hb, 3), dtype=np.float32)
-                        for ry in valid_rows:
-                            row_prof[ry] = np.median(s2b_f[ry, wall_er[ry]], axis=0)
-                        # Extrapolate missing rows smoothly before 1D Gaussian smoothing (`sigma_y = 240px`)
-                        for c_idx in range(3):
-                            row_prof[:, c_idx] = np.interp(np.arange(hb), valid_rows, row_prof[valid_rows, c_idx])
-                        smooth_prof = cv2.GaussianBlur(row_prof[:, None, :], (1, 0), sigmaX=0.1, sigmaY=240.0)[:, 0, :]
-                        band_1d = (row_prof - smooth_prof)[:, None, :]
-                        wall_w = cv2.GaussianBlur(wall_er.astype(np.float32), (61, 61), 16.0)[:, :, None]
-                        s2b = np.clip(np.round(s2b_f - band_1d * wall_w), 0, 255).astype(np.uint8)
+                # Suppress backdrop-cove horizontal tonal steps ONLY on uniform studio cycloramas (NEVER on architectural/outdoor scenes!)
+                if bool(meta.get("is_uniform_cyclorama", True)):
+                    lab_wall = cv2.cvtColor(s2b, cv2.COLOR_BGR2LAB).astype(np.float32)
+                    top_bg_ref = lab_wall[: max(60, int(0.35 * hb)), :][bg_only[: max(60, int(0.35 * hb)), :] > 0.5]
+                    if len(top_bg_ref) >= 500:
+                        w_med_lab = np.median(top_bg_ref, axis=0)
+                        gx_w = cv2.Sobel(lab_wall[:, :, 0], cv2.CV_32F, 1, 0, ksize=3)
+                        gy_w = cv2.Sobel(lab_wall[:, :, 0], cv2.CV_32F, 0, 1, ksize=3)
+                        grad_mag = np.sqrt(gx_w * gx_w + gy_w * gy_w)
+                        d_ab_w = np.sqrt((lab_wall[:, :, 1] - w_med_lab[1]) ** 2 + (lab_wall[:, :, 2] - w_med_lab[2]) ** 2)
+                        d_L_w = np.abs(lab_wall[:, :, 0] - w_med_lab[0])
+                        smooth_wall = (bg_only > 0.5) & (grad_mag < 8.5) & (d_ab_w < 10.5) & (d_L_w < 30.0)
+                        wall_er = cv2.erode(smooth_wall.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))) > 0
+                        row_counts = np.sum(wall_er, axis=1)
+                        valid_rows = np.where(row_counts >= int(0.08 * wb))[0]
+                        if len(valid_rows) >= 200:
+                            s2b_f = s2b.astype(np.float32)
+                            row_prof = np.zeros((hb, 3), dtype=np.float32)
+                            for ry in valid_rows:
+                                row_prof[ry] = np.median(s2b_f[ry, wall_er[ry]], axis=0)
+                            for c_idx in range(3):
+                                row_prof[:, c_idx] = np.interp(np.arange(hb), valid_rows, row_prof[valid_rows, c_idx])
+                            smooth_prof = cv2.GaussianBlur(row_prof[:, None, :], (1, 0), sigmaX=0.1, sigmaY=240.0)[:, 0, :]
+                            band_1d = (row_prof - smooth_prof)[:, None, :]
+                            wall_w = cv2.GaussianBlur(wall_er.astype(np.float32), (61, 61), 16.0)[:, :, None]
+                            s2b = np.clip(np.round(s2b_f - band_1d * wall_w), 0, 255).astype(np.uint8)
 
                 b_info = self._extract_landmarks_and_metrics(s2b)
 
-        # 1. Constant-Plateau Isotropic 8.2-Head Scale Lock (0.0% vertical crown stretch inside `r_norm <= 1.0`!)
-        lp_a = np.array(meta["target_left_pupil"], dtype=np.float32)
-        rp_a = np.array(meta["target_right_pupil"], dtype=np.float32)
+        # 1. Constant-Plateau Isotropic Scale Lock (resolution-normalized `lp_a, rp_a`!)
+        lp_a = np.array([float(meta["target_left_pupil"][0]) * sx_ab, float(meta["target_left_pupil"][1]) * sy_ab], dtype=np.float32)
+        rp_a = np.array([float(meta["target_right_pupil"][0]) * sx_ab, float(meta["target_right_pupil"][1]) * sy_ab], dtype=np.float32)
         iod_a = float(np.linalg.norm(rp_a - lp_a))
 
         lp_b = b_info["leftPupil"]
@@ -1099,7 +1210,7 @@ class HeadlessMeshComposer:
 
         if abs(iod_b - iod_a) > iod_a * 0.015:
             pivot = np.array(
-                [0.5 * float(lp_b[0] + rp_b[0]), float(meta["shoulder_y_px"]) - 0.12 * float(meta["target_face_w_px"])],
+                [0.5 * float(lp_b[0] + rp_b[0]), sh_y_4k - 0.12 * target_fw_4k],
                 dtype=np.float32,
             )
             ratio_inv = iod_b / max(1.0, iod_a)
@@ -1112,7 +1223,7 @@ class HeadlessMeshComposer:
                 + (np.maximum(0.0, -dy) / (3.10 * iod_b) + np.maximum(0.0, dy) / (0.42 * iod_b)) ** 2
             )
             excess = np.maximum(0.0, r_norm - 1.0)
-            w_loc = np.exp(-0.5 * (excess / 0.55) ** 2) * (grid_y < float(meta["shoulder_y_px"]) + 0.18 * iod_b).astype(np.float32)
+            w_loc = np.exp(-0.5 * (excess / 0.55) ** 2) * (grid_y < sh_y_4k + 0.18 * iod_b).astype(np.float32)
             w_loc = cv2.GaussianBlur(w_loc, (41, 41), 11.0)
             map_x = grid_x + dx * (ratio_inv - 1.0) * w_loc
             map_y = grid_y + dy * (ratio_inv - 1.0) * w_loc
@@ -1230,7 +1341,7 @@ class HeadlessMeshComposer:
         dx_full = cv2.resize(disp_coarse[:, 0].reshape(gh, gw), (wb, hb), interpolation=cv2.INTER_CUBIC)
         dy_full = cv2.resize(disp_coarse[:, 1].reshape(gh, gw), (wb, hb), interpolation=cv2.INTER_CUBIC)
 
-        sh_cut = float(meta["shoulder_y_px"]) - 0.06 * iod_b
+        sh_cut = sh_y_4k - 0.06 * iod_b
         fade_body = np.clip((sh_cut - np.arange(hb, dtype=np.float32)) / max(1.0, 0.32 * iod_b), 0.0, 1.0)[:, None]
         full_y, full_x = np.mgrid[0:hb, 0:wb].astype(np.float32)
         s2b_snapped = cv2.remap(

@@ -253,16 +253,21 @@ def _count_prompt_bar_chips(page) -> int:
         tbox = tb.bounding_box()
     except Exception:
         pass
-    min_y = (tbox["y"] - 110) if tbox else 700
+    min_y = (tbox["y"] - 95) if tbox else 715
+    max_y = (tbox["y"] + 25) if tbox else 870
+    min_x = (tbox["x"] - 35) if tbox else 340
+    max_x = (tbox["x"] + max(450.0, tbox["width"] + 30)) if tbox else 980
     cnt = 0
     imgs = page.locator("img")
     for i in range(imgs.count()):
         try:
             el = imgs.nth(i)
+            if not el.is_visible():
+                continue
             box = el.bounding_box()
             if not box:
                 continue
-            if box["x"] >= 240 and box["y"] >= min_y and 14 <= box["width"] <= 140 and 14 <= box["height"] <= 140:
+            if min_x <= box["x"] <= max_x and min_y <= box["y"] <= max_y and 14 <= box["width"] <= 92 and 14 <= box["height"] <= 92:
                 src = (el.get_attribute("src") or "").strip()
                 if src and not src.startswith("data:image/svg"):
                     cnt += 1
