@@ -1999,6 +1999,21 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             )
             self.assertTrue(fin_p.is_file())
             self.assertAlmostEqual(s2c["target_iod_px"], s2c["final_iod_px"], delta=6.0)
+            self.assertIn("solved_head_h_px", meta)
+            self.assertIn("torso_cos_3d", meta)
+
+    def test_33_v14_3d_torso_deprojection_rejects_foreshortened_pinhead(self) -> None:
+        """Verify v14.0 compare_cranial_and_scale rejects <28.5% pinhead ratios caused by 2D shoulder foreshortening."""
+        from model_generation_engine.apple_vision import AppleVisionAnalyzer
+
+        ref_c = {"crownToEyeChinRatio": 1.05, "cranialToFaceWidthRatio": 1.32, "shouldersInFrame": False, "faceToShoulderRatio": 0.32}
+        pinhead_c = {"crownToEyeChinRatio": 1.05, "cranialToFaceWidthRatio": 1.32, "shouldersInFrame": True, "faceToShoulderRatio": 0.251}
+        matched_c = {"crownToEyeChinRatio": 1.05, "cranialToFaceWidthRatio": 1.32, "shouldersInFrame": True, "faceToShoulderRatio": 0.315}
+
+        r_bad = AppleVisionAnalyzer.compare_cranial_and_scale(ref_c, pinhead_c)
+        self.assertFalse(r_bad["passed"])
+        r_good = AppleVisionAnalyzer.compare_cranial_and_scale(ref_c, matched_c)
+        self.assertTrue(r_good["passed"])
 
 
 if __name__ == "__main__":

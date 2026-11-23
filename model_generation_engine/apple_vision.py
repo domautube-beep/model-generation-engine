@@ -317,16 +317,41 @@ class AppleVisionAnalyzer:
                 bj = self.body_and_hand_points(work_pil)
                 for body in bj.get("bodies") or []:
                     jmap = {str(j["name"]): (float(j["x"]), float(j["y"])) for j in body if float(j.get("conf", 0.0)) >= 0.25}
+                    jmap_hip = {str(j["name"]): (float(j["x"]), float(j["y"])) for j in body if float(j.get("conf", 0.0)) >= 0.15}
                     ls = jmap.get("left_shoulder_1_joint")
                     rs = jmap.get("right_shoulder_1_joint")
                     if ls and rs:
                         if min(ls[0], rs[0]) > w * 0.04 and max(ls[0], rs[0]) < w * 0.96 and max(ls[1], rs[1]) < h * 0.93:
-                            acromion_span = math.hypot(rs[0] - ls[0], rs[1] - ls[1])
-                            if acromion_span > fw * 1.1:
-                                # Outer bi-deltoid span ~= 1.48 * inner glenohumeral shoulder joint-center distance (ANSUR II anthropometry)
-                                bi_deltoid = acromion_span * 1.48
-                                shoulders_in_frame = True
-                                face_to_shoulder = float(fw / bi_deltoid) * cos_torso
+                            acromion_2d = math.hypot(rs[0] - ls[0], rs[1] - ls[1])
+                            if acromion_2d > fw * 1.1:
+                                # De-foreshorten 3D torso yaw using consensus of vertical spine trunk & upper-arm humerus lengths
+                                # ONLY when genuine torso yaw foreshortening (> 14% contraction, >= 29 deg yaw) is present!
+                                skel_acro_ests: List[float] = []
+                                nk = jmap.get("neck_1_joint")
+                                hip = jmap_hip.get("root")
+                                if hip is None and "left_upLeg_joint" in jmap_hip and "right_upLeg_joint" in jmap_hip:
+                                    lu, ru = jmap_hip["left_upLeg_joint"], jmap_hip["right_upLeg_joint"]
+                                    hip = (0.5 * (lu[0] + ru[0]), 0.5 * (lu[1] + ru[1]))
+                                if nk and hip and hip[1] < h * 0.95 and hip[1] > nk[1] + fw * 0.8:
+                                    trunk_len = math.hypot(hip[0] - nk[0], hip[1] - nk[1])
+                                    skel_acro_ests.append(0.715 * trunk_len)
+                                hum_lens: List[float] = []
+                                if "left_forearm_joint" in jmap:
+                                    hum_lens.append(math.hypot(jmap["left_forearm_joint"][0] - ls[0], jmap["left_forearm_joint"][1] - ls[1]))
+                                if "right_forearm_joint" in jmap:
+                                    hum_lens.append(math.hypot(jmap["right_forearm_joint"][0] - rs[0], jmap["right_forearm_joint"][1] - rs[1]))
+                                if hum_lens:
+                                    skel_acro_ests.append(1.12 * float(np.median(hum_lens)))
+                                med_skel_acro = float(np.median(skel_acro_ests)) if skel_acro_ests else acromion_2d
+                                if med_skel_acro > acromion_2d * 1.14:
+                                    acromion_3d = min(med_skel_acro, acromion_2d / 0.48)
+                                    bi_deltoid = acromion_3d * 1.48
+                                    shoulders_in_frame = True
+                                    face_to_shoulder = float((fw / max(0.75, cos_torso)) / bi_deltoid)
+                                else:
+                                    bi_deltoid = acromion_2d * 1.48
+                                    shoulders_in_frame = True
+                                    face_to_shoulder = float(fw / bi_deltoid) * cos_torso
                                 break
             except Exception:
                 pass

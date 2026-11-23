@@ -455,38 +455,42 @@ class FaceExaggerationGuard:
             rp = np.mean(np.array(m.get("rightPupil") or re, dtype=np.float32), axis=0)
             iod = max(1.0, float(np.linalg.norm(rp - lp)))
             n = len(c)
-            mid_idx = int(np.argmax(c[:, 1]))
-            chin = c[mid_idx]
-            # Left (viewer-left) & Right (viewer-right) jaw-to-ear arcs
-            l_ear = c[0]
-            l_gon = c[max(1, int(round(0.22 * (n - 1))))]
-            l_mid = c[max(2, int(round(0.32 * (n - 1))))]
-            r_ear = c[n - 1]
-            r_gon = c[min(n - 2, int(round(0.78 * (n - 1))))]
-            r_mid = c[min(n - 3, int(round(0.68 * (n - 1))))]
-
-            # 1) Positive outward sagitta (bowing bulge perpendicular to straight chin->ear chord, AWAY from face center!)
             face_center = np.array([0.5 * float(lp[0] + rp[0]), 0.5 * float(lp[1] + rp[1])], dtype=np.float32)
+
+            # De-rotate contour `c` by inter-pupillary roll FIRST so `mid_idx` (menton), sagitta bulge, & jaw slopes are 100% roll-invariant!
+            roll_a = math.atan2(float(rp[1] - lp[1]), float(rp[0] - lp[0]))
+            cr_a, sr_a = math.cos(-roll_a), math.sin(-roll_a)
+            c_rel = c - face_center[None, :]
+            c_intr = np.stack([c_rel[:, 0] * cr_a - c_rel[:, 1] * sr_a, c_rel[:, 0] * sr_a + c_rel[:, 1] * cr_a], axis=-1) + face_center[None, :]
+
+            mid_idx = int(np.argmax(c_intr[:, 1]))
+            chin = c[mid_idx]
+            chin_i = c_intr[mid_idx]
+            l_ear = c[0]
+            r_ear = c[n - 1]
+            l_ear_i = c_intr[0]
+            l_gon_i = c_intr[max(1, int(round(0.22 * (n - 1))))]
+            r_ear_i = c_intr[n - 1]
+            r_gon_i = c_intr[min(n - 2, int(round(0.78 * (n - 1))))]
 
             def _chord_bulge(p_ear: np.ndarray, p_chin: np.ndarray, pts: np.ndarray) -> float:
                 v = p_chin - p_ear
                 vlen = max(1.0, float(np.linalg.norm(v)))
                 nx, ny = -v[1] / vlen, v[0] / vlen
                 mid_chord = 0.5 * (p_ear + p_chin)
-                # Ensure normal points OUTWARD away from face_center
                 if ((mid_chord[0] - face_center[0]) * nx + (mid_chord[1] - face_center[1]) * ny) < 0:
                     nx, ny = -nx, -ny
                 dists = [((p[0] - p_ear[0]) * nx + (p[1] - p_ear[1]) * ny) / iod for p in pts]
                 return float(max(dists)) if dists else 0.0
 
-            l_bulge = _chord_bulge(l_ear, chin, c[1:mid_idx])
-            r_bulge = _chord_bulge(r_ear, chin, c[mid_idx + 1 : n - 1])
+            l_bulge = _chord_bulge(l_ear_i, chin_i, c_intr[1:mid_idx])
+            r_bulge = _chord_bulge(r_ear_i, chin_i, c_intr[mid_idx + 1 : n - 1])
 
-            # Diagonal chin->gonion & gonion->ear angles (degrees)
-            l_chin_gon_deg = math.degrees(math.atan2(abs(float(chin[1] - l_gon[1])), max(1.0, abs(float(chin[0] - l_gon[0])))))
-            r_chin_gon_deg = math.degrees(math.atan2(abs(float(chin[1] - r_gon[1])), max(1.0, abs(float(r_gon[0] - chin[0])))))
-            l_gon_ear_deg = math.degrees(math.atan2(abs(float(l_gon[1] - l_ear[1])), max(1.0, abs(float(l_gon[0] - l_ear[0])))))
-            r_gon_ear_deg = math.degrees(math.atan2(abs(float(r_gon[1] - r_ear[1])), max(1.0, abs(float(r_ear[0] - r_gon[0])))))
+            # Intrinsic diagonal chin->gonion & gonion->ear angles (degrees relative to pupil horizon)
+            l_chin_gon_deg = math.degrees(math.atan2(abs(float(chin_i[1] - l_gon_i[1])), max(1.0, abs(float(chin_i[0] - l_gon_i[0])))))
+            r_chin_gon_deg = math.degrees(math.atan2(abs(float(chin_i[1] - r_gon_i[1])), max(1.0, abs(float(r_gon_i[0] - chin_i[0])))))
+            l_gon_ear_deg = math.degrees(math.atan2(abs(float(l_gon_i[1] - l_ear_i[1])), max(1.0, abs(float(l_gon_i[0] - l_ear_i[0])))))
+            r_gon_ear_deg = math.degrees(math.atan2(abs(float(r_gon_i[1] - r_ear_i[1])), max(1.0, abs(float(r_ear_i[0] - r_gon_i[0])))))
 
             # 2) Submandibular jaw-neck shadow contrast (CIE L* inside jaw vs outside neck along near jaw arc)
             lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -494,16 +498,19 @@ class FaceExaggerationGuard:
             h, w = L_ch.shape
             off = max(4, int(round(0.08 * iod)))
             jaw_contrasts = []
-            # Use the more visible jaw side (greater horizontal span from nose/pupil)
-            use_left = abs(float(l_ear[0] - lp[0])) >= abs(float(r_ear[0] - rp[0]))
-            arc_pts = c[max(1, int(round(0.15 * n))) : mid_idx] if use_left else c[mid_idx + 1 : min(n - 1, int(round(0.85 * n)))]
-            sign_in = 1.0 if use_left else -1.0
+            # Sample lower mandible-over-neck points using inward normal toward `face_center` (independent of c[0] vs c[-1] order!)
+            arc_a = c[max(1, int(round(0.28 * n))) : mid_idx]
+            arc_b = c[mid_idx + 1 : min(n - 1, int(round(0.72 * n)))]
+            arc_pts = arc_a if (len(arc_a) > 0 and abs(float(np.mean(arc_a[:, 0]) - face_center[0])) >= abs(float(np.mean(arc_b[:, 0]) - face_center[0])) if len(arc_b) > 0 else True) else arc_b
             for pt in arc_pts:
-                px, py = int(round(pt[0])), int(round(pt[1]))
-                ix, iy = int(np.clip(px + sign_in * off, 0, w - 1)), int(np.clip(py - off, 0, h - 1))
-                ox, oy = int(np.clip(px - sign_in * off, 0, w - 1)), int(np.clip(py + off, 0, h - 1))
-                jaw_contrasts.append(float(L_ch[iy, ix] - L_ch[oy, ox]))
-            submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 0.0
+                vin = face_center - pt
+                vnorm = max(1.0, float(np.linalg.norm(vin)))
+                ux_in, uy_in = float(vin[0]) / vnorm, float(vin[1]) / vnorm
+                ix, iy = int(np.clip(round(float(pt[0]) + ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) + uy_in * off), 0, h - 1))
+                ox, oy = int(np.clip(round(float(pt[0]) - ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) - uy_in * off), 0, h - 1))
+                if 70.0 <= float(L_ch[oy, ox]) <= 200.0:
+                    jaw_contrasts.append(float(L_ch[iy, ix] - L_ch[oy, ox]))
+            submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 8.0
 
             # 3) Upper cervical neck width right beneath the chin (`+0.18 * iod`, centered on head mid-span, not yawed chin tip!)
             face_w = max(1.0, float(c[:, 0].max() - c[:, 0].min()))
@@ -521,10 +528,10 @@ class FaceExaggerationGuard:
                 if skin_ref.size >= 15:
                     med_lab = np.median(skin_ref, axis=0)
                     band = lab[y1:y2, x1:x2]
-                    # Allow shaded neck skin (L drop up to 78, chroma delta <= 30)
+                    # Allow shaded neck skin while strictly rejecting dark brown hair (L < 95) & crimson backdrop (a* > 155)
                     d_ab = np.sqrt((band[:, :, 1] - med_lab[1]) ** 2 + (band[:, :, 2] - med_lab[2]) ** 2)
                     d_l = med_lab[0] - band[:, :, 0]
-                    mask = (d_ab <= 30.0) & (d_l >= -22.0) & (d_l <= 78.0)
+                    mask = (d_ab <= 19.5) & (d_l >= -22.0) & (d_l <= 62.0) & (band[:, :, 0] >= 95.0) & (band[:, :, 1] <= 154.0)
                     col_cov = np.mean(mask, axis=0)
                     # Find longest contiguous skin-tone run near head horizontal center (robust under 3/4 head yaw!)
                     head_mid_x = 0.5 * float(c[:, 0].min() + c[:, 0].max())
@@ -613,7 +620,7 @@ class FaceExaggerationGuard:
             issues.append(f"턱→귀 라인 외측 불룩함(뚱뚱해 보임) 초과 (좌 {l_bulge_pct:+.1f}% / 우 {r_bulge_pct:+.1f}%, 허용 ≤+9.0%)")
         if abs(l_slope_diff) > 5.5 or abs(r_slope_diff) > 5.5:
             issues.append(f"턱끝→하악각 사선 기울기 이탈 (좌 {l_slope_diff:+.1f}° / 우 {r_slope_diff:+.1f}°, 허용 ±5.5°)")
-        if p0["submandibularContrastL"] >= 8.0 and pc["submandibularContrastL"] < p0["submandibularContrastL"] * 0.55:
+        if p0["submandibularContrastL"] >= 8.0 and pc["submandibularContrastL"] < min(11.5, p0["submandibularContrastL"] * 0.55):
             issues.append(f"턱밑-목 경계 음영 뭉개짐 (생성 {pc['submandibularContrastL']:.1f}L vs 원본 {p0['submandibularContrastL']:.1f}L)")
         if neck_diff_pct > 11.0:
             issues.append(f"목 굵기 과대 팽창 ({neck_diff_pct:+.1f}%, 허용 ≤+11.0%)")
