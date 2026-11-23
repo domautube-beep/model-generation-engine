@@ -2082,6 +2082,28 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertIn("7.45-head", p0)
             self.assertNotIn("8.2-head", p0)
 
+    def test_36_v22_upscayl_hybrid_optical_face_and_4k_fabric(self) -> None:
+        """Verify upscayl_hybrid protects eyes/face optically while sharpening wool suit weave 4x via ultramix-balanced-4x."""
+        import cv2
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+
+        pipe = ModelGenerationPipeline()
+        src = cv2.imread(str(self.ref_face))
+        lr = cv2.resize(src, (src.shape[1] // 4, src.shape[0] // 4), interpolation=cv2.INTER_AREA)
+        opt_only = pipe.upscaler.upscale_bgr_in_memory(lr, target_min_height=src.shape[0])
+        hyb_bgr, hyb_meta = pipe.upscaler.upscale_hybrid_optical_face_upscayl_body(
+            lr, target_min_height=src.shape[0], model_name="ultramix-balanced-4x"
+        )
+        self.assertEqual(hyb_bgr.shape, opt_only.shape)
+        if pipe.upscaler.upscayl_bin is not None and pipe.upscaler.upscayl_bin.exists():
+            self.assertEqual(hyb_meta["mode"], "upscayl_hybrid")
+            self.assertIn("ultramix-balanced-4x", hyb_meta["model"])
+            # Lower garment area must be significantly crisper than pure Lanczos-4 interpolation
+            h = hyb_bgr.shape[0]
+            lap_opt = float(cv2.Laplacian(cv2.cvtColor(opt_only[int(h * 0.72):, :], cv2.COLOR_BGR2GRAY), cv2.CV_32F).var())
+            lap_hyb = float(cv2.Laplacian(cv2.cvtColor(hyb_bgr[int(h * 0.72):, :], cv2.COLOR_BGR2GRAY), cv2.CV_32F).var())
+            self.assertGreater(lap_hyb, lap_opt * 2.5)
+
 
 if __name__ == "__main__":
     unittest.main()

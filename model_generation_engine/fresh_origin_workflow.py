@@ -539,11 +539,12 @@ class FreshOriginEditorialWorkflow:
         min_created_epoch: float = 0.0,
         sync_to_vault: bool = True,
         strict_10gate: bool = True,
-        upscale_mode: str = "optical_lanczos",
+        upscale_mode: str = "upscayl_hybrid",
+        upscayl_model_name: str = "ultramix-balanced-4x",
         reference_scene_path: Optional[Path] = None,
         cohesion_mode: str = "auto",
     ) -> Dict[str, object]:
-        """Stage 5: Pure Optical Lanczos-4 (`v2.1` default) or Upscayl 4x + P88 MatteSkin + CohesionMasterer + 10-Gate Audit + strips."""
+        """Stage 5: Region-Aware Upscayl Hybrid (`v2.2` default: Optical Face + Ultramix 4K Body), Pure Optical Lanczos-4, or Upscayl 4x."""
         gen0_p = Path(gen0_portrait_path).resolve()
         win_p = Path(winner_candidate_path).resolve()
         if not win_p.is_file():
@@ -571,14 +572,23 @@ class FreshOriginEditorialWorkflow:
         raw_fw, raw_fh = round(float(raw_face_det.bbox[2]), 1), round(float(raw_face_det.bbox[3]), 1)
         raw_iod_px = round(float(raw_face_det.inter_ocular_distance), 1)
 
-        # 1. Pure Optical Lanczos-4 (`v2.2` default — avoids GAN eye/sclera darkening) + Organ-Masked Optical Acuity — ZERO warp, ZERO face-pasting!
+        # 1. Region-Aware Upscayl Hybrid (`v2.2` default: 100% Optical Face/Eyes + Lossless Upscayl 4K Hair/Suit/Room),
+        #    Pure Optical Lanczos-4, OR full Upscayl 4x — ZERO warp, ZERO face-pasting!
         acuity_meta: Dict[str, object] = {"applied": False}
-        if upscale_mode == "optical_lanczos":
+        if upscale_mode == "upscayl_hybrid":
+            up_bgr, hyb_meta = self.pipeline.upscaler.upscale_hybrid_optical_face_upscayl_body(
+                raw_bgr, target_min_height=4800, model_name=upscayl_model_name
+            )
+            up_model = str(hyb_meta.get("model", "hybrid_opt_face+ultramix-balanced-4x"))
+            acuity_meta = hyb_meta.get("acuity") or {"applied": True}
+        elif upscale_mode == "optical_lanczos":
             up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
             up_bgr, acuity_meta = self.pipeline.upscaler.enhance_optical_organ_acuity(up_bgr)
             up_model = "optical_lanczos4_acuity_v22"
         else:
-            up_bgr, up_model = self.pipeline.upscaler.upscale_with_upscayl(raw_bgr, style="auto", scale=4)
+            up_bgr, up_model = self.pipeline.upscaler.upscale_with_upscayl(
+                raw_bgr, style=upscayl_model_name if upscayl_model_name else "auto", scale=4
+            )
         uh, uw = up_bgr.shape[:2]
 
         # 2. Gentle luminance-only matte specular roll-off (keeping 100% scene lighting untouched)

@@ -58,7 +58,8 @@ def main() -> int:
     p_fin.add_argument("--winner", required=True, type=Path)
     p_fin.add_argument("--output-dir", required=True, type=Path)
     p_fin.add_argument("--stem", required=True, type=str)
-    p_fin.add_argument("--upscale-mode", choices=("optical_lanczos", "upscayl"), default="optical_lanczos")
+    p_fin.add_argument("--upscale-mode", choices=("upscayl_hybrid", "optical_lanczos", "upscayl"), default="upscayl_hybrid")
+    p_fin.add_argument("--upscayl-model", default="ultramix-balanced-4x", help="Upscayl model name in Vault models/")
     p_fin.add_argument("--reference-scene", type=Path, default=None)
     p_fin.add_argument("--cohesion-mode", type=str, default="auto")
     p_fin.add_argument("--no-vault-sync", action="store_true")
@@ -105,6 +106,7 @@ def main() -> int:
             sync_to_vault=not args.no_vault_sync,
             strict_10gate=not args.allow_audit_fail,
             upscale_mode=args.upscale_mode,
+            upscayl_model_name=args.upscayl_model,
             reference_scene_path=args.reference_scene,
             cohesion_mode=args.cohesion_mode,
         )
