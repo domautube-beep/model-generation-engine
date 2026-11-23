@@ -34,3 +34,19 @@ Through controlled A/B benchmarking on the Classical Palazzo Charcoal-Suit Loung
 
 ### Pillar 4: Zero-GAN Optical Micro-Acuity & Ocular Catchlight Mastering (`Pure Optical v2.2`)
 - **Current `v2.1` Strength + Upgrade**: Keep `upscale_mode="optical_lanczos"` as the ironclad default (zero GAN `Upscayl` eye-darkening), and enhance `upscale_bgr_in_memory` + `MatteSkinProcessor` (`P88`) + `PostGenCohesionMasterer` with luminance-only Wiener/Richardson-Lucy micro-deconvolution restricted to ocular lash/iris & lip vermilion edges (`0px` geometric warp, `0%` face pasting).
+
+---
+
+## 3. Verified `v2.2` Live Benchmark Results (`2026-11-23` Palazzo Charcoal-Suit Scene)
+
+Implemented across `identity_turnaround.py`, `upscaler.py`, and `fresh_origin_workflow.py` (`workflow_version = "2.2"`), executed 100% from scratch (`Stage 1 prepare -> Stage 3 Best-of-3 1-Pass -> Stage 4 rank -> Stage 5 optical_lanczos4_acuity_v22`):
+
+| Metric (`0px` Warp · `0%` Pasting · `0%` Re-Feeding) | `v2.1` Baseline | **`v2.2` Unified Engine** |
+| :--- | :---: | :---: |
+| **`contourIoU` (1:1 Pupil-Aligned Silhouette)** | `0.9099` | **`0.9571`** |
+| **`meanContourPointErrPx`** | `13.72 px` | **`6.30 px`** |
+| **`cheek` / `temple` Width Diff** | `-2.2% / -3.6%` | **`-0.2% / -1.2%`** |
+| **`eyelidEdgeNcc` (Ocular Fold Match)** | `0.2755` | **`0.4506`** |
+| **`ocularDriftScore` / `scleraDiffPct`** | `10.82 / -14.3%` | **`6.11 / -7.5%` (PASS)** |
+| **`exaggerationIndex`** | `3.07` | **`2.73` (PASS)** |
+

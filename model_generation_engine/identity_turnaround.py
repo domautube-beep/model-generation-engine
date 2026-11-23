@@ -440,36 +440,72 @@ class RealPersonTurnaroundEngine:
 
         coverage_pct = float(np.mean(full_mask > 0) * 100.0)
         if coverage_pct > 0.05:
-            dil = max(17, int(round(max(h, w) * 0.022)) | 1)
+            dil = max(11, int(round(max(h, w) * 0.011)) | 1)
             mask_dil = cv2.dilate(full_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil, dil)), iterations=1)
 
-            # Multi-scale coarse harmonic diffusion + fine rim TELEA inpainting (zero starburst streaks, crisp chair edges!)
-            ch_s, cw_s = max(32, h // 8), max(32, w // 8)
-            small_bgr = cv2.resize(out, (cw_s, ch_s), interpolation=cv2.INTER_AREA)
-            small_m = cv2.dilate(
-                (cv2.resize(mask_dil, (cw_s, ch_s), interpolation=cv2.INTER_NEAREST) > 40).astype(np.uint8) * 255,
-                np.ones((3, 3), np.uint8),
-                iterations=1,
-            )
-            coarse_inp = cv2.inpaint(small_bgr, small_m, 9.0, cv2.INPAINT_TELEA)
-            work_f = coarse_inp.astype(np.float32)
-            m_bool = small_m > 0
-            for _ in range(35):
-                b_step = cv2.GaussianBlur(work_f, (0, 0), 2.2)
-                work_f[m_bool] = b_step[m_bool]
-            smooth_fill = cv2.resize(np.clip(work_f, 0, 255).astype(np.uint8), (w, h), interpolation=cv2.INTER_CUBIC)
+            # v2.2 Crisp Furniture-Preserving Clean-Plate:
+            # Exterior normalized-convolution background propagation + fine boundary Navier-Stokes + matched local grain
+            # (eliminates the old 35-pass Gaussian grey fog cloud over chairs and wall frescoes!)
+            ext_w = (mask_dil == 0).astype(np.float32)
+            ext_src = out.astype(np.float32) * ext_w[..., None]
+            sig1 = max(9.0, max(h, w) * 0.022)
+            sig2 = max(28.0, max(h, w) * 0.068)
+            num1 = cv2.GaussianBlur(ext_src, (0, 0), sig1)
+            den1 = cv2.GaussianBlur(ext_w, (0, 0), sig1)[..., None]
+            num2 = cv2.GaussianBlur(ext_src, (0, 0), sig2)
+            den2 = cv2.GaussianBlur(ext_w, (0, 0), sig2)[..., None]
+            prop_near = np.where(den1 > 1e-3, num1 / np.maximum(den1, 1e-3), num2 / np.maximum(den2, 1e-3))
+            prop_far = num2 / np.maximum(den2, 1e-3)
+            prop_bg = np.clip(0.68 * prop_near + 0.32 * prop_far, 0.0, 255.0)
 
-            fine_inp = cv2.inpaint(out, mask_dil, 11.0, cv2.INPAINT_TELEA)
+            # Estimate subtle natural exterior micro-grain so filled wall never looks like plastic fog
+            ext_gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
+            hp_ext = ext_gray.astype(np.float32) - cv2.GaussianBlur(ext_gray.astype(np.float32), (0, 0), 1.4)
+            ext_vals = hp_ext[mask_dil == 0]
+            grain_std = float(np.clip(np.std(ext_vals) * 0.55 if ext_vals.size > 64 else 1.2, 0.6, 3.2))
+            rng = np.random.default_rng(42)
+            grain = cv2.GaussianBlur(rng.normal(0.0, grain_std, size=(h, w)).astype(np.float32), (0, 0), 0.65)[..., None]
+            prop_textured = np.clip(prop_bg + grain, 0.0, 255.0)
+
+            fine_inp = cv2.inpaint(out, mask_dil, 7.0, cv2.INPAINT_NS)
             dist = cv2.distanceTransform((mask_dil > 0).astype(np.uint8), cv2.DIST_L2, 5)
-            alpha_deep = np.clip((dist - 4.0) / 20.0, 0.0, 1.0)[..., None]
-            blended_hole = fine_inp.astype(np.float32) * (1.0 - alpha_deep) + smooth_fill.astype(np.float32) * alpha_deep
-            soft_edge = cv2.GaussianBlur((mask_dil > 0).astype(np.float32), (0, 0), 3.0)[..., None]
+            alpha_deep = np.clip((dist - 3.0) / 14.0, 0.0, 1.0)[..., None]
+            blended_hole = fine_inp.astype(np.float32) * (1.0 - alpha_deep) + prop_textured * alpha_deep
+            soft_edge = cv2.GaussianBlur((mask_dil > 0).astype(np.float32), (0, 0), 2.0)[..., None]
             out = np.clip(out.astype(np.float32) * (1.0 - soft_edge) + blended_hole * soft_edge, 0, 255).astype(np.uint8)
 
         if output_clean_path is not None:
             output_clean_path.parent.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(output_clean_path), out, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
         return out, round(coverage_pct, 2)
+
+    @staticmethod
+    def resolve_nearest_individual_8dir_portrait(
+        turnaround_sheet_or_dir: Path,
+        target_yaw_deg: float,
+    ) -> Optional[Tuple[Path, str, float]]:
+        """Resolve the single nearest verified 1-Hop individual 8-dir portrait (NEVER the 9-grid master sheet)."""
+        cand_dir = turnaround_sheet_or_dir if turnaround_sheet_or_dir.is_dir() else turnaround_sheet_or_dir.parent
+        if not cand_dir.is_dir():
+            return None
+        view_files: Dict[str, Path] = {}
+        for f in sorted(cand_dir.iterdir()):
+            if not f.is_file() or f.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+                continue
+            low = f.name.lower()
+            if "master_8angle" in low or "turnaround_sheet" in low or "contact" in low:
+                continue
+            for v_key in TURNAROUND_8_VIEWS:
+                if v_key in low:
+                    view_files[v_key] = f
+                    break
+        if not view_files:
+            return None
+        best_view = min(
+            view_files.keys(),
+            key=lambda vk: abs(float(VIEW_AZIMUTH_DEG[vk]) - float(target_yaw_deg)),
+        )
+        return view_files[best_view], best_view, float(VIEW_AZIMUTH_DEG[best_view])
 
     def mask_foreign_faces_in_reference(
         self,

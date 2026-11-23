@@ -2062,10 +2062,25 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                 cohesion_mode="auto",
             )
             self.assertEqual(receipt["upscale_mode"], "optical_lanczos")
-            self.assertEqual(receipt["upscayl_model"], "optical_lanczos4")
+            self.assertIn("optical_lanczos4", receipt["upscayl_model"])
+            self.assertTrue(receipt["optical_acuity_meta"]["applied"])
             self.assertGreaterEqual(receipt["resolution"][1], 4800)
             self.assertTrue(Path(receipt["deliverables"]["hero_4k"]).is_file())
             self.assertTrue(Path(receipt["deliverables"]["macro"]).is_file())
+
+            # Verify v2.2 prepare_origin_bundle removes old 50mm/8.2-head pinhead bias and emits 75-85mm 7.45-head prompt
+            manifest = wf.prepare_origin_bundle(
+                gen0_portrait_path=self.ref_face,
+                work_dir=tdir / "prep_v22",
+                scene_instruction="Full-body seated editorial portrait on a leather lounge chair",
+                outfit_instruction="Oversized charcoal wool wrap suit",
+                aspect_ratio_label="9:16",
+                best_of_k=2,
+            )
+            self.assertEqual(manifest["workflow_version"], "2.2")
+            p0 = manifest["prompts"][0]["prompt"]
+            self.assertIn("7.45-head", p0)
+            self.assertNotIn("8.2-head", p0)
 
 
 if __name__ == "__main__":

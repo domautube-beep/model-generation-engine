@@ -151,6 +151,72 @@ class SuperResolutionEngine:
         lab[:, :, 0] = np.clip(L + 0.22 * np.clip(fine, -6.5, 6.5), 0.0, 255.0)
         return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
 
+    def enhance_optical_organ_acuity(self, bgr_4k: np.ndarray) -> Tuple[np.ndarray, Dict[str, object]]:
+        """v2.2 Zero-GAN, Zero-Warp Luminance-Only Optical Acuity Restoration on eyes, brows, nose tip & lip vermilion.
+
+        Restores crisp catchlights, lash-root definition, and lip vermilion clarity on Lanczos-4 upscaled 1-pass portraits
+        WITHOUT darkening white sclera (positive-biased catchlight preservation) and WITHOUT touching matte cheek pores.
+        """
+        h, w = bgr_4k.shape[:2]
+        try:
+            det = self.detector.detect(bgr_4k)
+        except Exception:
+            return bgr_4k, {"applied": False, "reason": "no_face_detected"}
+
+        le, re, nose, lm, rm = det.landmarks_5pt
+        iod = max(24.0, float(det.inter_ocular_distance))
+        organ_mask = np.zeros((h, w), dtype=np.float32)
+
+        # Soft elliptical masks strictly around eyes+brows, nasal tip, and mouth vermilion (cheeks/jaw remain 0.0!)
+        eye_rx, eye_ry = max(8, int(round(iod * 0.34))), max(6, int(round(iod * 0.24)))
+        for pt in (le, re):
+            cv2.ellipse(
+                organ_mask,
+                (int(round(float(pt[0]))), int(round(float(pt[1]) - iod * 0.04))),
+                (eye_rx, eye_ry),
+                float(det.eye_tilt_degrees),
+                0,
+                360,
+                1.0,
+                -1,
+            )
+        cv2.ellipse(
+            organ_mask,
+            (int(round(float(nose[0]))), int(round(float(nose[1])))),
+            (max(6, int(round(iod * 0.20))), max(6, int(round(iod * 0.18)))),
+            float(det.eye_tilt_degrees),
+            0,
+            360,
+            0.55,
+            -1,
+        )
+        mouth_mid = 0.5 * (lm + rm)
+        mouth_w = max(12.0, float(np.linalg.norm(rm - lm)))
+        cv2.ellipse(
+            organ_mask,
+            (int(round(float(mouth_mid[0]))), int(round(float(mouth_mid[1])))),
+            (max(8, int(round(mouth_w * 0.62))), max(6, int(round(iod * 0.22)))),
+            float(det.eye_tilt_degrees),
+            0,
+            360,
+            0.75,
+            -1,
+        )
+        blur_k = max(15, int(round(iod * 0.28)) | 1)
+        organ_mask = cv2.GaussianBlur(organ_mask, (blur_k, blur_k), max(3.0, iod * 0.09))[..., None]
+
+        lab = cv2.cvtColor(bgr_4k, cv2.COLOR_BGR2LAB).astype(np.float32)
+        L = lab[:, :, 0]
+        sig_fine = float(np.clip(iod / 135.0, 0.85, 1.85))
+        sig_mid = float(np.clip(iod / 55.0, 2.0, 4.2))
+        d_fine = L - cv2.GaussianBlur(L, (0, 0), sig_fine)
+        d_mid = L - cv2.GaussianBlur(L, (0, 0), sig_mid)
+        # Asymmetric clamp: limit negative undershoot (-5.5) so white sclera NEVER darkens, while keeping crisp catchlights (+9.5)
+        delta_L = 0.48 * np.clip(d_fine, -5.5, 9.5) + 0.18 * np.clip(d_mid, -4.0, 6.5)
+        lab[:, :, 0] = np.clip(L + organ_mask[:, :, 0] * delta_L, 0.0, 255.0)
+        out_bgr = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_BGR2BGR if False else cv2.COLOR_LAB2BGR)
+        return out_bgr, {"applied": True, "iod_4k_px": round(iod, 1), "sigma_fine": round(sig_fine, 3)}
+
     def upscale_image_file(self, input_path: Path, output_path: Path) -> Path:
         """Upscale via Pure Optical Lanczos-4 + gentle halo-free micro-clarity by default (`Real-ESRGAN` disabled to prevent rim corrosion & watercolor blur)."""
         if not Path(input_path).exists():
