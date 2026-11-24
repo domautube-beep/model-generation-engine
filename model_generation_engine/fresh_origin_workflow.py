@@ -843,8 +843,11 @@ class FreshOriginEditorialWorkflow:
             acuity_meta = hyb_meta.get("acuity") or {"applied": True}
         elif upscale_mode == "optical_lanczos":
             up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
-            up_bgr, acuity_meta = self.pipeline.upscaler.enhance_optical_organ_acuity(up_bgr)
-            up_model = "optical_lanczos4_acuity_v22"
+            if design_mode == "pure_v21":
+                up_model = "optical_lanczos4_pure_v21"
+            else:
+                up_bgr, acuity_meta = self.pipeline.upscaler.enhance_optical_organ_acuity(up_bgr)
+                up_model = "optical_lanczos4_acuity_v22"
         else:
             up_bgr, up_model = self.pipeline.upscaler.upscale_with_upscayl(
                 raw_bgr, style=upscayl_model_name if upscayl_model_name else "auto", scale=4
@@ -924,7 +927,11 @@ class FreshOriginEditorialWorkflow:
             roi_matte, _ = self.pipeline.skin_processor.process(roi, seed=42, reference_skin_profile=None)
             up_bgr[vy1:vy2, vx1:vx2] = roi_matte
 
-            if is_low_key_relight and ref_scene_bgr is not None:
+            if design_mode == "pure_v21":
+                # Pure v2.1 (`SKILL.md` Sec 2): Pure Optical Lanczos-4 + P88 MatteSkinProcessor + PostGenCohesionMasterer ONLY
+                # (ZERO face pasting, ZERO studio skin albedo repainting over scene lighting!)
+                skin_albedo_meta = {"applied": False, "mode": "pure_v21_optical_matte_cohesion_only"}
+            elif is_low_key_relight and ref_scene_bgr is not None:
                 # 100% UNIFORM whole-frame black-level/contrast curve + split-tone LUT + 35mm film grain (ZERO studio skin re-brightening!)
                 up_bgr, cohesion_meta = master_full_frame_mood_and_grain(
                     up_bgr,
