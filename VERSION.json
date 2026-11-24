@@ -1,0 +1,137 @@
+{
+  "project_name": "릴프로필",
+  "short_name": "프로필",
+  "aliases": [
+    "릴프로필",
+    "프로필",
+    "릴 프로필",
+    "프로필프로젝트",
+    "릴프로필스튜디오",
+    "모델생성",
+    "모델생성스튜디오",
+    "reelprofile",
+    "reel-profile",
+    "reel_profile",
+    "profile",
+    "model-generation-engine"
+  ],
+  "canonical_version": "1.0.0",
+  "canonical_label": "정본 v1.0.0 (Default Baseline)",
+  "baseline_established_at": "2026-11-24T19:08:00+09:00",
+  "updated_at": "2026-11-24T19:16:48+09:00",
+  "version_policy": {
+    "baseline_version": "1.0.0",
+    "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
+    "post_v1_upgrade_rule": "모든 코드 수정·기능 개발 시 반드시 scripts/version_ctl.py bump (patch/minor/major)로 v1.0.0 초과 상위 버전으로 업그레이드하며 Git pre-commit 훅이 무결성을 강제 검증함"
+  },
+  "default_state": {
+    "synthesis_architecture": "pure_v21 (1-Pass Native Full-Person 3D Synthesis, 0% 2D head cut-and-paste)",
+    "mandatory_stage1_bank": "1-Hop 8-Direction Frontal-Arc Master Bank (-90, -67.5, -45, -22.5, +22.5, +45, +67.5, +90 deg)",
+    "default_output_matrix": "5-Lens (50, 65, 85, 105, 135mm) x 5-Context-Matched Distinct Lighting Setups (best_of_k = 5)",
+    "de_airbrushing_pore_engine": "Auto skin_norm_laplacian < 24.0 detection -> ID retouching/flash decoupling + scale-adaptive 4K optical micro-pore restoration",
+    "default_upscale_mode": "optical_lanczos (4K zero-grain, --no-film-grain, --cohesion-mode adaptive/off)",
+    "external_paid_api": "FORBIDDEN (0%)"
+  },
+  "history_pre_v1": [
+    {
+      "version": "0.1.0",
+      "legacy_label": "v5.0 ~ v6.0",
+      "commit": "7070504",
+      "summary": "초기 1-Hop 8방향 턴어라운드 검증기(Mandatory8DirBankVerifier), 순수 Gen-0 슬롯 격리 및 두상 돔 계측 기초 구축"
+    },
+    {
+      "version": "0.2.0",
+      "legacy_label": "v7.0 ~ v8.0",
+      "commit": "d8cc833",
+      "summary": "14점 미세 비율 채점기, 턱각도(Gonion)·볼면적 동적 블루프린트 락 및 원본 재생성 훅 도입"
+    },
+    {
+      "version": "0.3.0",
+      "legacy_label": "v9.0 ~ v10.1",
+      "commit": "0209f2c",
+      "summary": "무조건 6단계 순수 원본 워크플로우(prepare->rank->finalize), 7항목 눈매 락, FaceExaggerationGuard 및 Google Flow ULTRA 자동화 CLI"
+    },
+    {
+      "version": "0.4.0",
+      "legacy_label": "v11.1 ~ v12.1",
+      "commit": "10e8056",
+      "summary": "전역 OS 8방향 필수 선행 훅(원본1생성게이트.py), 1인 1프로젝트 고정 및 Gate 10d 하관·목선 감사"
+    },
+    {
+      "version": "0.5.0",
+      "legacy_label": "v13.3 ~ v15.1",
+      "commit": "dfef031",
+      "summary": "SizeKorea 8차 다분절 인체비율(7.45등신) 솔버, 비-호리존 실사 공간 지원 및 롤 불변 얼굴 윤곽 게이트"
+    },
+    {
+      "version": "0.6.0",
+      "legacy_label": "v2.1-rebase",
+      "commit": "e7c735b",
+      "summary": "원패스 통인물 3D 생성(생-019) 리베이스 및 무열화 순수 광학 Lanczos-4 + P88 MatteSkin 기본 마스터링 전환"
+    },
+    {
+      "version": "0.7.0",
+      "legacy_label": "v2.2 ~ v2.6",
+      "commit": "a7b376b",
+      "summary": "무하드코딩 4대 이목구비·3D 깊이·피부톤 분석기, 안구 100% 광학 보호 Upscayl 하이브리드 및 리라이팅 실험"
+    },
+    {
+      "version": "0.8.0",
+      "legacy_label": "v30 ~ v34 (Clean Studio)",
+      "commit": "b0baaee",
+      "summary": "4대 사진 자연스러움 프롬프트, 무그레인(--no-film-grain) 상업 스튜디오 모드 및 포즈-원본 Yaw 부호 일치 법칙(IoU 0.986)"
+    },
+    {
+      "version": "0.9.0",
+      "legacy_label": "v35 ~ v37 (Universal Gender & Crisp Clean Plate)",
+      "commit": "0e4e9dc",
+      "summary": "성별·헤어스타일 완전 중립화(남·여 범용) 및 가구 무손상 클린플레이트 1:1 포즈 방향 정합"
+    },
+    {
+      "version": "0.9.5",
+      "legacy_label": "v38 (Context-Adaptive 5x5 Pre-Release)",
+      "commit": "d131598",
+      "summary": "장소·상황 적응형 5렌즈(50·65·85·105·135mm)×5독립조명 플래너, 자동 초점거리 클린플레이트 및 소형/보정 원본 디에어브러싱 포어 복원 완성"
+    }
+  ],
+  "post_v1_upgrades": [],
+  "code_tree_sha256": "fef15c2b260993dd90622adbf7a6105764806d2dc5a9fcb9deb84c15cdd0705c",
+  "file_hashes": {
+    "hooks/enforce_1origin_1gen_hook.py": "43483305ed17165720583f91f85ae649d89e6a05a5e22142fd6be9e649e7bebb",
+    "hooks/pre-commit-version-check.py": "569022ffe4adf002ee9becaed382669575a71f389d94397f3012e6407b8146d5",
+    "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
+    "model_generation_engine/__init__.py": "62f5039f04c3e94d2c175dca62609f40c9155917eda00a43356dd0bf11290508",
+    "model_generation_engine/apple_vision.py": "4cc46afebca32d5d6fafcda195d14d60959871f8c71a30a376a35a0a83b11798",
+    "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
+    "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
+    "model_generation_engine/config.py": "28145e9260b3dec98a9dcdeb8118af52dc93a0f6bc36bbed7a7b64ca31a6b3d5",
+    "model_generation_engine/detector.py": "1e177f13576663eacb866ecf9947cd9986bd8a473c4de92ce0d6b568422ab2b8",
+    "model_generation_engine/face_exaggeration_guard.py": "94fbbc10a492bf41d8a0ef3417eba2a50e6f08a60f6c48c175ea11767256e936",
+    "model_generation_engine/face_reattach.py": "2f8bf1df83bdbdecffad7da9fc823afd2ecb10eca65798fc1964b0b6019c6dcb",
+    "model_generation_engine/fresh_origin_workflow.py": "699eb0cdbf53f2777773ffd1dc5cafff146197215225c9c228f0d75fd9204225",
+    "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
+    "model_generation_engine/identity_turnaround.py": "d815d36d39c7fa3f089db970cde5c765652e1d6558fcd20fec441f059eef51e1",
+    "model_generation_engine/multi_asset_composer.py": "74241e18f37f9c00eb54c93367cae76ef2efcba59e6bcd758e17f312aeca85a8",
+    "model_generation_engine/ocular_anatomy.py": "94bdb20721aabe00f7d571632ebc332fff196a72987bb18244f539cdc59ebc64",
+    "model_generation_engine/organ_depth_anatomy.py": "96145ee59a48bebb6045fa76c28c7f82cd2b6ebf4102314b263d5efcd5ae8a2b",
+    "model_generation_engine/origin_guard.py": "7b095877351c60d23142ca1533080798f740662ec147a4ef3bd049c5029b3d8b",
+    "model_generation_engine/pipeline.py": "a30bb128cbb167d80f4d66bf4a8659906efdb27fbda7ac77798bcc4d0c9560da",
+    "model_generation_engine/previz_pose.py": "8552ad7f0753695fb68cdce65b17b0973db7c4169b05736312e4703cdfb0e2f4",
+    "model_generation_engine/prompt_builder.py": "0d49fee9f15c8aeb141e7a90f555971b816e8e8cae2ef899d97deb05b0f3c933",
+    "model_generation_engine/proportion_calibrator.py": "86802037d9b3c13f85da811369cf72dadf088bb533d2d4e3da9a7a43b512df7d",
+    "model_generation_engine/quality_gate.py": "291fe18305a255240c0d0f8e86e7232f3ac24859a44966f63a58c033e085c97e",
+    "model_generation_engine/real_multishot_studio.py": "5b8c9e1b01794f6df389d6a45b3b9295013234d0a1f5bac1a878ef2d48c56dd5",
+    "model_generation_engine/scene_radiometry.py": "4a99a250223f0c3e45493056f9606da0f4c8a82b9d2be13085d91b4c8fb1ecfd",
+    "model_generation_engine/skin_processor.py": "32b90709d7146c11d75b0d4320eddfb23f765dbb818fdb0307d5738d5a939bad",
+    "model_generation_engine/studio_app/__init__.py": "6d9b656e770e01d447e5603922747bd253af4d08345b1a6de1255f5fe1477851",
+    "model_generation_engine/studio_app/runtime.py": "051e79d038f24a1e213c17b21ed89efbbfa26c1dd2de5a998d84fed220b666a1",
+    "model_generation_engine/studio_app/server.py": "e3f6dab669f27432d111dad533bfa58168a5d93a7ceccd681587f6a76b94f2a3",
+    "model_generation_engine/upscaler.py": "38163cb012e8b0223c8acfef940d231914eb1b4bb6f00a03424ab3bcea025117",
+    "model_generation_engine/version_guard.py": "6e16b8b9167ffea9257cec6e093dff44c489884977976b5583e5b0acab878bd4",
+    "model_generation_engine/workflow.py": "22f1fffd424d41517a3384fbf8636f4d587b34a3aef52ecb578e0ee3fa392007",
+    "scripts/google_flow_ultra_cli.py": "5eaf76b701cc02c88c3a05ea863145f44677a8a76f35c45d81af802ac1524fbf",
+    "scripts/run_fresh_origin_workflow.py": "7a418cf69478b877d85540f1f5712778a4d571badc39a5b2197ed48e8095fd37",
+    "scripts/run_headless_mesh_workflow.py": "4ee921ade771460e4a63bc26df1dc8e24e4670b2c32bb2130c0358bb489a5ee0",
+    "scripts/version_ctl.py": "664527acd7702332b6bce433bab56197e6ec51f2668cccf894163f1916b867f0"
+  }
+}

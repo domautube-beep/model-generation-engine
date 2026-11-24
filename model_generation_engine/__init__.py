@@ -1,6 +1,6 @@
 """
-모델생성 (Universal Model Generation & 5K Super-Resolution Engine v2.0)
-Zero-Hardcoding Universal Model Synthesis across ANY Subject, Wardrobe, Location, and Camera Angle.
+릴프로필 (프로필 / 모델생성 — 정본 v1.0.0)
+Zero-Hardcoding 1-Pass Full-Person 3D Synthesis, Mandatory 1-Hop 8-Dir Bank, Context-Adaptive 5-Lens x 5-Lighting Matrix, and 4K Optical Pore Mastering.
 """
 
 from .config import (
@@ -75,8 +75,26 @@ from .face_exaggeration_guard import FaceExaggerationGuard, FacialOrganExaggerat
 from .pipeline import ModelGenerationPipeline, PortraitIdentityPipeline
 from .fresh_origin_workflow import CandidateScore, FreshOriginEditorialWorkflow
 from .headless_mesh_composer import HeadlessMeshComposer
+from .version_guard import (
+    CANONICAL_PROJECT_NAME,
+    PROJECT_ALIASES,
+    SHORT_PROJECT_NAME,
+    VersionIntegrityReport,
+    check_version_integrity,
+    load_version_ledger,
+    resolve_project_alias,
+    sync_or_bump_version,
+)
 
 __all__ = [
+    "CANONICAL_PROJECT_NAME",
+    "SHORT_PROJECT_NAME",
+    "PROJECT_ALIASES",
+    "VersionIntegrityReport",
+    "check_version_integrity",
+    "load_version_ledger",
+    "resolve_project_alias",
+    "sync_or_bump_version",
     "EngineConfig",
     "SubjectProfile",
     "SubjectSpec",
@@ -151,4 +169,6 @@ __all__ = [
     "FreshOriginEditorialWorkflow",
     "HeadlessMeshComposer",
 ]
-__version__ = "14.0.0"
+__project_name__ = "릴프로필"
+__project_aliases__ = ("릴프로필", "프로필", "모델생성")
+__version__ = "1.0.0"

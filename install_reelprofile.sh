@@ -1,0 +1,59 @@
+#!/bin/zsh
+set -e
+
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$REPO_DIR"
+
+echo "============================================================"
+echo "  릴프로필 (프로필) — 정본 v1.0.0 원클릭 설치 스크립트"
+echo "  설치 경로: $REPO_DIR"
+echo "============================================================"
+
+# 1. 로컬 ~/Projects 별칭 심볼릭 링크 등록 ('릴프로필', '프로필')
+mkdir -p "$HOME/Projects"
+for ALIAS_NAME in "릴프로필" "프로필"; do
+  TARGET_LINK="$HOME/Projects/$ALIAS_NAME"
+  if [ ! -e "$TARGET_LINK" ]; then
+    ln -s "$REPO_DIR" "$TARGET_LINK"
+    echo "[별칭 등록] $TARGET_LINK -> $REPO_DIR"
+  fi
+done
+
+# 2. Python 가상환경(.venv) 준비 및 의존성 설치
+if [ ! -x "$REPO_DIR/.venv/bin/python" ]; then
+  echo "[가상환경 생성] .venv 구성 및 필수 라이브러리 설치 중..."
+  python3 -m venv "$REPO_DIR/.venv"
+  "$REPO_DIR/.venv/bin/pip" install --upgrade pip
+  "$REPO_DIR/.venv/bin/pip" install -e "$REPO_DIR" fastapi uvicorn python-multipart httpx
+else
+  echo "[가상환경 확인] 기존 .venv 사용 가능"
+fi
+
+# 3. Git pre-commit 자동 버전체크 훅 연결 (.git 존재 시)
+if [ -d "$REPO_DIR/.git" ]; then
+  mkdir -p "$REPO_DIR/.git/hooks"
+  cat > "$REPO_DIR/.git/hooks/pre-commit" <<'EOF'
+#!/bin/sh
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec python3 "$REPO_ROOT/hooks/pre-commit-version-check.py"
+EOF
+  chmod +x "$REPO_DIR/.git/hooks/pre-commit" "$REPO_DIR/hooks/pre-commit-version-check.py"
+  echo "[Git 훅 등록] pre-commit 자동 버전체크 활성화 완료"
+fi
+
+# 4. Antigravity & Claude Code 글로벌 스킬 등록 (경로 자동 치환)
+for SKILL_ROOT in "$HOME/.gemini/config/skills" "$HOME/.claude/skills"; do
+  mkdir -p "$SKILL_ROOT/reel-profile"
+  if [ -f "$REPO_DIR/skills/reel-profile/SKILL.md" ]; then
+    sed "s|__REELPROFILE_REPO_DIR__|$REPO_DIR|g" "$REPO_DIR/skills/reel-profile/SKILL.md" > "$SKILL_ROOT/reel-profile/SKILL.md"
+    echo "[AI 스킬 등록] $SKILL_ROOT/reel-profile/SKILL.md"
+  fi
+done
+
+# 5. 버전 무결성 최종 체크
+"$REPO_DIR/.venv/bin/python" "$REPO_DIR/scripts/version_ctl.py" check
+
+echo ""
+echo "설치가 완료되었습니다!"
+echo "- 스튜디오 실행: '$REPO_DIR/릴프로필 스튜디오 실행.command' 더블클릭 (http://127.0.0.1:18830)"
+echo "- AI 에이전트에서 '릴프로필' 또는 '프로필'이라고 부르면 즉시 로드됩니다."

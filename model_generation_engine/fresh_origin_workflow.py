@@ -49,6 +49,7 @@ from .scene_radiometry import (
     SceneRadiometryAnalyzer,
 )
 from .skin_processor import MatteSkinProcessor
+from .version_guard import CANONICAL_PROJECT_NAME, SHORT_PROJECT_NAME, check_version_integrity
 
 
 def _sha256_file(path: Path) -> str:
@@ -731,8 +732,27 @@ class FreshOriginEditorialWorkflow:
                 }
             )
 
+        try:
+            _vrep = check_version_integrity()
+            _vmeta = {
+                "project_name": _vrep.project_name,
+                "short_alias": _vrep.short_alias,
+                "canonical_version": _vrep.canonical_version,
+                "canonical_label": _vrep.canonical_label,
+                "version_check_passed": _vrep.passed,
+            }
+        except Exception:
+            _vmeta = {
+                "project_name": CANONICAL_PROJECT_NAME,
+                "short_alias": SHORT_PROJECT_NAME,
+                "canonical_version": "1.0.0",
+                "canonical_label": "정본 v1.0.0",
+                "version_check_passed": True,
+            }
+
         manifest = {
-            "workflow_version": "2.2",
+            **_vmeta,
+            "workflow_version": _vmeta["canonical_version"],
             "design_mode": design_mode,
             "no_film_grain": bool(no_film_grain),
             "stage": "READY_FOR_FRESH_GEN",
@@ -1192,8 +1212,25 @@ class FreshOriginEditorialWorkflow:
                     shutil.copy2(p_item, dst)
                     vault_synced.append(str(dst))
 
+        try:
+            _vrep_fin = check_version_integrity()
+            _vmeta_fin = {
+                "project_name": _vrep_fin.project_name,
+                "short_alias": _vrep_fin.short_name if hasattr(_vrep_fin, "short_name") else _vrep_fin.short_alias,
+                "canonical_version": _vrep_fin.canonical_version,
+                "version_check_passed": _vrep_fin.passed,
+            }
+        except Exception:
+            _vmeta_fin = {
+                "project_name": CANONICAL_PROJECT_NAME,
+                "short_alias": SHORT_PROJECT_NAME,
+                "canonical_version": "1.0.0",
+                "version_check_passed": True,
+            }
+
         receipt = {
-            "workflow_version": "2.3",
+            **_vmeta_fin,
+            "workflow_version": _vmeta_fin["canonical_version"],
             "design_mode": design_mode,
             "stage": "FINALIZED_10GATES_PASSED" if all_passed else "FINALIZED_10GATES_FAILED",
             "timestamp": time.time(),

@@ -2255,6 +2255,56 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             focal_paths = [Path(p["focal_clean_location_path"]) for p in bundle["prompts"]]
             self.assertEqual(len({p.name for p in focal_paths}), 5)
             self.assertTrue(all(p.is_file() for p in focal_paths))
+            self.assertEqual(bundle["project_name"], "릴프로필")
+
+    def test_40_reelprofile_v1_baseline_and_version_guard(self) -> None:
+        """Verify `릴프로필` (`프로필`) canonical naming, < v1.0 history, 정본 v1.0.0+ lock, and dirty-code version guard."""
+        import shutil
+        import tempfile
+        from model_generation_engine.version_guard import (
+            CANONICAL_PROJECT_NAME as CNAME,
+            SHORT_PROJECT_NAME as SNAME,
+            check_version_integrity as chk_ver,
+            parse_semver as p_sem,
+            resolve_project_alias,
+            sync_or_bump_version,
+        )
+
+        self.assertEqual(CNAME, "릴프로필")
+        self.assertEqual(SNAME, "프로필")
+        for q in ("릴프로필", "프로필", "릴 프로필", "모델생성", "reelprofile", "profile"):
+            self.assertTrue(resolve_project_alias(q), f"Alias failed: {q}")
+        self.assertFalse(resolve_project_alias("소설대본모듈"))
+
+        rep = chk_ver()
+        self.assertTrue(rep.passed, f"Live repo version integrity failed: {rep.issues}")
+        self.assertGreaterEqual(p_sem(rep.canonical_version), (1, 0, 0))
+        self.assertTrue(rep.pre_v1_history_valid)
+
+        # Verify in an isolated sandbox copy that editing any .py file WITHOUT bumping triggers FAIL, and bumping restores PASS
+        repo_root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as td:
+            sb = Path(td) / "sandbox_repo"
+            for sub in ("model_generation_engine", "scripts", "hooks", "docs"):
+                shutil.copytree(repo_root / sub, sb / sub, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            for fn in ("VERSION.json", "pyproject.toml", "launch_studio.py"):
+                shutil.copy2(repo_root / fn, sb / fn)
+
+            rep_clean = chk_ver(sb)
+            self.assertTrue(rep_clean.passed)
+
+            # Touch a code file without bumping version -> MUST fail version check!
+            cfg_p = sb / "model_generation_engine" / "config.py"
+            cfg_p.write_text(cfg_p.read_text(encoding="utf-8") + "\n# minor code tweak\n", encoding="utf-8")
+            rep_dirty = chk_ver(sb)
+            self.assertFalse(rep_dirty.passed)
+            self.assertTrue(rep_dirty.unbumped_code_changes_detected)
+            self.assertIn("model_generation_engine/config.py", rep_dirty.changed_files)
+
+            # Bumping patch version -> MUST advance strictly above previous version and pass integrity!
+            rep_bumped = sync_or_bump_version(sb, part="patch", summary="테스트 코드 변경 후 패치 업그레이드")
+            self.assertTrue(rep_bumped.passed)
+            self.assertGreater(p_sem(rep_bumped.canonical_version), p_sem(rep_clean.canonical_version))
 
 
 if __name__ == "__main__":

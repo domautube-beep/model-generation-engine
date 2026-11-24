@@ -12,10 +12,11 @@ from pathlib import Path
 import uvicorn
 
 from model_generation_engine.studio_app.server import STUDIO_PORT, create_studio_app
+from model_generation_engine.version_guard import check_version_integrity
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Launch 모델생성 스튜디오 v3.0 Web App")
+    parser = argparse.ArgumentParser(description="Launch 릴프로필 (프로필) 스튜디오 — 정본 v1.0.0+ Web App")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=STUDIO_PORT)
     parser.add_argument("--workspace", type=Path, default=None)
@@ -24,6 +25,11 @@ def main() -> None:
 
     url = f"http://{args.host}:{args.port}"
     app = create_studio_app(workspace_dir=args.workspace)
+    try:
+        vrep = check_version_integrity()
+        vbanner = f"{vrep.project_name} ({vrep.short_alias}) 스튜디오 — {vrep.canonical_label} [version_check={'PASS' if vrep.passed else 'NEEDS_BUMP'}]"
+    except Exception:
+        vbanner = "릴프로필 (프로필) 스튜디오 — 정본 v1.0.0"
 
     if not args.no_browser:
         def _open() -> None:
@@ -32,7 +38,7 @@ def main() -> None:
 
         threading.Thread(target=_open, daemon=True).start()
 
-    print(f"\n[모델생성 스튜디오 v3.0] 서버 실행 중 -> {url}\n")
+    print(f"\n[{vbanner}] 서버 실행 중 -> {url}\n")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

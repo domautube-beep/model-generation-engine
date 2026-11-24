@@ -45,6 +45,7 @@ from ..scene_radiometry import (
     SceneAdaptive5Lens5LightingPlanner,
     SceneRadiometryAnalyzer,
 )
+from ..version_guard import CANONICAL_PROJECT_NAME, check_version_integrity
 from .runtime import StudioImageRuntime
 
 STUDIO_PORT = 18830
@@ -84,7 +85,13 @@ def create_studio_app(
     csrf_token = secrets.token_urlsafe(24)
     bg_tasks: set = set()
 
-    app = FastAPI(title="모델생성 스튜디오 v3.0")
+    try:
+        _ver_info = check_version_integrity()
+        _studio_title = f"{_ver_info.project_name} ({_ver_info.short_alias}) 스튜디오 — {_ver_info.canonical_label}"
+    except Exception:
+        _studio_title = f"{CANONICAL_PROJECT_NAME} (프로필) 스튜디오 — 정본 v1.0.0"
+
+    app = FastAPI(title=_studio_title)
     app.state.workspace_dir = base_dir
     app.state.pipeline = pipe
     app.state.runtime = rt
@@ -859,6 +866,11 @@ def create_studio_app(
             "measured_kelvin": spec.kelvin_est,
             "presets": list(matrix),
         }
+
+    @app.get("/api/version")
+    def get_project_version():
+        """Return canonical `릴프로필` (`프로필`) version ledger & live code-hash integrity check."""
+        return check_version_integrity().to_summary_dict()
 
     @app.get("/api/batches/{batch_id}")
     def get_batch(batch_id: str):

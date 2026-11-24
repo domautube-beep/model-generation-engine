@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
 
-def resolve_gdrive_vault(project_names: Sequence[str] = ("모델생성", "인물사진")) -> Optional[Path]:
+def resolve_gdrive_vault(project_names: Sequence[str] = ("릴프로필", "프로필", "모델생성", "인물사진")) -> Optional[Path]:
     """Dynamically locate the Google Drive Heavy Asset Vault across macOS/Windows/Linux."""
-    env_override = os.environ.get("MODEL_ENGINE_VAULT") or os.environ.get("PORTRAIT_ENGINE_VAULT")
+    env_override = (
+        os.environ.get("REELPROFILE_VAULT")
+        or os.environ.get("MODEL_ENGINE_VAULT")
+        or os.environ.get("PORTRAIT_ENGINE_VAULT")
+    )
     if env_override and os.path.isdir(env_override):
         return Path(env_override)
 
@@ -181,10 +185,10 @@ class CanvasSpec:
 
 @dataclass
 class EngineConfig:
-    """Master configuration for 모델생성 (Universal Model Generation & 5K Super-Resolution Engine)."""
+    """Master configuration for 릴프로필 (프로필 / 모델생성 — 정본 v1.0.0+)."""
 
-    project_name: str = "모델생성"
-    vault_dir: Optional[Path] = field(default_factory=lambda: resolve_gdrive_vault(("모델생성", "인물사진")))
+    project_name: str = "릴프로필"
+    vault_dir: Optional[Path] = field(default_factory=lambda: resolve_gdrive_vault(("릴프로필", "프로필", "모델생성", "인물사진")))
     upscale_mode: str = "optical_lanczos"  # "optical_lanczos" (default, zero GAN corrosion) or "esrgan"
     upscale_model_name: str = "4xNomos8kSC"
     upscale_factor: int = 4
@@ -222,7 +226,7 @@ class EngineConfig:
         candidates = []
         if self.vault_dir:
             candidates.append(self.vault_dir / "models" / filename)
-        for env_key in ("MODEL_ENGINE_MODELS_DIR", "PORTRAIT_ENGINE_MODELS_DIR"):
+        for env_key in ("REELPROFILE_MODELS_DIR", "MODEL_ENGINE_MODELS_DIR", "PORTRAIT_ENGINE_MODELS_DIR"):
             env_models = os.environ.get(env_key)
             if env_models:
                 candidates.append(Path(env_models) / filename)

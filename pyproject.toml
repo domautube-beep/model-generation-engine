@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "model-generation-engine"
-version = "2.0.0"
-description = "Universal Zero-Hardcoding Model Generation Engine (모델생성): Single-Pass From-Scratch Synthesis for Any Model, Outfit, Location, and Angle with 4x Real-ESRGAN, Adaptive Halo-Free Matte Skin Micro-Texture, and 5K 21:9 Compositing"
+version = "1.0.0"
+description = "릴프로필 (프로필 / 모델생성) 정본 v1.0.0: Zero-Hardcoding 1-Pass Full-Person 3D Synthesis, Mandatory 1-Hop 8-Dir Bank, Context-Adaptive 5-Lens x 5-Lighting Matrix, De-Airbrushed Raw Pore Restoration, and 4K Optical Mastering"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+reelprofile = "model_generation_engine.cli:main"
 model-gen = "model_generation_engine.cli:main"
 
 [tool.setuptools.packages.find]

@@ -1,78 +1,48 @@
-# 모델생성 (`model-generation-engine` v3.0 & `모델생성 스튜디오`)
+# 릴프로필 (`프로필` — 정본 `v1.0.0`)
 
-> **100% Universal, Zero-Hardcoding Real-Person 8-Angle Identity, Multi-Styling, Multi-Location & 3D Previz Studio Engine**  
-> Built for **all projects** without a single hardcoded gender, eyewear, height/weight, outfit, location, pixel coordinate, or LAB skin threshold.
+> **공식 명칭**: **`릴프로필`** (약칭 **`프로필`**, 하위 호환 `모델생성`)
+> **현재 기준 버전**: **`정본 v1.0.0` (Default Baseline)** — 이전 모든 개발본은 `v0.1.0 ~ v0.9.5` (`< v1.0.0`) 히스토리로 관리되며, 이후 모든 수정·개발은 `scripts/version_ctl.py`를 통해 `v1.0.1+`로 자동 버전체크 및 업그레이드됩니다.
 
----
-
-## 1. Quick Launch — Standalone Web Studio (`모델생성 스튜디오 v3.0`)
-
-- **macOS One-Click**: Double-click `모델생성 스튜디오 실행.command`
-- **Terminal Launch (`http://127.0.0.1:18830`)**:
-  ```bash
-  PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project \
-    --with fastapi --with uvicorn --with python-multipart --with httpx \
-    --with opencv-python-headless --with onnxruntime --with pillow \
-    python3 launch_studio.py
-  ```
-
-### What You Can Do in `모델생성 스튜디오 v3.1`
-1. **STEP 01 — Real-Person Frontal-Arc Detailed 8-Direction Registration (`완전좌 -90° ~ 완전우 +90°` 사이 `22.5°` 간격 8방향 + 중앙 `0°` 원본)**:
-   - Upload a real person's face photo -> extracts an untouched pure optical `85mm` canonical anchor (`0°` `Gen-0`), measures 3D craniofacial ratios (`Apple Vision` + `YuNet`), and generates/manages **8 detailed frontal-hemisphere directions** (`-90°, -67.5°, -45°, -22.5°` | `[0° 원본]` | `+22.5°, +45°, +67.5°, +90°`) via 4-Hop `22.5°` progressive bridging (`<= 11.25°` max angular deviation across any portrait angle!).
-2. **STEP 02 — Clothes, Accessories, Bags & Shoes Multi-Slot Attachments**:
-   - Attach multiple photos across `옷 (garment)`, `악세사리 (accessory)`, `가방 (bag)`, and `신발 (shoe)` as needed.
-   - Automatic `YuNet` **Foreign-Face Neutral-Grey Masking (`#8C8C8C`)** ensures models inside product/lookbook photos never contaminate the subject's identity.
-3. **STEP 03 — Interactive 3D Previz Pose Director**:
-   - Drag 3D mannequin joints (`head, neck, shoulders, elbows, wrists, hips, knees, ankles`) directly on the canvas, choose from 8 editorial presets, or adjust `0°..360°` head/torso azimuth, camera elevation, focal length (`35/50/85/105mm`), and frame placement—automatically routing the matching angle from the 8-Angle Turnaround Bank!
-4. **STEP 04 — Multi-Location & Reference Style Parallel Batching (`N장 첨부 → N장 동시 생성`)**:
-   - Upload **N** location/style reference images (or enter **M** text mood lines) to launch **N + M** parallel scene jobs with 16-Point Scene Tone & Manner Harmony.
-5. **STEP 05 — Pure Optical `Lanczos-4` 5K Output & 9 Automated Quality Gates**:
-   - `Real-ESRGAN`, synthetic skin noise, highlight chrominance shifts, and 2D oval `facelock` pixel pasting are **disabled by default** to guarantee crisp glasses rims, true iris color, and natural matte skin at 400% zoom.
-   - Every 5K (`5040x2160`) / 4K (`3840x2160`) output is audited by 9 Quality Gates (`YuNet`, `SFace >= 0.65`, `Apple Vision 3D Proportion Lock`, `Per-Organ Anti-Smudge`, `Seam L1 <= 6.0`, `Zero Specular Glare`).
+실제 인물 사진 1장(초소형 `18KB` 증명사진/PNG 누끼 포함)만으로 **원패스 3D 통인물 합성**, **순수 1-Hop 8방향(`-90° ~ +90°`) 마스터 뱅크**, **장소·상황 적응형 5렌즈(`50·65·85·105·135mm`) × 5현장맞춤 독립조명**, **디에어브러싱 실사 모공 복원**, **무그레인 순수 광학 4K 마스터링**을 수행하는 무하드코딩 하이엔드 인물 화보 엔진 & 로컬 웹 스튜디오입니다.
 
 ---
 
-## 2. CLI Subcommands
+## 1. 빠른 실행 방법 (Mac / Windows / 타 PC 무의존 포터블)
+
+### macOS 원클릭 실행
+폴더 안의 **`릴프로필 스튜디오 실행.command`** 파일을 더블클릭하면 로컬 가상환경(`.venv` 또는 `uv`)을 자동 구성한 뒤 웹 스튜디오(`http://127.0.0.1:18830`)가 열립니다.
 
 ```bash
-# 1. Plan 3-Hop 8-Angle Turnaround from any real face photo
-PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
-  python3 -m model_generation_engine.cli plan-turnaround \
-  --ref-face /path/to/person.jpg \
-  --output-canonical /path/to/canonical_front.jpg \
-  --angles 8
-
-# 2. Compose N parallel jobs from 8-angle anchor + clothes/accessories/bag/shoes + multiple locations + 3D Previz pose
-PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
-  python3 -m model_generation_engine.cli compose-batch \
-  --canonical-front /path/to/canonical_front.jpg \
-  --garment /path/to/jacket.jpg \
-  --accessory /path/to/watch.jpg \
-  --bag /path/to/bag.jpg \
-  --shoe /path/to/shoes.jpg \
-  --location-image /path/to/place1.jpg \
-  --location-image /path/to/place2.jpg \
-  --pose-preset seated_armchair --head-azimuth 45 --torso-azimuth 30
-
-# 3. Commercial 3-Stage Headless 8.2-Head Body + 1:1 Mesh-Locked Head Workflow (v13.3)
-# Stage 1 + 2A: Erase placeholder head & rig -> isotropic 8.2-head (0.325) neck-centered Gen-0 pre-composite
-PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
-  python3 scripts/run_headless_mesh_workflow.py prepare \
-  --gen0 /path/to/gen0_origin.jpg \
-  --body-plate /path/to/stage1_body_plate_4k.png \
-  --work-dir /path/to/work_dir --head-ratio 0.325
-
-# Stage 2B: Harmonize neck, collarbone, and shoulder hair drape in pinned 1-person Google Flow project (Nano Banana Pro 4K)
-/Users/doma/Projects/shorts-automation/.venv/bin/python scripts/google_flow_ultra_cli.py \
-  --images /path/to/work_dir/work_dir_stage2a_mesh_precomposite.jpg \
-  --prompt "..." --output /path/to/work_dir/stage2b_flow_harmonized_4k.png \
-  --project-url "https://flow.google.com/project/<subject-uuid>" --model "Nano Banana Pro" --aspect "3:4" --tier "4K" --headed
-
-# Stage 2C: Inward-only Crown/Jaw RBF Snap + Skin-Masked Relighting + Zero-Halo 4-Level Pyramid + 10-Gate & 400% Strips
-PYTHONPATH="." /Users/doma/.local/bin/uv run --no-project --with opencv-python-headless --with onnxruntime --with pillow \
-  python3 scripts/run_headless_mesh_workflow.py finalize \
-  --gen0 /path/to/gen0_origin.jpg \
-  --harmonized /path/to/work_dir/stage2b_flow_harmonized_4k.png \
-  --meta /path/to/work_dir/stage2a_meta.json \
-  --output-dir /path/to/work_dir --stem "final_output"
+chmod +x "릴프로필 스튜디오 실행.command" install_reelprofile.sh
+./"릴프로필 스튜디오 실행.command"
 ```
+
+### Windows 원클릭 실행
+폴더 안의 **`릴프로필_스튜디오_실행_Windows.bat`** 파일을 더블클릭합니다 (`Python 3.10+` 설치 필요).
+
+### Antigravity / Claude 스킬 & 가드 훅 자동 연동 (선택)
+다른 컴퓨터에서 AI 에이전트(Antigravity / Claude Code)에 `'릴프로필'` · `'프로필'` 스킬과 순수 원본 가드 훅을 한 번에 등록하려면:
+```bash
+./install_reelprofile.sh
+```
+
+---
+
+## 2. 정본 `v1.0.0` 핵심 디폴트 기능
+
+1. **Step 1 — 순수 원본 1-Hop 8방향(`-90° ~ +90°`) 마스터 뱅크**:
+   - 다단계 연쇄 변형(`Hop-Chaining`) 없이 오직 순수 원본(`Gen-0`)에서만 8각도(`-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°`)를 생성·조립합니다.
+2. **장소·상황 적응형 5렌즈 × 5독립조명 디폴트 매트릭스 (`SceneAdaptive5Lens5LightingPlanner`)**:
+   - 업로드된 배경 사진이나 텍스트 장면을 `상업 스튜디오` / `건축·라운지·서재 실내` / `야외 자연광` / `로우키 야간·무드` 4대 환경군과 색온도(K)·광원 방향(좌/우)으로 자동 판별해 **5개 렌즈(`50 / 65 / 85 / 105 / 135mm`) × 5개 물리 정합 조명** + **5개 자동 초점거리 클린플레이트(`loc01..loc05`)**를 생성합니다.
+3. **초소형·보정 증명사진 자동 디에어브러싱 & 실사 모공 복원**:
+   - 원본 볼 영역 선예도(`skin_norm_laplacian < 24.0`)를 자동 계측하여 증명사진 보정뭉개짐·플래시 백탁을 분리하고 실제 카메라 피부 모공과 현장 조명을 복원합니다.
+4. **의무 버전체크 시스템 (`version_guard.py` + `scripts/version_ctl.py`)**:
+   ```bash
+   # 현재 정본 버전 및 코드 수정 누락 여부 확인
+   python3 scripts/version_ctl.py check
+
+   # 코드 수정·기능 개발 후 버전 업그레이드 (v1.0.0 초과 상위 버전 강제)
+   python3 scripts/version_ctl.py bump --part patch --summary "새로운 기능/수정 요약"
+   ```
+
+상세 버전 아카이브(`v0.1.0 ~ v0.9.5` 및 `정본 v1.0.0+`)는 [`docs/VERSION_HISTORY.md`](docs/VERSION_HISTORY.md) 및 [`VERSION.json`](VERSION.json)을 참조하세요.
