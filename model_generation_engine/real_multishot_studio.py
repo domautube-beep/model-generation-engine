@@ -1431,6 +1431,179 @@ class FaceLockedOutpaintStudio:
             "anchor_mid_xy": [round(float(anchor_cx), 1), round(float(anchor_mid_y), 1)],
         }
 
+    def build_editorial_pose_b_precomposite(
+        self,
+        original_location_path: Path,
+        output_canvas_path: Path,
+        bank: RealMultiShotBank,
+        clean_location_path: Optional[Path] = None,
+        target_head_to_shoulder_ratio: float = 0.342,
+    ) -> Dict[str, object]:
+        """Build Clean `B` (`stage2a_mesh_precomposite`) directly on the original editorial pose/garment/chair plate:
+
+        1. Preserves 100% of the target reference's editorial pose (3/4 chair angle, draped arm, crossed legs, slouchy charcoal suit drape).
+        2. Erases ONLY the foreign model's head/hair above the collar using `clean_location_path` (if provided) so background frescoes stay 100% crisp.
+        3. Calibrates head scale to the subject's real Korean anthropometry (`target_head_to_shoulder_ratio`) and places the highest-acuity calm real portrait (`0%` fake 2D shadow smudge!) ready for full-frame AI optical re-rendering (`Stage B`).
+        """
+        orig_bgr = cv2.imread(str(original_location_path))
+        if orig_bgr is None:
+            raise FileNotFoundError(f"Original location scene unreadable: {original_location_path}")
+
+        oh0, ow0 = orig_bgr.shape[:2]
+        target_h = 2048
+        target_w = int(round(ow0 * (target_h / float(oh0))))
+        # Snap near-9:16 to exact 1152x2048 (9:16) so 4K re-rendering has 0.0% aspect crop shift
+        if 0.54 <= (target_w / float(target_h)) <= 0.58:
+            target_w = 1152
+        scene_2k = cv2.resize(orig_bgr, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+        ch, cw = scene_2k.shape[:2]
+
+        clean_bg_2k: Optional[np.ndarray] = None
+        if clean_location_path is not None and Path(clean_location_path).is_file():
+            cb_raw = cv2.imread(str(clean_location_path))
+            if cb_raw is not None:
+                clean_bg_2k = cv2.resize(cb_raw, (cw, ch), interpolation=cv2.INTER_LANCZOS4)
+
+        pil_loc = Image.fromarray(cv2.cvtColor(scene_2k, cv2.COLOR_BGR2RGB))
+        marks_loc = self.vision.landmarks(pil_loc) or {}
+        lm_loc = _extract_ordered_76pt_landmarks(marks_loc, cw, ch)
+        pm_loc_pil = self.vision.person_mask(pil_loc)
+        pm_loc = (
+            np.array(pm_loc_pil.resize((cw, ch), Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+            if pm_loc_pil is not None
+            else np.zeros((ch, cw), dtype=np.float32)
+        )
+
+        f_loc = self.detector.detect(scene_2k)
+        lx, ly, lw, lh = f_loc.bbox
+        loc_chin_y = float(ly + lh)
+        loc_mid_xy = np.array([float(lx + 0.5 * lw), float(ly + 0.42 * lh)], dtype=np.float32)
+        loc_fw = float(lw)
+        loc_roll_rad = 0.0
+        if lm_loc is not None:
+            c_loc = lm_loc["contour"]
+            loc_chin_y = float(c_loc[:, 1].max())
+            loc_fw = max(24.0, float(c_loc[:, 0].max() - c_loc[:, 0].min()))
+            lp_l = np.mean(lm_loc.get("leftPupil", lm_loc["leftEye"]), axis=0)
+            rp_l = np.mean(lm_loc.get("rightPupil", lm_loc["rightEye"]), axis=0)
+            loc_mid_xy = 0.5 * (lp_l + rp_l)
+            loc_roll_rad = math.atan2(float(rp_l[1] - lp_l[1]), float(rp_l[0] - lp_l[0]))
+
+        # Measure shoulder joints on scene_2k to calibrate realistic Korean head-to-shoulder scale
+        bj_loc = self.vision.body_and_hand_points(pil_loc) or {}
+        sh_y = loc_chin_y + 0.34 * loc_fw
+        neck_cx = float(loc_mid_xy[0])
+        target_fw = loc_fw * 1.12  # Korean head-to-body ratio is ~12% larger relative to Western 8.5-head editorial frame
+        # Calibrate head width to realistic 7.6-head Korean editorial proportion on the lounging body
+        target_fw = loc_fw * 1.01
+
+        # 1. Erase ONLY the foreign model's face & hair strictly ABOVE the neck/collar (`yy <= loc_chin_y + 0.04*loc_fw` for face,
+        #    and dark side-hair wisps outside the neck column above `sh_y`), preserving 100% of the real neck & suit lapels!
+        yy, xx = np.mgrid[0:ch, 0:cw]
+        lab_s2k = cv2.cvtColor(scene_2k, cv2.COLOR_BGR2LAB).astype(np.float32)
+        in_upper_head = (
+            (yy <= int(round(loc_chin_y + 0.02 * loc_fw)))
+            & (np.abs(xx - float(loc_mid_xy[0])) <= 1.38 * loc_fw)
+            & (pm_loc > 0.06)
+        )
+        side_dark_hair = (
+            (yy > int(round(loc_chin_y - 0.10 * loc_fw)))
+            & (yy <= int(round(sh_y + 0.06 * loc_fw)))
+            & (np.abs(xx - float(loc_mid_xy[0])) >= 0.30 * loc_fw)
+            & (np.abs(xx - float(loc_mid_xy[0])) <= 1.38 * loc_fw)
+            & (lab_s2k[:, :, 0] < 36.0)
+            & (pm_loc > 0.25)
+        )
+        in_head_region = in_upper_head | side_dark_hair
+        head_erase_u8 = cv2.dilate(
+            in_head_region.astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (23, 23)),
+        )
+        # Protect real neck column (`|x - neck_cx| < 0.26*loc_fw` below `loc_chin_y`) & all suit lapels below `sh_y`!
+        keep_real_neck_and_suit = (yy >= int(round(sh_y + 0.02 * loc_fw))) | (
+            (yy >= int(round(loc_chin_y + 0.02 * loc_fw))) & (np.abs(xx - float(loc_mid_xy[0])) <= 0.28 * loc_fw)
+        )
+        head_erase_u8[keep_real_neck_and_suit] = 0
+        erase_w = cv2.GaussianBlur((head_erase_u8 > 0).astype(np.float32), (25, 25), 6.0)[:, :, None]
+
+        headless_scene = scene_2k.copy()
+        if clean_bg_2k is not None:
+            headless_scene = np.clip(
+                clean_bg_2k.astype(np.float32) * erase_w + headless_scene.astype(np.float32) * (1.0 - erase_w),
+                0.0,
+                255.0,
+            ).astype(np.uint8)
+        else:
+            ext_w = ((pm_loc < 0.05) & (head_erase_u8 == 0)).astype(np.float32)
+            bg_fill = _norm_gaussian(headless_scene.astype(np.float32), ext_w, sigma=36.0)
+            headless_scene = np.clip(
+                bg_fill * erase_w + headless_scene.astype(np.float32) * (1.0 - erase_w),
+                0.0,
+                255.0,
+            ).astype(np.uint8)
+
+        # 2. Select highest-IOD calm close-up real camera portrait (`shot05`, IOD=130px) so facial organs have maximum optical fidelity!
+        primary_shot = bank.highest_iod_entry
+        src_bgr = cv2.imread(primary_shot.path)
+        if src_bgr is None:
+            raise FileNotFoundError(f"Real shot unreadable: {primary_shot.path}")
+
+        head_bgr, head_alpha, gmeta = self._extract_universal_decontaminated_head_layer(src_bgr)
+
+        # UNIFORM neutral pre-exposure calm-down ONLY (ZERO fake 2D horizontal shadow smudge on B — let Stage B AI render true 3D shadows!)
+        pil_src = Image.fromarray(cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB))
+        lm_src = _extract_ordered_76pt_landmarks(self.vision.landmarks(pil_src) or {}, src_bgr.shape[1], src_bgr.shape[0])
+        src_roll_rad = 0.0
+        if lm_src is not None:
+            lp_s = np.mean(lm_src.get("leftPupil", lm_src["leftEye"]), axis=0)
+            rp_s = np.mean(lm_src.get("rightPupil", lm_src["rightEye"]), axis=0)
+            src_roll_rad = math.atan2(float(rp_s[1] - lp_s[1]), float(rp_s[0] - lp_s[0]))
+
+        lin_h = np.power(np.clip(head_bgr.astype(np.float32) / 255.0, 0.0, 1.0), 2.2) * 0.68
+        head_calm = np.clip(np.power(np.clip(lin_h, 0.0, 1.0), 1.0 / 2.2) * 255.0, 0.0, 255.0).astype(np.uint8)
+        lab_hc = cv2.cvtColor(head_calm, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab_hc[:, :, 1] = np.clip(128.0 + (lab_hc[:, :, 1] - 128.0) * 0.72, 40.0, 220.0)
+        lab_hc[:, :, 2] = np.clip(lab_hc[:, :, 2] + 2.5, 40.0, 220.0)
+        head_calm = cv2.cvtColor(lab_hc.astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+        # Rigid similarity transform (`sx == sy`, `det(R) == 1`) aligning head tilt & chin directly onto the real cervical neck!
+        scale_iso = float(target_fw) / max(12.0, float(gmeta["face_w_px"]))
+        d_roll = float(np.clip(0.85 * loc_roll_rad - src_roll_rad, math.radians(-12.0), math.radians(12.0)))
+        ca = scale_iso * math.cos(d_roll)
+        sa = scale_iso * math.sin(d_roll)
+
+        src_chin_x, src_chin_y = gmeta["chin_xy"]
+        # Seat head lower (+0.26*loc_fw) to eliminate Western giraffe-neck length, and align yawed chin (+0.22*loc_fw) dead-center over cervical axis!
+        dst_chin_y = float(loc_chin_y + 0.26 * loc_fw)
+        dst_chin_x = float(loc_mid_xy[0] + 0.22 * loc_fw)
+        tx = dst_chin_x - (ca * float(src_chin_x) - sa * float(src_chin_y))
+        ty = dst_chin_y - (sa * float(src_chin_x) + ca * float(src_chin_y))
+        M = np.array([[ca, -sa, tx], [sa, ca, ty]], dtype=np.float32)
+
+        warped_head = _warp_affine_nyquist(head_calm, M, (cw, ch), flags=cv2.INTER_LANCZOS4)
+        warped_alpha = cv2.warpAffine(head_alpha, M, (cw, ch), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+        a3 = np.clip(warped_alpha, 0.0, 1.0)[:, :, None]
+
+        precomp = np.clip(
+            warped_head.astype(np.float32) * a3 + headless_scene.astype(np.float32) * (1.0 - a3),
+            0.0,
+            255.0,
+        ).astype(np.uint8)
+
+        output_canvas_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_canvas_path), precomp, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+
+        return {
+            "precomposite_path": str(output_canvas_path),
+            "locked_real_shot": primary_shot.name,
+            "locked_real_shot_path": primary_shot.path,
+            "locked_yaw_deg": primary_shot.yaw_deg,
+            "canvas_size": [cw, ch],
+            "target_face_w_px": round(float(target_fw), 1),
+            "anchor_chin_xy": [round(float(dst_chin_x), 1), round(float(dst_chin_y), 1)],
+            "mode": "editorial_pose_b_clean_precomposite_zero_2d_shadow",
+        }
+
     def lock_real_face_with_scene_relighting(
         self,
         outpainted_4k_bgr: np.ndarray,

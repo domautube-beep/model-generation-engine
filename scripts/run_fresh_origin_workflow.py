@@ -45,7 +45,7 @@ def main() -> int:
     p_prep.add_argument("--clean-location-override", type=Path, default=None, help="Optional crisp empty room clean-plate override")
     p_prep.add_argument("--turnaround-sheet", type=Path, default=None, help="Verified 1-Hop 4K 8-Direction Master Turnaround Sheet (-90..+90 deg)")
     p_prep.add_argument("--real-originals", nargs="*", type=Path, default=[], help="Additional untouched real studio/candid photos of the same subject")
-    p_prep.add_argument("--design-mode", choices=("pure_character_sheet", "pure_v22", "design_a_relight", "design_b_facelock_outpaint"), default="pure_character_sheet")
+    p_prep.add_argument("--design-mode", choices=("pure_character_sheet", "pure_v22", "design_a_relight", "design_b_facelock_outpaint", "design_b_rerender"), default="pure_character_sheet")
     p_prep.add_argument("--extra-assets", nargs="*", type=Path, default=[])
     p_prep.add_argument("--aspect", default="3:4")
     p_prep.add_argument("--best-of", type=int, default=3)

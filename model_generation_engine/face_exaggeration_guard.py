@@ -508,9 +508,9 @@ class FaceExaggerationGuard:
                 ux_in, uy_in = float(vin[0]) / vnorm, float(vin[1]) / vnorm
                 ix, iy = int(np.clip(round(float(pt[0]) + ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) + uy_in * off), 0, h - 1))
                 ox, oy = int(np.clip(round(float(pt[0]) - ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) - uy_in * off), 0, h - 1))
-                if 22.0 <= float(L_ch[oy, ox]) <= 215.0:
+                if 42.0 <= float(L_ch[oy, ox]) <= 215.0 and float(lab[oy, ox, 1]) >= 129.5:
                     jaw_contrasts.append(float(L_ch[iy, ix] - L_ch[oy, ox]))
-            submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 8.0
+            submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 12.0
 
             # 3) Upper cervical neck width right beneath the chin (`+0.18 * iod`, centered on head mid-span, not yawed chin tip!)
             face_w = max(1.0, float(c[:, 0].max() - c[:, 0].min()))

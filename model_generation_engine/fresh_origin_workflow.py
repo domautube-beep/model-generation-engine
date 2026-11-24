@@ -387,7 +387,29 @@ class FreshOriginEditorialWorkflow:
                 )
 
         if clean_loc_p is not None and clean_loc_p.is_file():
-            if design_mode == "design_b_facelock_outpaint" and bank is not None:
+            if design_mode == "design_b_rerender" and bank is not None and loc_src_resolved is not None:
+                facelock_canvas_p = wdir / "stage2a_mesh_precomposite_editorial_b.jpg"
+                facelock_meta = self.facelock_studio.build_editorial_pose_b_precomposite(
+                    original_location_path=loc_src_resolved,
+                    output_canvas_path=facelock_canvas_p,
+                    bank=bank,
+                    clean_location_path=clean_loc_p,
+                )
+                self.origin_guard.register_approved_origin(facelock_canvas_p, kind="clean_location", depth=0)
+                ordered_refs.append(
+                    {
+                        "slot": f"Image {len(ordered_refs) + 1}",
+                        "role": "editorial_b_precomposite_rerender_guide",
+                        "path": str(facelock_canvas_p),
+                        "sha256": _sha256_file(facelock_canvas_p),
+                        "label": "Editorial Pose B Pre-Composite Guide (3/4 chair + slouchy charcoal suit + real camera face ready for full 3D optical re-rendering)",
+                    }
+                )
+                role_lines.append(
+                    f"Image {len(ordered_refs)} (EDITORIAL POSE B PRE-COMPOSITE — FULL-SCENE 3D OPTICAL RE-RENDER GUIDE): "
+                    "re-photograph this exact scene as a single authentic 35mm camera exposure so true 3D side-window light and shadows sculpt her face, nose, eye sockets, jaw, neck, suit, and chair together"
+                )
+            elif design_mode == "design_b_facelock_outpaint" and bank is not None:
                 facelock_canvas_p = wdir / "stage2a_mesh_precomposite_facelock.png"
                 facelock_meta = self.facelock_studio.build_facelock_precomposite_canvas(
                     clean_location_path=clean_loc_p,
@@ -505,7 +527,14 @@ class FreshOriginEditorialWorkflow:
                 f"Subject: {subj_label} ({ref_note}). "
                 f"{organ_depth_clause if organ_depth_clause else clause_25pt}"
             )
-            if design_mode == "design_b_facelock_outpaint" and facelock_canvas_p is not None:
+            if design_mode == "design_b_rerender" and facelock_canvas_p is not None:
+                clean_note = (
+                    f" Re-render and re-photograph Image {loc_slot_num} as ONE authentic single-lens 35mm optical location photograph (ZERO cut-and-paste composite look): "
+                    f"preserve the exact 3/4-angled leather swivel lounge chair, relaxed lounging posture (left arm draped effortlessly over the chair backrest, crossed legs), slouchy dark charcoal wool suit drape, "
+                    f"and the exact facial identity, eye/nose/lip anatomy, and Korean head-to-shoulder proportion from Image 1, Image 2, and Image {loc_slot_num}, "
+                    "while completely re-lighting her face, eyes, nose bridge, cheekbones, jaw, neck, hair, and hand together with the dark room so the side-window light casts genuine 3D nose-side shadow, orbital eye-socket depth, cheekbone highlight roll-off, and under-jaw neck shadow."
+                )
+            elif design_mode == "design_b_facelock_outpaint" and facelock_canvas_p is not None:
                 clean_note = (
                     f" Keep the subject's exact anchored head position, head scale, hair parting, and calm facial expression from Image {loc_slot_num} locked in place above the chair, "
                     "and seamlessly outpaint the neck-to-collar transition, natural hair strands draping onto the shoulders, seated body, natural hands matching Image 1, and crisp background detail."
@@ -799,11 +828,13 @@ class FreshOriginEditorialWorkflow:
         # 1. Region-Aware Upscayl Hybrid (`v2.2` default: 100% Optical Face/Eyes + Lossless Upscayl 4K Hair/Suit/Room),
         #    Pure Optical Lanczos-4, OR full Upscayl 4x
         acuity_meta: Dict[str, object] = {"applied": False}
-        pure_zero_mask = (design_mode == "pure_character_sheet") or (upscale_mode == "optical_fullframe")
-        if pure_zero_mask:
+        zero_post_paste = design_mode in ("pure_character_sheet", "design_b_rerender")
+        pure_zero_mask = zero_post_paste and (upscale_mode == "optical_fullframe")
+        if (design_mode == "pure_character_sheet") or (upscale_mode == "optical_fullframe"):
             # 100.0% Uniform Whole-Frame Pure Optical 4K Scaling — ZERO face/body split mask, ZERO face pasting, ZERO local ROI color painting!
             up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
             up_model = "optical_fullframe_uniform_4k_zero_composite"
+            pure_zero_mask = True
         elif upscale_mode == "upscayl_hybrid":
             up_bgr, hyb_meta = self.pipeline.upscaler.upscale_hybrid_optical_face_upscayl_body(
                 raw_bgr, target_min_height=4800, model_name=upscayl_model_name
@@ -839,7 +870,7 @@ class FreshOriginEditorialWorkflow:
         )
 
         cohesion_meta: Dict[str, object] = {"mode": cohesion_mode, "applied": False}
-        if (not pure_zero_mask) and (not is_low_key_relight) and cohesion_mode != "off":
+        if (not pure_zero_mask) and (not zero_post_paste) and (not is_low_key_relight) and cohesion_mode != "off":
             up_bgr, cohesion_meta = PostGenCohesionMasterer.master(
                 up_bgr,
                 face_det=face_4k,
@@ -848,7 +879,7 @@ class FreshOriginEditorialWorkflow:
                 seed=42,
             )
 
-        # 2b. Optional Design A or Design B (NEVER executed in pure_character_sheet zero-composite mode!)
+        # 2b. Optional Design A or Design B (NEVER executed in pure_character_sheet or design_b_rerender zero-post-paste modes!)
         relight_meta: Dict[str, object] = {"applied": False, "design_mode": design_mode}
         real_bank_eval: Optional[Dict[str, object]] = None
         bank_obj: Optional[RealMultiShotBank] = None
@@ -861,7 +892,7 @@ class FreshOriginEditorialWorkflow:
                 self.pipeline.auditor,
                 origin_guard=self.origin_guard,
             )
-            if not pure_zero_mask:
+            if (not pure_zero_mask) and (not zero_post_paste):
                 if design_mode == "design_a_relight":
                     up_bgr, relight_meta = self.relighter.relight_and_fuse_real_face(
                         up_bgr, bank=bank_obj, scene_mood=scene_mood
@@ -875,6 +906,10 @@ class FreshOriginEditorialWorkflow:
                     matched_bgr = cv2.imread(str(matched_p))
                     if matched_bgr is not None:
                         ref_bgr = matched_bgr
+            elif design_mode == "design_b_rerender" and locked_real_shot_path is not None and Path(locked_real_shot_path).is_file():
+                matched_bgr = cv2.imread(str(locked_real_shot_path))
+                if matched_bgr is not None:
+                    ref_bgr = matched_bgr
 
         face_4k = self.pipeline.detector.detect(up_bgr)
         crop_box = self.pipeline.detector.compute_upper_body_crop_box(
@@ -883,8 +918,8 @@ class FreshOriginEditorialWorkflow:
         X1, Y1, X2, Y2 = crop_box
         vx1, vy1 = max(0, X1 - 120), max(0, Y1 - 60)
         vx2, vy2 = min(uw, X2 + 120), min(uh, Y2 + 160)
-        skin_albedo_meta: Dict[str, object] = {"applied": False, "mode": "zero_mask_passthrough" if pure_zero_mask else "active"}
-        if not pure_zero_mask:
+        skin_albedo_meta: Dict[str, object] = {"applied": False, "mode": "zero_post_paste_passthrough" if (pure_zero_mask or zero_post_paste) else "active"}
+        if (not pure_zero_mask) and (not zero_post_paste):
             roi = up_bgr[vy1:vy2, vx1:vx2].copy()
             roi_matte, _ = self.pipeline.skin_processor.process(roi, seed=42, reference_skin_profile=None)
             up_bgr[vy1:vy2, vx1:vx2] = roi_matte
