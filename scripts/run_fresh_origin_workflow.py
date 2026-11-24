@@ -69,7 +69,7 @@ def main() -> int:
     p_rank.add_argument("--manifest", required=True, type=Path)
     p_rank.add_argument("--candidates", required=True, nargs="+", type=Path)
 
-    p_fin = sub.add_parser("finalize", help="Stage 5: Zero-Touch 4K Passthrough (v1.0.4 default: 0% lighting/texture/likeness change) + 10-Gate Audit")
+    p_fin = sub.add_parser("finalize", help="Stage 5: Zero-Touch 4K Passthrough (v1.0.4+ default: zero lighting/texture/likeness change) + 10-Gate Audit")
     p_fin.add_argument("--manifest", required=True, type=Path)
     p_fin.add_argument("--winner", required=True, type=Path)
     p_fin.add_argument("--output-dir", required=True, type=Path)

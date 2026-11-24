@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.0.4",
-  "canonical_label": "릴프로필 v1.0.4",
+  "canonical_version": "1.0.5",
+  "canonical_label": "릴프로필 v1.0.5",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-24T21:03:59+09:00",
+  "updated_at": "2026-11-24T21:38:47+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -140,14 +140,24 @@
         "scripts/run_fresh_origin_workflow.py",
         "scripts/version_ctl.py"
       ]
+    },
+    {
+      "version": "1.0.5",
+      "date": "2026-11-24",
+      "timestamp": "2026-11-24T21:38:47+09:00",
+      "summary": "v1.0.5: Python 3.14 argparse % 포맷 이스케이프 수정 (run_fresh_origin_workflow.py, run_headless_mesh_workflow.py)",
+      "changed_files": [
+        "scripts/run_fresh_origin_workflow.py",
+        "scripts/run_headless_mesh_workflow.py"
+      ]
     }
   ],
-  "code_tree_sha256": "863b497715dd8843e76ebd5894fdbbc1e413843cec3800bd4bbbe3ae8c4a1ed3",
+  "code_tree_sha256": "f0a2a0394272f51da7b688bfd71383d61aa4c5f526bffafed8c7dad0321a1c02",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "43483305ed17165720583f91f85ae649d89e6a05a5e22142fd6be9e649e7bebb",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "1b835272bac9acac1d77efedacb39c7149ffd966674541449e35098230f509e8",
+    "model_generation_engine/__init__.py": "46f12660353b7b84885ff05ad348b18fe54a261226255f1e02c4e7d694c38334",
     "model_generation_engine/apple_vision.py": "4cc46afebca32d5d6fafcda195d14d60959871f8c71a30a376a35a0a83b11798",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
@@ -177,8 +187,8 @@
     "model_generation_engine/version_guard.py": "6e16b8b9167ffea9257cec6e093dff44c489884977976b5583e5b0acab878bd4",
     "model_generation_engine/workflow.py": "22f1fffd424d41517a3384fbf8636f4d587b34a3aef52ecb578e0ee3fa392007",
     "scripts/google_flow_ultra_cli.py": "211cb6676a54fe4cfba9a0f0facd94b0871622eb7c2195b5cd6bbba0406576b4",
-    "scripts/run_fresh_origin_workflow.py": "62215667eb1b34cd7b61805dc788d5b70eab6b5aa0f098ccf81a7fffdf419728",
-    "scripts/run_headless_mesh_workflow.py": "4ee921ade771460e4a63bc26df1dc8e24e4670b2c32bb2130c0358bb489a5ee0",
+    "scripts/run_fresh_origin_workflow.py": "5adf8d372d438682d5b8556825ed52cee3d3fb2b25ce0043baa8bf1a47833748",
+    "scripts/run_headless_mesh_workflow.py": "dcaac8e6ae1211eae8ce455dce031a27719d5242f29a86af9aa7feefcd5dfae4",
     "scripts/version_ctl.py": "7b50eb48a3be956a3775e25bb2ee1ff3d058d1376d5305697fddd82b37fdf359"
   }
 }
