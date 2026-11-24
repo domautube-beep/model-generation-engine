@@ -2131,6 +2131,48 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         cmp_after = analyzer.compare(ref, restored_bgr)
         self.assertLess(cmp_after["diffs"]["skinUndertoneDeltaAB"], cmp_before["diffs"]["skinUndertoneDeltaAB"])
 
+    def test_38_v23_multishot_real_bank_relight_and_facelock(self) -> None:
+        """Verify RealMultiShotBank, IntrinsicAlbedoRelighter (Design A), and FaceLockedOutpaintStudio (Design B) with zero hardcoding."""
+        import tempfile
+        import cv2
+        import numpy as np
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+        from model_generation_engine.prompt_builder import PromptFirewall
+        from model_generation_engine.real_multishot_studio import (
+            FaceLockedOutpaintStudio,
+            IntrinsicAlbedoRelighter,
+            RealMultiShotBank,
+        )
+
+        pipe = ModelGenerationPipeline()
+        bank = RealMultiShotBank(pipe.config, pipe.detector, pipe.apple_vision, pipe.auditor)
+        summary = bank.ingest_real_originals([self.ref_face])
+        self.assertEqual(summary["shot_count"], 1)
+        skel_clause = bank.to_dynamic_skeletal_clause()
+        PromptFirewall.validate_prompt(skel_clause)
+
+        ref_bgr = cv2.imread(str(self.ref_face))
+        # Simulate directional warm window lighting across the face canvas and verify Design A preserves scene lighting + high SFace
+        h, w = ref_bgr.shape[:2]
+        grad_x = np.linspace(1.06, 0.82, w, dtype=np.float32)[None, :, None]
+        sim_scene = np.clip(ref_bgr.astype(np.float32) * grad_x, 0.0, 255.0).astype(np.uint8)
+        relighter = IntrinsicAlbedoRelighter(pipe.detector, pipe.apple_vision)
+        relit_a, meta_a = relighter.relight_and_fuse_real_face(sim_scene, bank=bank)
+        self.assertTrue(meta_a["applied"])
+        ev_a = bank.evaluate_against_all_real_shots(relit_a)
+        self.assertGreater(ev_a["max_sface_real_bank"], 0.88)
+
+        # Verify Design B clean head decontamination + precomposite canvas generation
+        fl_studio = FaceLockedOutpaintStudio(pipe.detector, pipe.apple_vision, relighter)
+        with tempfile.TemporaryDirectory() as td:
+            clean_bg = Path(td) / "clean_room.jpg"
+            out_pre = Path(td) / "stage2a_mesh_precomposite_facelock.png"
+            room = np.full((1024, 768, 3), (155, 168, 178), dtype=np.uint8)
+            cv2.imwrite(str(clean_bg), room)
+            b_meta = fl_studio.build_facelock_precomposite_canvas(clean_bg, out_pre, bank=bank)
+            self.assertTrue(out_pre.is_file())
+            self.assertEqual(b_meta["locked_real_shot"], summary["entries"][0]["name"])
+
 
 if __name__ == "__main__":
     unittest.main()

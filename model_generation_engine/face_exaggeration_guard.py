@@ -508,7 +508,7 @@ class FaceExaggerationGuard:
                 ux_in, uy_in = float(vin[0]) / vnorm, float(vin[1]) / vnorm
                 ix, iy = int(np.clip(round(float(pt[0]) + ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) + uy_in * off), 0, h - 1))
                 ox, oy = int(np.clip(round(float(pt[0]) - ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) - uy_in * off), 0, h - 1))
-                if 70.0 <= float(L_ch[oy, ox]) <= 200.0:
+                if 22.0 <= float(L_ch[oy, ox]) <= 215.0:
                     jaw_contrasts.append(float(L_ch[iy, ix] - L_ch[oy, ox]))
             submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 8.0
 
@@ -567,16 +567,22 @@ class FaceExaggerationGuard:
 
             upper_arch = 0.5 * (_upper_lid_arch(le) + _upper_lid_arch(re))
 
-            # Brow darkness & thickness
+            # Brow darkness & thickness (illumination-normalized per-side Weber contrast so low-key chiaroscuro shadows never misflag real brows)
             brow_h = 0.5 * (float(leb[:, 1].max() - leb[:, 1].min()) + float(reb[:, 1].max() - reb[:, 1].min())) / iod
-            skin_L = float(np.median(L_ch[max(0, int(lp[1] + 0.15 * iod)) : min(h, int(lp[1] + 0.45 * iod)), max(0, int(lp[0] - 0.15 * iod)) : min(w, int(lp[0] + 0.15 * iod))]))
             b_darks = []
-            for bpts in (leb, reb):
+            for bpts, e_ref in ((leb, lp), (reb, rp)):
+                sk_patch = L_ch[
+                    max(0, int(e_ref[1] + 0.15 * iod)) : min(h, int(e_ref[1] + 0.45 * iod)),
+                    max(0, int(e_ref[0] - 0.15 * iod)) : min(w, int(e_ref[0] + 0.15 * iod)),
+                ]
+                loc_skin_L = float(np.median(sk_patch)) if sk_patch.size >= 9 else 175.0
                 bx1, bx2 = max(0, int(bpts[:, 0].min())), min(w, int(bpts[:, 0].max()))
                 by1, by2 = max(0, int(bpts[:, 1].min() - 0.04 * iod)), min(h, int(bpts[:, 1].max() + 0.04 * iod))
                 patch = L_ch[by1:by2, bx1:bx2]
                 if patch.size >= 12:
-                    b_darks.append(max(0.0, skin_L - float(np.percentile(patch, 25))))
+                    raw_drop = max(0.0, loc_skin_L - float(np.percentile(patch, 25)))
+                    weber_norm_drop = raw_drop * float(np.clip(185.0 / max(75.0, loc_skin_L), 0.85, 2.25))
+                    b_darks.append(weber_norm_drop)
             brow_dark = float(np.mean(b_darks)) if b_darks else 25.0
 
             return {

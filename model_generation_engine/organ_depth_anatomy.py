@@ -53,7 +53,7 @@ class OrganAndDepthProfile:
     skin_pore_micro_std: float
     skin_subsurface_smoothness: float
 
-    def to_dynamic_organ_depth_clause(self) -> str:
+    def to_dynamic_organ_depth_clause(self, low_key_scene: bool = False) -> str:
         """Emit a 100% dynamically measured, zero-hardcoding 4-organ + 3D depth + skin tone/texture lock for Image 1."""
         nostril_note = (
             "keep nasal base level so nostrils remain subtly tucked as in Image 1 (never upturn or expose dark nostrils)"
@@ -80,11 +80,16 @@ class OrganAndDepthProfile:
             if self.anterior_malar_3d_depth >= 0.06
             else "preserve Image 1's exact calm 3D facial plane relief and jaw depth"
         )
-        undertone_note = (
-            "healthy translucent rosy-warm skin undertone matching Image 1 (never pale grey, greenish-olive, or muddy)"
-            if self.skin_a_undertone >= 6.5
-            else "exact natural balanced skin undertone matching Image 1 without grey or olive color cast"
-        )
+        if low_key_scene:
+            undertone_note = (
+                "natural intrinsic skin albedo harmonized seamlessly with the target room's directional window light, deep shadow falloff, and muted warm-olive film tone (zero bright studio pinkness)"
+            )
+        else:
+            undertone_note = (
+                "healthy translucent rosy-warm skin undertone matching Image 1 (never pale grey, greenish-olive, or muddy)"
+                if self.skin_a_undertone >= 6.5
+                else "exact natural balanced skin undertone matching Image 1 without grey or olive color cast"
+            )
         texture_note = (
             "fine velvety natural skin micro-texture with soft subsurface translucency matching Image 1 (never coarse dry sandpaper pores and never shiny plastic wax)"
             if self.skin_pore_micro_std <= 2.4
