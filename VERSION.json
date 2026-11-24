@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.0.2",
-  "canonical_label": "릴프로필 v1.0.2",
+  "canonical_version": "1.0.3",
+  "canonical_label": "릴프로필 v1.0.3",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-24T20:02:45+09:00",
+  "updated_at": "2026-11-24T20:18:14+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -113,14 +113,23 @@
       "changed_files": [
         "scripts/google_flow_ultra_cli.py"
       ]
+    },
+    {
+      "version": "1.0.3",
+      "date": "2026-11-24",
+      "timestamp": "2026-11-24T20:18:14+09:00",
+      "summary": "v1.0.3: Google Flow ULTRA 4K 다운로드 메뉴 클릭 타임아웃 시 자동 재시도 및 2K 폴백 복원력 추가",
+      "changed_files": [
+        "scripts/google_flow_ultra_cli.py"
+      ]
     }
   ],
-  "code_tree_sha256": "9cd970d222ff26467fcdf241277551af8ba45ff9c20e7b1ae3e063bf3f7bcd2d",
+  "code_tree_sha256": "4c80c87a163e56519c784fa734dc373548b71a34d1962720c3464232b4ffe4d2",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "43483305ed17165720583f91f85ae649d89e6a05a5e22142fd6be9e649e7bebb",
     "hooks/pre-commit-version-check.py": "569022ffe4adf002ee9becaed382669575a71f389d94397f3012e6407b8146d5",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "cc5a1ea382161bcacde3def44f3db68b360d71bd2508f793a77257a1e81e159a",
+    "model_generation_engine/__init__.py": "92e279ae2e3b0f3d084b19b5a5eca1df541d670f5e6d7fe3d3de807f9fccaaad",
     "model_generation_engine/apple_vision.py": "4cc46afebca32d5d6fafcda195d14d60959871f8c71a30a376a35a0a83b11798",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
@@ -149,7 +158,7 @@
     "model_generation_engine/upscaler.py": "38163cb012e8b0223c8acfef940d231914eb1b4bb6f00a03424ab3bcea025117",
     "model_generation_engine/version_guard.py": "6e16b8b9167ffea9257cec6e093dff44c489884977976b5583e5b0acab878bd4",
     "model_generation_engine/workflow.py": "22f1fffd424d41517a3384fbf8636f4d587b34a3aef52ecb578e0ee3fa392007",
-    "scripts/google_flow_ultra_cli.py": "01be5dffc8be9b60301ec7d14f81f56761dcca4c6a50be878dda4de8a2872059",
+    "scripts/google_flow_ultra_cli.py": "211cb6676a54fe4cfba9a0f0facd94b0871622eb7c2195b5cd6bbba0406576b4",
     "scripts/run_fresh_origin_workflow.py": "3b6c800041f7d93bd7eb1f34f21c6aadf05a97f428963edcd4e6ce525cbf67ed",
     "scripts/run_headless_mesh_workflow.py": "4ee921ade771460e4a63bc26df1dc8e24e4670b2c32bb2130c0358bb489a5ee0",
     "scripts/version_ctl.py": "664527acd7702332b6bce433bab56197e6ec51f2668cccf894163f1916b867f0"

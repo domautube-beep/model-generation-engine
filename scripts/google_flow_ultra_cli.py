@@ -610,12 +610,24 @@ def _download_highest_res_image(
         else:
             tier_order = all_tiers
         for tier_lbl, sel in tier_order:
-            opt = page.locator(sel)
-            if opt.count() > 0 and opt.first.is_visible():
-                chosen_tier = tier_lbl
-                with page.expect_download(timeout=wait_timeout * 1000) as dl_info:
-                    opt.first.click(timeout=8000, force=True)
-                dl = dl_info.value
+            for _dl_try in range(2 if tier_lbl == "4K" else 1):
+                if _dl_try > 0 or (dl is None and page.locator(sel).count() == 0):
+                    try:
+                        dl_btn.click(timeout=5000, force=True)
+                        time.sleep(1.0)
+                    except Exception:
+                        pass
+                opt = page.locator(sel)
+                if opt.count() > 0 and opt.first.is_visible():
+                    try:
+                        chosen_tier = tier_lbl
+                        with page.expect_download(timeout=min(65000, wait_timeout * 1000)) as dl_info:
+                            opt.first.click(timeout=8000, force=True)
+                        dl = dl_info.value
+                        break
+                    except Exception:
+                        dl = None
+            if dl is not None:
                 break
         if dl is None:
             dbg_p = Path.home() / ".model_generation_studio" / "flow_download_debug.png"
