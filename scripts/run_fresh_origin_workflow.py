@@ -53,6 +53,7 @@ def main() -> int:
     p_prep.add_argument("--no-ocular-anchor", action="store_true")
     p_prep.add_argument("--text-only-location", action="store_true", help="Analyze --location mood/lighting for text prompt ONLY without attaching any location image")
     p_prep.add_argument("--no-film-grain", action="store_true", help="Clean base-ISO commercial studio mode with ZERO film grain in prompt and 4K mastering")
+    p_prep.add_argument("--focal-mm", type=int, default=None, help="Optional fixed lens focal length in mm across all K cuts (e.g. 90)")
 
     p_rank = sub.add_parser("rank", help="Stage 4: Score K fresh candidates natively across SFace + 18 Craniofacial + 7 Ocular")
     p_rank.add_argument("--manifest", required=True, type=Path)
@@ -63,7 +64,7 @@ def main() -> int:
     p_fin.add_argument("--winner", required=True, type=Path)
     p_fin.add_argument("--output-dir", required=True, type=Path)
     p_fin.add_argument("--stem", required=True, type=str)
-    p_fin.add_argument("--upscale-mode", choices=("optical_fullframe", "upscayl_hybrid", "optical_lanczos", "upscayl"), default="optical_fullframe")
+    p_fin.add_argument("--upscale-mode", choices=("optical_fullframe", "upscayl_hybrid", "optical_lanczos", "upscayl"), default="upscayl_hybrid")
     p_fin.add_argument("--upscayl-model", default="ultramix-balanced-4x", help="Upscayl model name in Vault models/")
     p_fin.add_argument("--reference-scene", type=Path, default=None)
     p_fin.add_argument("--cohesion-mode", type=str, default="auto")
@@ -92,6 +93,7 @@ def main() -> int:
             attach_ocular_detail_anchor=not args.no_ocular_anchor,
             text_only_location=args.text_only_location,
             no_film_grain=args.no_film_grain,
+            fixed_lens_mm=args.focal_mm,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0

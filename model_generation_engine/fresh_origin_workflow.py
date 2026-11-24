@@ -140,7 +140,8 @@ class FreshOriginEditorialWorkflow:
 
         out_paths: List[Path] = []
         for idx, preset in enumerate(presets):
-            scale = float(preset.get("clean_plate_crop_scale", 1.0))  # type: ignore[arg-type]
+            raw_scale = float(preset.get("clean_plate_crop_scale", 1.0))  # type: ignore[arg-type]
+            scale = max(0.74, raw_scale) if min(h, w) < 1800 else raw_scale
             lens_mm = int(preset.get("lens_mm", 85))  # type: ignore[arg-type]
             if scale >= 0.995:
                 out_p = wdir / f"loc{idx + 1:02d}_{lens_mm}mm_clean.jpg"
@@ -193,6 +194,7 @@ class FreshOriginEditorialWorkflow:
         attach_ocular_detail_anchor: bool = True,
         text_only_location: bool = False,
         no_film_grain: bool = False,
+        fixed_lens_mm: Optional[int] = None,
         subject: Optional[SubjectProfile] = None,
     ) -> Dict[str, object]:
         """Stages 1 & 2: Validate Gen-0 (+ optional Multi-Shot Real Bank), clean location, emit K prompts."""
@@ -445,7 +447,11 @@ class FreshOriginEditorialWorkflow:
                         "match the exact 3D mandibular corner angle, lower-jaw taper, chin length, cheekbone projection, and ear/neck transition"
                     )
 
-            if attach_ocular_detail_anchor and turnaround_p is None:
+            lowres_or_smoothed_gen0 = bool(
+                (organ_profile is not None and organ_profile.is_airbrushed_or_lowres_origin)
+                or min(ref_bgr.shape[:2]) < 780
+            )
+            if attach_ocular_detail_anchor and turnaround_p is None and not lowres_or_smoothed_gen0:
                 ocular_anchor_p = wdir / "gen0_optical_ocular_detail_anchor.jpg"
                 self.pipeline.turnaround.prepare_pure_gen0_ocular_detail_anchor(gen0_p, ocular_anchor_p)
                 self.origin_guard.register_approved_origin(ocular_anchor_p, kind="gen0_optical_crop", depth=0)
@@ -630,9 +636,17 @@ class FreshOriginEditorialWorkflow:
         for i in range(k_count):
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
             preset = adaptive_presets[i]
-            lens_mm = int(preset["lens_mm"])  # type: ignore[arg-type]
-            preset_ap = str(preset["aperture"])
-            framing_desc = str(preset["framing_desc"])
+            if fixed_lens_mm is not None and int(fixed_lens_mm) > 0:
+                lens_mm = int(fixed_lens_mm)
+                preset_ap = "f/2.2"
+                framing_desc = (
+                    f"intimate {lens_mm}mm medium-telephoto chest-to-mid-thigh editorial portrait framing "
+                    "with natural optical compression, generous facial pixel resolution, and creamy shallow depth-of-field bokeh"
+                )
+            else:
+                lens_mm = int(preset["lens_mm"])  # type: ignore[arg-type]
+                preset_ap = str(preset["aperture"])
+                framing_desc = str(preset["framing_desc"])
             preset_light_ko = str(preset["lighting_name_ko"])
             preset_light_en = str(preset["lighting_desc"])
             regime_family = str(preset["scene_regime_family"])

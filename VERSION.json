@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.0.0",
-  "canonical_label": "정본 v1.0.0 (Default Baseline)",
+  "canonical_version": "1.0.1",
+  "canonical_label": "릴프로필 v1.0.1",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-24T19:16:48+09:00",
+  "updated_at": "2026-11-24T19:51:04+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -94,13 +94,24 @@
       "summary": "장소·상황 적응형 5렌즈(50·65·85·105·135mm)×5독립조명 플래너, 자동 초점거리 클린플레이트 및 소형/보정 원본 디에어브러싱 포어 복원 완성"
     }
   ],
-  "post_v1_upgrades": [],
-  "code_tree_sha256": "fef15c2b260993dd90622adbf7a6105764806d2dc5a9fcb9deb84c15cdd0705c",
+  "post_v1_upgrades": [
+    {
+      "version": "1.0.1",
+      "date": "2026-11-24",
+      "timestamp": "2026-11-24T19:51:04+09:00",
+      "summary": "upscayl_hybrid 4K 초해상도 디폴트 전환(Lanczos 3.8x 소프트 블러 제거), 소형/증명보정 원본 시 저화질 Image 2 앵커 자동 배제, 클린플레이트 과도 줌 블러 차단 및 --focal-mm(90mm) 고정 화각 지원",
+      "changed_files": [
+        "model_generation_engine/fresh_origin_workflow.py",
+        "scripts/run_fresh_origin_workflow.py"
+      ]
+    }
+  ],
+  "code_tree_sha256": "56401f194f8c29855994da69b2a33c52c297162648aa0d975d3fe6b76272b7fa",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "43483305ed17165720583f91f85ae649d89e6a05a5e22142fd6be9e649e7bebb",
     "hooks/pre-commit-version-check.py": "569022ffe4adf002ee9becaed382669575a71f389d94397f3012e6407b8146d5",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "62f5039f04c3e94d2c175dca62609f40c9155917eda00a43356dd0bf11290508",
+    "model_generation_engine/__init__.py": "18f1c00f2c519802738af95f2e2961ec272a3891b8ba52f7502df1068978fe33",
     "model_generation_engine/apple_vision.py": "4cc46afebca32d5d6fafcda195d14d60959871f8c71a30a376a35a0a83b11798",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
@@ -108,7 +119,7 @@
     "model_generation_engine/detector.py": "1e177f13576663eacb866ecf9947cd9986bd8a473c4de92ce0d6b568422ab2b8",
     "model_generation_engine/face_exaggeration_guard.py": "94fbbc10a492bf41d8a0ef3417eba2a50e6f08a60f6c48c175ea11767256e936",
     "model_generation_engine/face_reattach.py": "2f8bf1df83bdbdecffad7da9fc823afd2ecb10eca65798fc1964b0b6019c6dcb",
-    "model_generation_engine/fresh_origin_workflow.py": "699eb0cdbf53f2777773ffd1dc5cafff146197215225c9c228f0d75fd9204225",
+    "model_generation_engine/fresh_origin_workflow.py": "2177915e8b681f82737570ed0b8f727f7a359ac2b51e339e0512f46c8797a6b6",
     "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
     "model_generation_engine/identity_turnaround.py": "d815d36d39c7fa3f089db970cde5c765652e1d6558fcd20fec441f059eef51e1",
     "model_generation_engine/multi_asset_composer.py": "74241e18f37f9c00eb54c93367cae76ef2efcba59e6bcd758e17f312aeca85a8",
@@ -130,7 +141,7 @@
     "model_generation_engine/version_guard.py": "6e16b8b9167ffea9257cec6e093dff44c489884977976b5583e5b0acab878bd4",
     "model_generation_engine/workflow.py": "22f1fffd424d41517a3384fbf8636f4d587b34a3aef52ecb578e0ee3fa392007",
     "scripts/google_flow_ultra_cli.py": "5eaf76b701cc02c88c3a05ea863145f44677a8a76f35c45d81af802ac1524fbf",
-    "scripts/run_fresh_origin_workflow.py": "7a418cf69478b877d85540f1f5712778a4d571badc39a5b2197ed48e8095fd37",
+    "scripts/run_fresh_origin_workflow.py": "3b6c800041f7d93bd7eb1f34f21c6aadf05a97f428963edcd4e6ce525cbf67ed",
     "scripts/run_headless_mesh_workflow.py": "4ee921ade771460e4a63bc26df1dc8e24e4670b2c32bb2130c0358bb489a5ee0",
     "scripts/version_ctl.py": "664527acd7702332b6bce433bab56197e6ec51f2668cccf894163f1916b867f0"
   }

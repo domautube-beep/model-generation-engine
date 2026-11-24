@@ -18,6 +18,8 @@
   - **Step 4~6**: 초소형(`18.9KB`)·증명사진 보정 원본 자동 감지(`skin_norm_laplacian < 24.0`) 기반 **디에어브러싱 실사 모공 복원(`생-031`/`생-032`)** + 무그레인 순수 광학 `Lanczos-4` 4K 마스터링 + 400% 눈매·윤곽 육안 검수 디폴트화
   - `version_guard.py` + `scripts/version_ctl.py` + `hooks/pre-commit-version-check.py` 자동 버전체크 체계 탑재
 <!-- POST_V1_UPGRADES -->
+- **`v1.0.1`** (`2026-11-24`): upscayl_hybrid 4K 초해상도 디폴트 전환(Lanczos 3.8x 소프트 블러 제거), 소형/증명보정 원본 시 저화질 Image 2 앵커 자동 배제, 클린플레이트 과도 줌 블러 차단 및 --focal-mm(90mm) 고정 화각 지원
+
 
 ---
 
