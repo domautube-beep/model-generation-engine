@@ -406,11 +406,28 @@ def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
             else:
                 raise RuntimeError("Google Flow upload button/input not found")
 
+            # Wait until any server transcoding percentage badge ("12%", "33%", "99%") on canvas or popover finishes!
+            t_trans = time.time()
+            time.sleep(2.2)
+            while time.time() - t_trans < 45.0:
+                pct_loc = page.locator("text=/^\\s*\\d{1,3}%\\s*$/")
+                any_pct = False
+                for pi in range(pct_loc.count()):
+                    try:
+                        if pct_loc.nth(pi).is_visible():
+                            any_pct = True
+                            break
+                    except Exception:
+                        pass
+                if not any_pct:
+                    break
+                time.sleep(1.5)
+
             # Wait up to 75s for upload to reach 100% and appear in the `+` media popover (or auto-attach as chip!)
             t_wait = time.time()
             cur_before_this = _count_prompt_bar_chips(page)
             while time.time() - t_wait < 75.0:
-                time.sleep(1.8)
+                time.sleep(1.5)
                 if _count_prompt_bar_chips(page) > cur_before_this:
                     item_btn = "AUTO_ATTACHED"
                     break
@@ -426,16 +443,26 @@ def _upload_and_attach_images(page, image_paths: List[Path]) -> int:
             page.screenshot(path=str(dbg_p), full_page=False)
             raise RuntimeError(f"Asset '{p.name}' did not appear in Google Flow asset popover (debug: {dbg_p})")
 
-        # Click the asset item in the list — in Flow this either attaches immediately & closes the popover,
-        # OR highlights it so "프롬프트에 추가" can be clicked.
+        # Click the asset item in the list (retry up to 4 times in case transcoding just completed!)
         chips_before_click = _count_prompt_bar_chips(page)
-        item_btn.click(timeout=4000, force=True)
-        time.sleep(0.8)
-        if _count_prompt_bar_chips(page) <= chips_before_click:
+        for _att in range(4):
+            if _att > 0:
+                time.sleep(2.2)
+                _ensure_popover_open()
+                time.sleep(0.9)
+                item_btn = _find_asset_item_by_name(p.name)
+                if item_btn is None:
+                    continue
+            item_btn.click(timeout=4000, force=True)
+            time.sleep(1.2)
+            if _count_prompt_bar_chips(page) > chips_before_click:
+                break
             add_btn = _first_visible(page, add_prompt_btn_sel, min_x=300.0)
             if add_btn is not None:
                 add_btn.click(timeout=5000, force=True)
-                time.sleep(1.0)
+                time.sleep(1.2)
+            if _count_prompt_bar_chips(page) > chips_before_click:
+                break
 
     # Close popover cleanly so only the prompt bar remains
     if _first_visible(page, add_prompt_btn_sel, min_x=240.0) is not None:
