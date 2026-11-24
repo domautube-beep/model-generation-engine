@@ -109,25 +109,25 @@ class OrganAndDepthProfile:
         )
 
     def to_natural_identity_only_clause(self, clean_studio: bool = False) -> str:
-        """Emit a pure photographer-language identity-only clause (ZERO CAD numbers, strict separation of 'Who' vs 'How Shot')."""
+        """Emit a pure photographer-language identity-only clause (ZERO CAD numbers, gender/hairstyle-universal, strict separation of 'Who' vs 'How Shot')."""
         if clean_studio:
             return (
-                "Copy the exact real person's face and hair 1:1 from Image 1 and Image 2—reproduce her exact bright, vertically open almond eyes, "
-                "distinct thin natural double-eyelid crease line, clear dark-brown irises with crisp studio catchlights and balanced white sclera, "
-                "subtle natural lower-lid fullness, compact short midface and short philtrum (never elongate the midface or nose), softly rounded nasal tip, "
-                "naturally hydrated rose-coral lip color and calm gentle lip contour, youthful oval cheek fullness tapering cleanly to her compact chin "
-                "(never widen or weigh down the lower jaw), and her exact long straight dark-brown hair parting at the crown and flowing down past her shoulders "
-                "(right side neatly behind her ear with long hair draping down behind the ear, left side flowing softly past her cheek over her lapel—never a short ear-hugged bob), "
+                "Copy the exact real person's face and hairstyle 1:1 from Image 1 and Image 2—reproduce their exact natural eye shape and openness, "
+                "exact upper-eyelid fold structure (never add a thick artificial double-eyelid crease and never squint), clear dark-brown irises with crisp studio catchlights and balanced white sclera, "
+                "exact eyebrow shape and hair density, subtle natural lower-lid contour, exact midface and philtrum proportions (never elongate or compress the midface or nose), "
+                "exact nasal bridge and softly rounded nasal tip, naturally hydrated lip color and exact gentle mouth corner contour, "
+                "exact cheek volume and mandibular jawline-to-chin taper (never widen, puff out, or artificially shave the jaw), "
+                "and their exact hairstyle, bangs/parting, sideburn/ear exposure, and hair length/volume from Image 1 (never invent a different haircut, never spike up down-swept bangs, and never alter hair length), "
                 "while harmonized seamlessly into the studio lighting of the scene."
             )
         return (
-            "Copy the exact real person's face 1:1 from the portrait reference—reproduce her exact open almond eye shape, "
-            "distinct thin natural double-eyelid crease line above the lash rim, clear dark iris-to-sclera balance with natural catchlights, "
-            "subtle natural lower-lid contour, softly rounded nasal bridge and nasal tip, compact philtrum, calm natural lip shape "
-            "with gentle level-to-slightly-upturned mouth corners (never drooping or frowning), natural anterior-and-lateral cheek fullness "
-            "(never gaunt or hollowed in shadow), exact oval cheek-to-jawline taper, and natural dark hair parting, while COMPLETELY DISCARDING "
-            "the bright studio flash lighting, pale studio skin brightness, stiff upright ID-photo neck posture, "
-            "and fitted office blazer of the reference portrait."
+            "Copy the exact real person's face and hairstyle 1:1 from the portrait reference—reproduce their exact natural eye shape, "
+            "exact upper-eyelid fold structure above the lash rim, clear dark iris-to-sclera balance with natural catchlights, "
+            "exact eyebrow contour, subtle natural lower-lid contour, softly rounded nasal bridge and nasal tip, exact philtrum length, calm natural lip shape "
+            "with gentle natural mouth corners (never drooping or frowning), natural anterior-and-lateral cheek fullness "
+            "(never gaunt or hollowed in shadow), exact cheek-to-jawline taper, and exact natural hairstyle/bangs/parting from Image 1, while COMPLETELY DISCARDING "
+            "the flat ID-backdrop lighting, stiff upright ID-photo neck posture, "
+            "and formal suit/tie of the reference portrait."
         )
 
 

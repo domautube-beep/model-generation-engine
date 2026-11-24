@@ -518,9 +518,9 @@ class FreshOriginEditorialWorkflow:
                 f"Lit solely by existing {lit_dir} window daylight {space_phrase} "
                 "with ZERO studio fill flash, ZERO reflector, and ZERO artificial face brightening: "
                 "let overall facial brightness sit naturally subdued inside the dim room's moody warm-olive ambient air, "
-                f"with soft muted {lit_dir} window daylight gently illuminating her face and clear open eyes while the {shd_dir} side, "
+                f"with soft muted {lit_dir} window daylight gently illuminating the subject's face and clear open eyes while the {shd_dir} side, "
                 "neck, and inner garment folds transition smoothly into soft low-key ambient room shadow "
-                "(preserving her natural cheek volume and calm gentle expression without gaunt cheekbone hollowing) with grounded chair contact occlusion"
+                "(preserving natural cheek volume and calm gentle expression without gaunt cheekbone hollowing) with grounded chair contact occlusion"
             )
         elif loc_radio_spec is not None and clean_loc_p is not None:
             loc_light_desc = (
@@ -575,8 +575,8 @@ class FreshOriginEditorialWorkflow:
                 clean_note = ""
             slot3_pose = (
                 f"Physical Gravity & Pose: {scene_instruction.strip()}.{clean_note} "
-                "Let hip and torso weight sink genuinely deep into the seat cushion under real gravity with a relaxed curved spine "
-                "and natural asymmetric shoulder drop, while keeping her head comfortably forward with a slight natural chin tuck "
+                "Let hip and torso weight rest genuinely on the furniture under real gravity with a relaxed natural spine "
+                "and natural shoulder posture, while keeping the head comfortably forward with a slight natural chin tuck "
                 "matching Image 1's vertical camera angle (NEVER lean the head backward, NEVER tilt the chin upward, and NEVER expose the underside of the nostrils; zero stiff ID-photo tension)."
             )
             slot4_outfit = (
