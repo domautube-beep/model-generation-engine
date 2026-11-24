@@ -526,6 +526,12 @@ class FreshOriginEditorialWorkflow:
                 f"Lit naturally by the existing ~{kelv_val}K ambient light of Image {loc_slot_num} with zero artificial studio flash cutout, "
                 "sharing identical shadow density, contact occlusion, and ambient color temperature across skin, wardrobe, and room"
             )
+        elif loc_radio_spec is not None:
+            loc_light_desc = (
+                f"Sculpted ~{kelv_val}K directional soft studio key light with gentle ~3-stop 3D shadow roll-off across facial planes, "
+                "fluid garment folds, and chair legs, natural grounded contact occlusion on the floor, and balanced natural skin tone "
+                "harmonized with the warm room ambiance (zero harsh cutout flash, zero backdrop color bleed onto skin)"
+            )
         else:
             loc_light_desc = (
                 "Natural directional available light with authentic 3D shadow falloff, grounded contact occlusion, and zero studio flash cutout"

@@ -97,7 +97,7 @@ def main() -> int:
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
         ref_for_angle = (
             Path(manifest["matched_8dir_portrait_path"])
-            if manifest.get("design_mode") == "pure_character_sheet" and manifest.get("matched_8dir_portrait_path")
+            if manifest.get("matched_8dir_portrait_path")
             else Path(manifest["gen0_portrait_path"])
         )
         res = wf.score_and_select_native_winner(
@@ -115,7 +115,7 @@ def main() -> int:
         locked_p = Path(fl_meta["locked_real_shot_path"]) if fl_meta.get("locked_real_shot_path") else None
         ref_for_angle = (
             Path(manifest["matched_8dir_portrait_path"])
-            if manifest.get("design_mode") == "pure_character_sheet" and manifest.get("matched_8dir_portrait_path")
+            if manifest.get("matched_8dir_portrait_path")
             else Path(manifest["gen0_portrait_path"])
         )
         res = wf.finalize_native_winner_4k(
