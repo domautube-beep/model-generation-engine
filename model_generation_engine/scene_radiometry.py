@@ -836,6 +836,7 @@ class PostGenCohesionMasterer:
         target_spec: Optional[SingleLensRadiometricSpec] = None,
         mode: str = "digital_neutral_raw",
         seed: int = 42,
+        disable_grain: bool = False,
     ) -> Tuple[np.ndarray, Dict[str, object]]:
         eff_key = mode if mode in COHESION_MASTERING_MODES else "digital_neutral_raw"
         cfg = COHESION_MASTERING_MODES[eff_key]
@@ -1065,7 +1066,7 @@ class PostGenCohesionMasterer:
                 bloom_safe = bloom_full * (1.0 - np.clip(skin_damper + organ_shield, 0.0, 1.0))
                 L = np.clip(L + bloom_k * 30.0 * bloom_safe * (1.0 - L / 255.0), 0.0, 255.0)
 
-        grain_sigma = float(cfg.get("grain_sigma", 0.0)) * min(1.0, strength)  # type: ignore[arg-type]
+        grain_sigma = 0.0 if disable_grain else (float(cfg.get("grain_sigma", 0.0)) * min(1.0, strength))  # type: ignore[arg-type]
         if grain_sigma > 0.05:
             rng = np.random.default_rng(seed)
             # Soft optical emulsion grain (blurred slightly at 0.65px so it NEVER looks like sharp digital noise!)

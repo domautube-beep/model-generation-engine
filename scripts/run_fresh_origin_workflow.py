@@ -52,6 +52,7 @@ def main() -> int:
     p_prep.add_argument("--no-match-yaw", action="store_true")
     p_prep.add_argument("--no-ocular-anchor", action="store_true")
     p_prep.add_argument("--text-only-location", action="store_true", help="Analyze --location mood/lighting for text prompt ONLY without attaching any location image")
+    p_prep.add_argument("--no-film-grain", action="store_true", help="Clean base-ISO commercial studio mode with ZERO film grain in prompt and 4K mastering")
 
     p_rank = sub.add_parser("rank", help="Stage 4: Score K fresh candidates natively across SFace + 18 Craniofacial + 7 Ocular")
     p_rank.add_argument("--manifest", required=True, type=Path)
@@ -68,6 +69,7 @@ def main() -> int:
     p_fin.add_argument("--cohesion-mode", type=str, default="auto")
     p_fin.add_argument("--no-vault-sync", action="store_true")
     p_fin.add_argument("--allow-audit-fail", action="store_true")
+    p_fin.add_argument("--no-film-grain", action="store_true", help="Disable all synthetic film grain during 4K mastering")
 
     args = parser.parse_args()
     wf = FreshOriginEditorialWorkflow()
@@ -89,6 +91,7 @@ def main() -> int:
             match_gen0_yaw=not args.no_match_yaw,
             attach_ocular_detail_anchor=not args.no_ocular_anchor,
             text_only_location=args.text_only_location,
+            no_film_grain=args.no_film_grain,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
@@ -131,6 +134,7 @@ def main() -> int:
             reference_scene_path=args.reference_scene,
             cohesion_mode=args.cohesion_mode,
             design_mode=str(manifest.get("design_mode") or "pure_v22"),
+            no_film_grain=bool(args.no_film_grain or manifest.get("no_film_grain", False)),
             real_bank_entries=bank_info.get("entries"),
             locked_real_shot_path=locked_p,
         )

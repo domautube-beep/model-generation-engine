@@ -122,6 +122,7 @@ class FreshOriginEditorialWorkflow:
         match_gen0_yaw: bool = True,
         attach_ocular_detail_anchor: bool = True,
         text_only_location: bool = False,
+        no_film_grain: bool = False,
         subject: Optional[SubjectProfile] = None,
     ) -> Dict[str, object]:
         """Stages 1 & 2: Validate Gen-0 (+ optional Multi-Shot Real Bank), clean location, emit K prompts."""
@@ -159,7 +160,7 @@ class FreshOriginEditorialWorkflow:
         organ_profile = self.organ_depth.extract_profile(ref_bgr)
         clause_25pt = blueprint.to_3d_invariance_clause()
         organ_depth_clause = organ_profile.to_dynamic_organ_depth_clause() if organ_profile is not None else ""
-        natural_id_clause = organ_profile.to_natural_identity_only_clause() if organ_profile is not None else ""
+        natural_id_clause = organ_profile.to_natural_identity_only_clause(clean_studio=no_film_grain) if organ_profile is not None else ""
         PromptFirewall.validate_prompt(clause_25pt)
         if organ_depth_clause:
             PromptFirewall.validate_prompt(organ_depth_clause)
@@ -541,11 +542,18 @@ class FreshOriginEditorialWorkflow:
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
             lens_mm = (80, 85, 90)[i % 3]
             aperture_str = "f/2.8, ISO 800 available light" if is_lk_scene else "f/3.2, natural available light"
-            slot1_camera = (
-                f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm lens at {aperture_str}, {aspect_ratio_label}), "
-                "natural undistorted perspective with realistic adult 7.45-head multi-segment body proportions "
-                "and organic shallow depth-of-field falloff across hair edges, furniture back, and distant background."
-            )
+            if no_film_grain:
+                slot1_camera = (
+                    f"Clean, tack-sharp 100MP medium-format digital commercial studio photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens at f/3.2, base ISO 64, {aspect_ratio_label}), "
+                    "pure noise-free studio optical clarity with ZERO film grain, natural undistorted perspective, "
+                    "realistic adult 7.45-head multi-segment Korean body proportions, and smooth natural studio depth-of-field."
+                )
+            else:
+                slot1_camera = (
+                    f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm lens at {aperture_str}, {aspect_ratio_label}), "
+                    "natural undistorted perspective with realistic adult 7.45-head multi-segment body proportions "
+                    "and organic shallow depth-of-field falloff across hair edges, furniture back, and distant background."
+                )
             slot2_identity = (
                 f"Subject: {subj_label} ({ref_note}). "
                 f"{natural_id_clause if natural_id_clause else 'Preserve exact 1:1 anatomical facial identity from Image 1 while discarding studio flash lighting and stiff posture.'} "
@@ -575,10 +583,17 @@ class FreshOriginEditorialWorkflow:
                 f"Wardrobe: {outfit_instruction.strip()}, matte fabric hanging and creasing naturally with body slouch and gravity "
                 "(completely replacing reference clothing)."
             )
-            slot5_light = (
-                f"Available-Light Exposure & Analog Texture: {loc_light_desc}; "
-                "unadorned matte skin micro-texture without specular oil glare, unified by organic analog 35mm film grain across the entire frame."
-            )
+            if no_film_grain:
+                slot5_light = (
+                    f"Clean Commercial Studio Lighting & Skin Realism: {loc_light_desc}; "
+                    "clean, translucent real-camera studio skin with fine natural pores and hydrated natural lip color matching Image 1 without plastic gloss, "
+                    "100% noise-free base-ISO digital studio smoothness with ZERO film grain, ZERO dust, and ZERO vintage filter across the entire frame."
+                )
+            else:
+                slot5_light = (
+                    f"Available-Light Exposure & Analog Texture: {loc_light_desc}; "
+                    "unadorned matte skin micro-texture without specular oil glare, unified by organic analog 35mm film grain across the entire frame."
+                )
             p_text = f"{slot1_camera} {slot2_identity} {slot3_pose} {slot4_outfit} {slot5_light}"
             PromptFirewall.validate_prompt(p_text)
             prompts.append(
@@ -601,6 +616,7 @@ class FreshOriginEditorialWorkflow:
         manifest = {
             "workflow_version": "2.2",
             "design_mode": design_mode,
+            "no_film_grain": bool(no_film_grain),
             "stage": "READY_FOR_FRESH_GEN",
             "created_at": time.time(),
             "gen0_portrait_path": str(gen0_p),
@@ -825,6 +841,7 @@ class FreshOriginEditorialWorkflow:
         reference_scene_path: Optional[Path] = None,
         cohesion_mode: str = "auto",
         design_mode: str = "pure_v22",
+        no_film_grain: bool = False,
         real_bank_entries: Optional[Sequence[Dict[str, object]]] = None,
         locked_real_shot_path: Optional[Path] = None,
     ) -> Dict[str, object]:
@@ -915,6 +932,7 @@ class FreshOriginEditorialWorkflow:
                 reference_scene_bgr=ref_scene_bgr,
                 mode=cohesion_mode,
                 seed=42,
+                disable_grain=no_film_grain,
             )
 
         # 2b. Optional Design A or Design B (NEVER executed in pure_character_sheet or design_b_rerender zero-post-paste modes!)
@@ -971,7 +989,7 @@ class FreshOriginEditorialWorkflow:
                         ref_scene_bgr,
                         curve_strength=0.22,
                         chroma_strength=0.30,
-                        grain_std_4k=1.15,
+                        grain_std_4k=0.0 if no_film_grain else 1.15,
                         seed=42,
                     )
                     cohesion_meta["mode"] = "pure_v21_low_key_warm_olive_grain_lock"

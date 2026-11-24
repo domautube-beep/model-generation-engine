@@ -108,8 +108,18 @@ class OrganAndDepthProfile:
             f"{depth_note}; preserve {undertone_note} across face and neck, and {texture_note}."
         )
 
-    def to_natural_identity_only_clause(self) -> str:
+    def to_natural_identity_only_clause(self, clean_studio: bool = False) -> str:
         """Emit a pure photographer-language identity-only clause (ZERO CAD numbers, strict separation of 'Who' vs 'How Shot')."""
+        if clean_studio:
+            return (
+                "Copy the exact real person's face and hair 1:1 from Image 1 and Image 2—reproduce her exact bright, vertically open almond eyes, "
+                "distinct thin natural double-eyelid crease line, clear dark-brown irises with crisp studio catchlights and balanced white sclera, "
+                "subtle natural lower-lid fullness, compact short midface and short philtrum (never elongate the midface or nose), softly rounded nasal tip, "
+                "naturally hydrated rose-coral lip color and calm gentle lip contour, youthful oval cheek fullness tapering cleanly to her compact chin "
+                "(never widen or weigh down the lower jaw), and her exact long straight dark-brown hair parting at the crown and flowing down past her shoulders "
+                "(right side neatly behind her ear with long hair draping down behind the ear, left side flowing softly past her cheek over her lapel—never a short ear-hugged bob), "
+                "while harmonized seamlessly into the studio lighting of the scene."
+            )
         return (
             "Copy the exact real person's face 1:1 from the portrait reference—reproduce her exact open almond eye shape, "
             "distinct thin natural double-eyelid crease line above the lash rim, clear dark iris-to-sclera balance with natural catchlights, "
