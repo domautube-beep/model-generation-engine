@@ -97,28 +97,45 @@ class FaceExaggerationGuard:
         lp = np.mean(np.array(marks.get("leftPupil") or le, dtype=np.float32), axis=0)
         rp = np.mean(np.array(marks.get("rightPupil") or re, dtype=np.float32), axis=0)
         iod = max(1.0, float(np.linalg.norm(rp - lp)))
-        eye_mid_y = 0.5 * float(lp[1] + rp[1])
-        chin_y = float(c[:, 1].max())
-        eye_chin = max(1.0, chin_y - eye_mid_y)
+        eye_mid = 0.5 * (lp + rp)
+        eye_mid_y = float(eye_mid[1])
 
-        # Geometric organ proportions
-        le_w = float(le[:, 0].max() - le[:, 0].min())
-        re_w = float(re[:, 0].max() - re[:, 0].min())
+        # De-rotate 2D organ coordinates into the inter-pupil local frame so natural head tilt (roll) never causes sin/cos axis foreshortening
+        u_axis = (rp - lp) / iod
+        v_axis = np.array([-u_axis[1], u_axis[0]], dtype=np.float32)
+
+        def _to_face_axes(arr: np.ndarray) -> np.ndarray:
+            rel = arr - eye_mid
+            return np.stack([rel @ u_axis, rel @ v_axis], axis=-1)
+
+        c_r = _to_face_axes(c)
+        le_r = _to_face_axes(le)
+        re_r = _to_face_axes(re)
+        leb_r = _to_face_axes(leb)
+        reb_r = _to_face_axes(reb)
+        nose_r = _to_face_axes(nose)
+        lips_r = _to_face_axes(lips)
+
+        eye_chin = max(1.0, float(c_r[:, 1].max()))
+
+        # Geometric organ proportions (roll-invariant in face coordinates)
+        le_w = float(le_r[:, 0].max() - le_r[:, 0].min())
+        re_w = float(re_r[:, 0].max() - re_r[:, 0].min())
         eye_w_to_iod = 0.5 * (le_w + re_w) / iod
 
-        lip_h = float(lips[:, 1].max() - lips[:, 1].min())
-        lip_w = float(lips[:, 0].max() - lips[:, 0].min())
+        lip_h = float(lips_r[:, 1].max() - lips_r[:, 1].min())
+        lip_w = float(lips_r[:, 0].max() - lips_r[:, 0].min())
         lip_h_to_ec = lip_h / eye_chin
         lip_w_to_iod = lip_w / iod
 
-        nose_w = float(nose[:, 0].max() - nose[:, 0].min())
-        nose_len = max(1.0, float(nose[:, 1].max()) - eye_mid_y)
+        nose_w = float(nose_r[:, 0].max() - nose_r[:, 0].min())
+        nose_len = max(1.0, float(nose_r[:, 1].max()))
         nose_w_to_iod = nose_w / iod
         nose_len_to_ec = nose_len / eye_chin
 
         # Eyebrow vertical thickness normalized by IOD
-        lb_h = float(leb[:, 1].max() - leb[:, 1].min())
-        rb_h = float(reb[:, 1].max() - reb[:, 1].min())
+        lb_h = float(leb_r[:, 1].max() - leb_r[:, 1].min())
+        rb_h = float(reb_r[:, 1].max() - reb_r[:, 1].min())
         brow_thick_to_iod = 0.5 * (lb_h + rb_h) / iod
 
         # Lab skin/lip/brow/cheek contrast (lighting-relative: always computed vs the SAME face's own skin!)

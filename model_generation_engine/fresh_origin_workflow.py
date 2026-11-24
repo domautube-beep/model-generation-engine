@@ -158,9 +158,12 @@ class FreshOriginEditorialWorkflow:
         organ_profile = self.organ_depth.extract_profile(ref_bgr)
         clause_25pt = blueprint.to_3d_invariance_clause()
         organ_depth_clause = organ_profile.to_dynamic_organ_depth_clause() if organ_profile is not None else ""
+        natural_id_clause = organ_profile.to_natural_identity_only_clause() if organ_profile is not None else ""
         PromptFirewall.validate_prompt(clause_25pt)
         if organ_depth_clause:
             PromptFirewall.validate_prompt(organ_depth_clause)
+        if natural_id_clause:
+            PromptFirewall.validate_prompt(natural_id_clause)
 
         # Pre-analyze target location pose, chiaroscuro mood & radiometry BEFORE person-erasure so 8-dir yaw & lighting match naturally!
         loc_pose_meta: Optional[Dict[str, object]] = None
@@ -289,7 +292,9 @@ class FreshOriginEditorialWorkflow:
                     organ_depth_clause = op_prim.to_dynamic_organ_depth_clause(
                         low_key_scene=bool(scene_mood and scene_mood.get("is_low_key", False))
                     )
+                    natural_id_clause = op_prim.to_natural_identity_only_clause()
                     PromptFirewall.validate_prompt(organ_depth_clause)
+                    PromptFirewall.validate_prompt(natural_id_clause)
                 target_yaw_for_bank = float(prim_real.yaw_deg)
 
             ordered_refs.append(
@@ -302,8 +307,8 @@ class FreshOriginEditorialWorkflow:
                 }
             )
             role_lines.append(
-                "Image 1 (SUPREME REAL CAMERA FACE, SHOULDER-BUILD, NECK & HAND AUTHORITY): "
-                "untouched real studio photograph matching target posture and head turn"
+                "Image 1 (SUPREME REAL CAMERA FACE & SKELETAL PROPORTION IDENTITY AUTHORITY — IDENTITY ONLY, NOT POSTURE OR LIGHTING): "
+                "untouched real portrait for facial structure, shoulder-to-head scale, neck, and hand anatomy only"
             )
             if sec_real is not None:
                 ordered_refs.append(
@@ -487,7 +492,7 @@ class FreshOriginEditorialWorkflow:
         if design_mode == "pure_character_sheet":
             ref_note = "Image 1 (pose-angle-matched 8-direction character turnaround portrait) and Images 2-3 (untouched real camera organ & body anchors)"
         elif bank is not None and len(bank.entries) >= 2:
-            ref_note = "Image 1 (untouched real camera posture & shoulder-build portrait) and Image 2 (untouched high-resolution real camera organ & skin close-up)"
+            ref_note = "Image 1 (untouched real camera facial & skeletal proportion portrait—identity ONLY, NOT posture or lighting) and Image 2 (untouched high-resolution real camera eye, nose, and lip close-up—identity ONLY, NOT lighting)"
         elif turnaround_p is not None:
             ref_note = "Image 1 (primary portrait) and Image 2 (angle-matched 3D jawline reference)"
         elif ocular_anchor_p is not None:
@@ -497,57 +502,70 @@ class FreshOriginEditorialWorkflow:
 
         loc_slot_num = len(ordered_refs)
         kelv_val = int(loc_radio_spec.kelvin_est) if loc_radio_spec is not None else 5200
-        if scene_mood is not None and bool(scene_mood.get("is_low_key", False)):
-            lit_dir = "camera-left" if bool(scene_mood.get("key_from_left", True)) else "camera-right"
-            shd_dir = "camera-right" if bool(scene_mood.get("key_from_left", True)) else "camera-left"
-            garm_L = int(round(float(scene_mood.get("garment_p50_L", 50.0))))
+        is_lk_scene = bool(scene_mood is not None and scene_mood.get("is_low_key", False))
+        lit_dir = "camera-left" if bool((scene_mood or {}).get("key_from_left", True)) else "camera-right"
+        shd_dir = "camera-right" if bool((scene_mood or {}).get("key_from_left", True)) else "camera-left"
+
+        if is_lk_scene:
             loc_light_desc = (
-                f"dramatic low-key directional natural side-window chiaroscuro illumination from {lit_dir} matching the moody ~{kelv_val}K architectural atmosphere of Image {loc_slot_num} "
-                f"(crisp natural key light on {lit_dir} cheek and temple with deep cinematic shadow falloff across {shd_dir} cheek, jaw, neck, hair, and shoulder; "
-                f"deep rich dark garment blacks around L~{garm_L} with grounded chair contact shadows; muted warm-olive editorial film palette with zero flat studio fill flash)"
+                f"Lit solely by existing {lit_dir} window daylight inside the dim architectural space of Image {loc_slot_num} "
+                "with ZERO studio fill flash, ZERO reflector, and ZERO artificial face brightening: "
+                "let overall facial brightness sit naturally subdued inside the dim room's moody warm-olive ambient air, "
+                f"with soft muted daylight grazing the {lit_dir} cheekbone and nasal bridge while the {shd_dir} eye, {shd_dir} cheek, "
+                "jaw, neck, and inner garment folds fall genuinely into deep unlit room shadow with grounded chair contact occlusion"
             )
         elif loc_radio_spec is not None and clean_loc_p is not None:
             loc_light_desc = (
-                f"soft volumetric front-45-degree facial illumination harmonized with the ambient ~{kelv_val}K room atmosphere of Image {loc_slot_num} "
-                "(preserving Image 1's clear 3D cheek, nasal-tip, and lip relief without dark under-eye or under-nose shadows)"
+                f"Lit naturally by the existing ~{kelv_val}K ambient light of Image {loc_slot_num} with zero artificial studio flash cutout, "
+                "sharing identical shadow density, contact occlusion, and ambient color temperature across skin, wardrobe, and room"
             )
         else:
-            loc_light_desc = "balanced soft front-45-degree key light preserving clear 3D cheek, nasal-tip, and lip relief with clean jaw-to-neck separation"
+            loc_light_desc = (
+                "Natural directional available light with authentic 3D shadow falloff, grounded contact occlusion, and zero studio flash cutout"
+            )
+
         for i in range(k_count):
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
             lens_mm = (80, 85, 90)[i % 3]
+            aperture_str = "f/2.8, ISO 800 available light" if is_lk_scene else "f/3.2, natural available light"
             slot1_camera = (
-                f"Hasselblad X2D {lens_mm}mm f/3.5 medium-telephoto optical editorial photograph ({aspect_ratio_label}), "
-                "natural undistorted perspective with zero wide-angle foreground hand or leg enlargement, "
-                "realistic adult 7.45-head multi-segment body proportion (harmonized trunk, upper arm, hand, thigh, "
-                "natural anatomical neck length and neck width ~52% of face width, sleek flat-hugging hair roots at crown and temples)."
-                + (f" {skeletal_clause}" if skeletal_clause else "")
+                f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm lens at {aperture_str}, {aspect_ratio_label}), "
+                "natural undistorted perspective with realistic adult 7.45-head multi-segment body proportions "
+                "and organic shallow depth-of-field falloff across hair edges, furniture back, and distant background."
             )
             slot2_identity = (
                 f"Subject: {subj_label} ({ref_note}). "
-                f"{organ_depth_clause if organ_depth_clause else clause_25pt}"
+                f"{natural_id_clause if natural_id_clause else 'Preserve exact 1:1 anatomical facial identity from Image 1 while discarding studio flash lighting and stiff posture.'} "
+                "Never beautify, exaggerate, or caricature any facial feature."
             )
             if design_mode == "design_b_rerender" and facelock_canvas_p is not None:
                 clean_note = (
-                    f" Re-render and re-photograph Image {loc_slot_num} as ONE authentic single-lens 35mm optical location photograph (ZERO cut-and-paste composite look): "
-                    f"preserve the exact 3/4-angled leather swivel lounge chair, relaxed lounging posture (left arm draped effortlessly over the chair backrest, crossed legs), slouchy dark charcoal wool suit drape, "
-                    f"and the exact facial identity, eye/nose/lip anatomy, and Korean head-to-shoulder proportion from Image 1, Image 2, and Image {loc_slot_num}, "
-                    "while completely re-lighting her face, eyes, nose bridge, cheekbones, jaw, neck, hair, and hand together with the dark room so the side-window light casts genuine 3D nose-side shadow, orbital eye-socket depth, cheekbone highlight roll-off, and under-jaw neck shadow."
+                    f" Re-photograph Image {loc_slot_num} as one authentic single-lens 35mm location exposure, keeping the exact chair, lounging pose, and facial identity while letting real room shadows sculpt the face and neck."
                 )
             elif design_mode == "design_b_facelock_outpaint" and facelock_canvas_p is not None:
                 clean_note = (
-                    f" Keep the subject's exact anchored head position, head scale, hair parting, and calm facial expression from Image {loc_slot_num} locked in place above the chair, "
-                    "and seamlessly outpaint the neck-to-collar transition, natural hair strands draping onto the shoulders, seated body, natural hands matching Image 1, and crisp background detail."
+                    f" Seamlessly integrate the subject into Image {loc_slot_num} above the chair with natural hair drape, seated body, and room lighting."
                 )
             elif clean_loc_p is not None:
                 clean_note = (
-                    f" Replace the person-erased area in Image {loc_slot_num} seamlessly while keeping the exact furniture geometry and restoring crisp soft-bokeh background detail behind the subject."
+                    f" Place the subject naturally inside the exact chair and architectural space of Image {loc_slot_num} with continuous background bokeh."
                 )
             else:
                 clean_note = ""
-            slot3_pose = f"Scene & Pose: {scene_instruction.strip()}.{clean_note} {yaw_clause}"
-            slot4_outfit = f"Outfit: {outfit_instruction.strip()} (replacing reference clothing completely)."
-            slot5_light = f"Lighting & Skin Fidelity: {loc_light_desc}, single-camera filmic tonal cohesion."
+            slot3_pose = (
+                f"Physical Gravity & Pose: {scene_instruction.strip()}.{clean_note} "
+                "Let body weight sink genuinely deep into the seat cushion under real gravity with a relaxed curved spine, "
+                "natural asymmetric shoulder drop, and an unforced, effortless neck and head inclination following the spine "
+                "(zero stiff upright mannequin neck, zero forced ID-photo posing)."
+            )
+            slot4_outfit = (
+                f"Wardrobe: {outfit_instruction.strip()}, matte fabric hanging and creasing naturally with body slouch and gravity "
+                "(completely replacing reference clothing)."
+            )
+            slot5_light = (
+                f"Available-Light Exposure & Analog Texture: {loc_light_desc}; "
+                "unadorned matte skin micro-texture without specular oil glare, unified by organic analog 35mm film grain across the entire frame."
+            )
             p_text = f"{slot1_camera} {slot2_identity} {slot3_pose} {slot4_outfit} {slot5_light}"
             PromptFirewall.validate_prompt(p_text)
             prompts.append(
@@ -568,7 +586,7 @@ class FreshOriginEditorialWorkflow:
             )
 
         manifest = {
-            "workflow_version": "2.3",
+            "workflow_version": "2.2",
             "design_mode": design_mode,
             "stage": "READY_FOR_FRESH_GEN",
             "created_at": time.time(),
@@ -872,8 +890,12 @@ class FreshOriginEditorialWorkflow:
             and design_mode in ("design_a_relight", "design_b_facelock_outpaint")
         )
 
+        is_low_key_pure_v21 = bool(
+            scene_mood is not None and bool(scene_mood.get("is_low_key", False)) and design_mode == "pure_v21"
+        )
+
         cohesion_meta: Dict[str, object] = {"mode": cohesion_mode, "applied": False}
-        if (not pure_zero_mask) and (not zero_post_paste) and (not is_low_key_relight) and cohesion_mode != "off":
+        if (not pure_zero_mask) and (not zero_post_paste) and (not is_low_key_relight) and (not is_low_key_pure_v21) and cohesion_mode != "off":
             up_bgr, cohesion_meta = PostGenCohesionMasterer.master(
                 up_bgr,
                 face_det=face_4k,
@@ -928,8 +950,18 @@ class FreshOriginEditorialWorkflow:
             up_bgr[vy1:vy2, vx1:vx2] = roi_matte
 
             if design_mode == "pure_v21":
-                # Pure v2.1 (`SKILL.md` Sec 2): Pure Optical Lanczos-4 + P88 MatteSkinProcessor + PostGenCohesionMasterer ONLY
-                # (ZERO face pasting, ZERO studio skin albedo repainting over scene lighting!)
+                # Pure v2.1 (`SKILL.md` Sec 2): Pure Optical Lanczos-4 + P88 MatteSkinProcessor ONLY
+                # In low-key scenes, preserve the authentic warm-olive camera color palette (never bleach with studio de_yellow!)
+                if is_low_key_pure_v21 and ref_scene_bgr is not None:
+                    up_bgr, cohesion_meta = master_full_frame_mood_and_grain(
+                        up_bgr,
+                        ref_scene_bgr,
+                        curve_strength=0.22,
+                        chroma_strength=0.30,
+                        grain_std_4k=1.15,
+                        seed=42,
+                    )
+                    cohesion_meta["mode"] = "pure_v21_low_key_warm_olive_grain_lock"
                 skin_albedo_meta = {"applied": False, "mode": "pure_v21_optical_matte_cohesion_only"}
             elif is_low_key_relight and ref_scene_bgr is not None:
                 # 100% UNIFORM whole-frame black-level/contrast curve + split-tone LUT + 35mm film grain (ZERO studio skin re-brightening!)
