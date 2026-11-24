@@ -81,17 +81,84 @@ class FreshOriginEditorialWorkflow:
 
     DEFAULT_CAMERA_SEEDS: Tuple[Tuple[str, str], ...] = (
         (
-            "c1",
-            "Shot on Hasselblad X2D 100C with 80mm f/2.8 lens at f/4.0, ISO 100, crisp studio editorial medium-three-quarter photograph",
+            "c1_50mm_rembrandt",
+            "Shot on Hasselblad X2D 100C with XCD 55V (50mm equiv) at f/3.2, ISO 64, environmental full-scene studio editorial photograph",
         ),
         (
-            "c2",
-            "Shot on Leica SL3 with APO-Summicron-SL 90mm f/2 at f/4.0, ISO 100, crisp luxury editorial medium-three-quarter photograph",
+            "c2_65mm_sunbeam",
+            "Shot on Hasselblad X2D 100C with XCD 65mm f/2.8 at f/2.8, ISO 64, cinema full-figure directional sunbeam editorial photograph",
         ),
         (
-            "c3",
-            "Shot on Canon EOS R5 with RF 85mm f/1.2L at f/4.0, ISO 100, crisp editorial portrait-to-thigh photograph",
+            "c3_85mm_clamshell",
+            "Shot on Canon EOS R5 with RF 85mm f/1.2L at f/2.8, ISO 64, bright commercial clamshell three-quarter portrait photograph",
         ),
+        (
+            "c4_105mm_lowkey_rim",
+            "Shot on Leica SL3 with APO-Summicron 105mm at f/2.5, ISO 64, medium-telephoto moody split-key & warm rim editorial portrait",
+        ),
+        (
+            "c5_135mm_north_negfill",
+            "Shot on Sony Alpha 7R V with FE 135mm f/1.8 GM at f/2.2, ISO 64, tight telephoto portrait with right north-window light & left negative fill",
+        ),
+    )
+
+    DEFAULT_5_LENS_LIGHTING_MATRIX: Tuple[Dict[str, object], ...] = (
+        {
+            "tag": "50mm_rembrandt_3to1",
+            "lens_mm": 50,
+            "aperture": "f/3.2",
+            "framing_desc": "environmental full-frame composition showing the full architectural setting, furniture, and head-to-toe pose",
+            "lighting_name_ko": "좌상단 45° 렘브란트 3:1 그리드 키라이트 (5000K)",
+            "lighting_desc": (
+                "Sculpted ~5000K directional gridded octabox Rembrandt key light positioned 45 degrees camera-left and 35 degrees above eye level, "
+                "creating a classic illuminated Rembrandt triangle on the shadow-side (viewer-right) cheek with crisp ~3:1 three-dimensional shadow roll-off "
+                "under the chin and across the floor"
+            ),
+        },
+        {
+            "tag": "65mm_golden_sunbeam_4to1",
+            "lens_mm": 65,
+            "aperture": "f/2.8",
+            "framing_desc": "cinema classic full-figure editorial framing with natural spatial compression from upper backdrop to shoes",
+            "lighting_name_ko": "오후 골든아워 창가 직사 슬래시 채광 (4300K · 4:1)",
+            "lighting_desc": (
+                "Warm ~4300K low-angled late-afternoon golden sunbeam streaming diagonally through tall camera-left side windows, "
+                "casting distinct sunlit highlights across the camera-left side of the face, shoulder, and lap while throwing rich ~4:1 architectural window-frame shadows across the background wall and floor"
+            ),
+        },
+        {
+            "tag": "85mm_clamshell_highkey_1p5to1",
+            "lens_mm": 85,
+            "aperture": "f/2.8",
+            "framing_desc": "classic 85mm three-quarter-to-ankle portrait framing with creamy background separation",
+            "lighting_name_ko": "클램셸 버터플라이 하이키 매거진 뷰티광 (5500K · 1.5:1)",
+            "lighting_desc": (
+                "Bright, airy ~5500K commercial clamshell/butterfly lighting (large overhead-front diffused octabox paired with a soft silver bounce reflector below), "
+                "delivering clean luminous skin, crisp dual eye catchlights, open shadow detail (~1.5:1 soft contrast ratio), and crisp garment weave clarity"
+            ),
+        },
+        {
+            "tag": "105mm_moody_split_rim_6to1",
+            "lens_mm": 105,
+            "aperture": "f/2.5",
+            "framing_desc": "medium-telephoto knee-to-head portrait framing with compressed architectural depth",
+            "lighting_name_ko": "시네마틱 로우키 스플릿 + 3200K 웜 림라이트 (6:1)",
+            "lighting_desc": (
+                "Moody low-key cinema lighting featuring a focused ~4800K side split key light from 70 degrees camera-left (~6:1 deep shadow falloff across the viewer-right cheek and dimmed room) "
+                "accented by a subtle warm ~3200K tungsten hair-and-shoulder rim kicker from back-right that cleanly separates hair and shoulder contours from the dark background"
+            ),
+        },
+        {
+            "tag": "135mm_north_window_negfill_3p5to1",
+            "lens_mm": 135,
+            "aperture": "f/2.2",
+            "framing_desc": "tight telephoto waist/lap-up editorial portrait framing with shallow optical depth-of-field bokeh",
+            "lighting_name_ko": "우측 쿨 노스윈도우 확산광 + 좌측 네거티브 필 (6000K · 3.5:1)",
+            "lighting_desc": (
+                "Reversed-direction ~6000K cool-crisp overcast north-window soft light entering from 45 degrees CAMERA-RIGHT paired with a large black negative-fill flag on camera-left, "
+                "illuminating the viewer-right cheek, exposed ear, and right shoulder in clean cool daylight while sculpting calm velvety ~3.5:1 negative-fill shade across the viewer-left side"
+            ),
+        },
     )
 
     def __init__(self, pipeline: Optional[ModelGenerationPipeline] = None) -> None:
@@ -118,7 +185,7 @@ class FreshOriginEditorialWorkflow:
         real_original_paths: Sequence[Path] = (),
         design_mode: str = "pure_v22",
         aspect_ratio_label: str = "3:4",
-        best_of_k: int = 3,
+        best_of_k: int = 5,
         match_gen0_yaw: bool = True,
         attach_ocular_detail_anchor: bool = True,
         text_only_location: bool = False,
@@ -540,17 +607,22 @@ class FreshOriginEditorialWorkflow:
 
         for i in range(k_count):
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
-            lens_mm = (80, 85, 90)[i % 3]
-            aperture_str = "f/2.8, ISO 800 available light" if is_lk_scene else "f/3.2, natural available light"
+            preset = self.DEFAULT_5_LENS_LIGHTING_MATRIX[i % len(self.DEFAULT_5_LENS_LIGHTING_MATRIX)]
+            lens_mm = int(preset["lens_mm"])  # type: ignore[arg-type]
+            preset_ap = str(preset["aperture"])
+            framing_desc = str(preset["framing_desc"])
+            preset_light_ko = str(preset["lighting_name_ko"])
+            preset_light_en = str(preset["lighting_desc"])
+            aperture_str = "f/2.8, ISO 800 available light" if is_lk_scene else f"{preset_ap}, natural available light"
             if no_film_grain:
                 slot1_camera = (
-                    f"Clean, tack-sharp 100MP medium-format digital commercial studio photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens at f/3.2, base ISO 64, {aspect_ratio_label}), "
+                    f"Clean, tack-sharp 100MP medium-format digital commercial studio photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens at {preset_ap}, base ISO 64, {aspect_ratio_label}, {framing_desc}), "
                     "pure noise-free studio optical clarity with ZERO film grain, natural undistorted perspective, "
                     "realistic adult 7.45-head multi-segment Korean body proportions, and smooth natural studio depth-of-field."
                 )
             else:
                 slot1_camera = (
-                    f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm lens at {aperture_str}, {aspect_ratio_label}), "
+                    f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm lens at {aperture_str}, {aspect_ratio_label}, {framing_desc}), "
                     "natural undistorted perspective with realistic adult 7.45-head multi-segment body proportions "
                     "and organic shallow depth-of-field falloff across hair edges, furniture back, and distant background."
                 )
@@ -583,15 +655,16 @@ class FreshOriginEditorialWorkflow:
                 f"Wardrobe: {outfit_instruction.strip()}, matte fabric hanging and creasing naturally with body slouch and gravity "
                 "(completely replacing reference clothing)."
             )
+            active_light_desc = preset_light_en if k_count >= 5 else loc_light_desc
             if no_film_grain:
                 slot5_light = (
-                    f"Clean Commercial Studio Lighting & Skin Realism: {loc_light_desc}; "
+                    f"Clean Commercial Studio Lighting & Skin Realism: {active_light_desc}; "
                     "clean, translucent real-camera studio skin with fine natural pores and hydrated natural lip color matching Image 1 without plastic gloss, "
                     "100% noise-free base-ISO digital studio smoothness with ZERO film grain, ZERO dust, and ZERO vintage filter across the entire frame."
                 )
             else:
                 slot5_light = (
-                    f"Available-Light Exposure & Analog Texture: {loc_light_desc}; "
+                    f"Available-Light Exposure & Analog Texture: {active_light_desc}; "
                     "unadorned matte skin micro-texture without specular oil glare, unified by organic analog 35mm film grain across the entire frame."
                 )
             p_text = f"{slot1_camera} {slot2_identity} {slot3_pose} {slot4_outfit} {slot5_light}"
@@ -599,6 +672,10 @@ class FreshOriginEditorialWorkflow:
             prompts.append(
                 {
                     "candidate_tag": f"c{i + 1}_{seed_tag}",
+                    "lens_mm": lens_mm,
+                    "aperture": preset_ap,
+                    "lighting_preset": str(preset["tag"]),
+                    "lighting_name_ko": preset_light_ko,
                     "prompt": p_text,
                     "prompt_chars": len(p_text),
                     "slot_budgets": {

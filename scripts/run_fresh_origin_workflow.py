@@ -48,7 +48,7 @@ def main() -> int:
     p_prep.add_argument("--design-mode", choices=("pure_v21", "pure_character_sheet", "pure_v22", "design_a_relight", "design_b_facelock_outpaint", "design_b_rerender"), default="pure_v21")
     p_prep.add_argument("--extra-assets", nargs="*", type=Path, default=[])
     p_prep.add_argument("--aspect", default="3:4")
-    p_prep.add_argument("--best-of", type=int, default=3)
+    p_prep.add_argument("--best-of", type=int, default=5, help="Default 5-Lens (50/65/85/105/135mm) x 5-Distinct-Lighting Matrix")
     p_prep.add_argument("--no-match-yaw", action="store_true")
     p_prep.add_argument("--no-ocular-anchor", action="store_true")
     p_prep.add_argument("--text-only-location", action="store_true", help="Analyze --location mood/lighting for text prompt ONLY without attaching any location image")
