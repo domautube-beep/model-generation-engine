@@ -51,6 +51,7 @@ def main() -> int:
     p_prep.add_argument("--best-of", type=int, default=3)
     p_prep.add_argument("--no-match-yaw", action="store_true")
     p_prep.add_argument("--no-ocular-anchor", action="store_true")
+    p_prep.add_argument("--text-only-location", action="store_true", help="Analyze --location mood/lighting for text prompt ONLY without attaching any location image")
 
     p_rank = sub.add_parser("rank", help="Stage 4: Score K fresh candidates natively across SFace + 18 Craniofacial + 7 Ocular")
     p_rank.add_argument("--manifest", required=True, type=Path)
@@ -87,6 +88,7 @@ def main() -> int:
             best_of_k=args.best_of,
             match_gen0_yaw=not args.no_match_yaw,
             attach_ocular_detail_anchor=not args.no_ocular_anchor,
+            text_only_location=args.text_only_location,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0

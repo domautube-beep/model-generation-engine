@@ -121,6 +121,7 @@ class FreshOriginEditorialWorkflow:
         best_of_k: int = 3,
         match_gen0_yaw: bool = True,
         attach_ocular_detail_anchor: bool = True,
+        text_only_location: bool = False,
         subject: Optional[SubjectProfile] = None,
     ) -> Dict[str, object]:
         """Stages 1 & 2: Validate Gen-0 (+ optional Multi-Shot Real Bank), clean location, emit K prompts."""
@@ -188,16 +189,16 @@ class FreshOriginEditorialWorkflow:
                     scene_mood = analyze_target_scene_chiaroscuro_and_mood(loc_bgr_pre, self.pipeline.detector)
                 except Exception:
                     scene_mood = None
-                if design_mode != "pure_character_sheet":
+                if design_mode != "pure_character_sheet" and not text_only_location:
                     clean_loc_p = wdir / f"loc00_{loc_src.stem}_clean.jpg"
-                    if clean_location_override_path is not None and Path(clean_location_override_path).is_file():
+                    if clean_location_override_path is not None and Path(clean_location_override_path).resolve().is_file():
                         shutil.copy2(Path(clean_location_override_path).resolve(), clean_loc_p)
                     else:
                         self.pipeline.turnaround.erase_foreign_person_completely(
                             loc_bgr_pre, output_clean_path=clean_loc_p, remove_overlay_text=True
                         )
                     self.origin_guard.register_approved_origin(clean_loc_p, kind="clean_location", depth=0)
-        elif clean_location_override_path is not None and Path(clean_location_override_path).is_file():
+        elif (not text_only_location) and clean_location_override_path is not None and Path(clean_location_override_path).is_file():
             clean_loc_p = wdir / "loc00_override_clean.jpg"
             shutil.copy2(Path(clean_location_override_path).resolve(), clean_loc_p)
             self.origin_guard.register_approved_origin(clean_loc_p, kind="clean_location", depth=0)
@@ -507,12 +508,18 @@ class FreshOriginEditorialWorkflow:
         shd_dir = "camera-right" if bool((scene_mood or {}).get("key_from_left", True)) else "camera-left"
 
         if is_lk_scene:
+            space_phrase = (
+                f"inside the dim architectural space of Image {loc_slot_num}"
+                if clean_loc_p is not None
+                else "inside the dim classical architectural hall"
+            )
             loc_light_desc = (
-                f"Lit solely by existing {lit_dir} window daylight inside the dim architectural space of Image {loc_slot_num} "
+                f"Lit solely by existing {lit_dir} window daylight {space_phrase} "
                 "with ZERO studio fill flash, ZERO reflector, and ZERO artificial face brightening: "
                 "let overall facial brightness sit naturally subdued inside the dim room's moody warm-olive ambient air, "
-                f"with soft muted daylight grazing the {lit_dir} cheekbone and nasal bridge while the {shd_dir} eye, {shd_dir} cheek, "
-                "jaw, neck, and inner garment folds fall genuinely into deep unlit room shadow with grounded chair contact occlusion"
+                f"with soft muted {lit_dir} window daylight gently illuminating her face and clear open eyes while the {shd_dir} side, "
+                "neck, and inner garment folds transition smoothly into soft low-key ambient room shadow "
+                "(preserving her natural cheek volume and calm gentle expression without gaunt cheekbone hollowing) with grounded chair contact occlusion"
             )
         elif loc_radio_spec is not None and clean_loc_p is not None:
             loc_light_desc = (
@@ -554,9 +561,9 @@ class FreshOriginEditorialWorkflow:
                 clean_note = ""
             slot3_pose = (
                 f"Physical Gravity & Pose: {scene_instruction.strip()}.{clean_note} "
-                "Let body weight sink genuinely deep into the seat cushion under real gravity with a relaxed curved spine, "
-                "natural asymmetric shoulder drop, and an unforced, effortless neck and head inclination following the spine "
-                "(zero stiff upright mannequin neck, zero forced ID-photo posing)."
+                "Let hip and torso weight sink genuinely deep into the seat cushion under real gravity with a relaxed curved spine "
+                "and natural asymmetric shoulder drop, while keeping her head comfortably forward with a slight natural chin tuck "
+                "matching Image 1's vertical camera angle (NEVER lean the head backward, NEVER tilt the chin upward, and NEVER expose the underside of the nostrils; zero stiff ID-photo tension)."
             )
             slot4_outfit = (
                 f"Wardrobe: {outfit_instruction.strip()}, matte fabric hanging and creasing naturally with body slouch and gravity "

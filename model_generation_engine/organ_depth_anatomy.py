@@ -110,22 +110,14 @@ class OrganAndDepthProfile:
 
     def to_natural_identity_only_clause(self) -> str:
         """Emit a pure photographer-language identity-only clause (ZERO CAD numbers, strict separation of 'Who' vs 'How Shot')."""
-        lid_phrase = (
-            "ultra-thin natural in-line upper eyelid fold sitting close to the lash line"
-            if self.eye_hw_ratio <= 0.36
-            else "natural softly curved upper eyelid fold"
-        )
-        nose_phrase = (
-            "softly rounded nasal tip with a calm level nasal base"
-            if self.nostril_shadow_fraction < 0.42
-            else "natural nasal bridge, softly rounded tip, and exact alar contour"
-        )
         return (
-            "Extract ONLY anatomical identity from the portrait references—reproduce the exact eye shape, "
-            f"{lid_phrase}, natural medium iris-to-sclera balance, {nose_phrase}, calm natural lip contour, "
-            "exact cheek-to-jawline taper, chin proportion, and natural dark hair parting, while COMPLETELY DISCARDING "
+            "Copy the exact real person's face 1:1 from the portrait reference—reproduce her exact open almond eye shape, "
+            "distinct thin natural double-eyelid crease line above the lash rim, clear dark iris-to-sclera balance with natural catchlights, "
+            "subtle natural lower-lid contour, softly rounded nasal bridge and nasal tip, compact philtrum, calm natural lip shape "
+            "with gentle level-to-slightly-upturned mouth corners (never drooping or frowning), natural anterior-and-lateral cheek fullness "
+            "(never gaunt or hollowed in shadow), exact oval cheek-to-jawline taper, and natural dark hair parting, while COMPLETELY DISCARDING "
             "the bright studio flash lighting, pale studio skin brightness, stiff upright ID-photo neck posture, "
-            "and fitted office garment tension of the reference portraits."
+            "and fitted office blazer of the reference portrait."
         )
 
 
