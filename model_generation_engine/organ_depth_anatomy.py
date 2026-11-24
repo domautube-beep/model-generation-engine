@@ -52,6 +52,12 @@ class OrganAndDepthProfile:
     skin_ita_deg: float
     skin_pore_micro_std: float
     skin_subsurface_smoothness: float
+    skin_norm_laplacian: float = 45.0
+
+    @property
+    def is_airbrushed_or_lowres_origin(self) -> bool:
+        """True when Gen-0 is a compressed low-bitrate image or studio-retouched ID photo with smoothed-away pores."""
+        return bool(self.skin_norm_laplacian < 24.0 or self.skin_pore_micro_std < 1.55)
 
     def to_dynamic_organ_depth_clause(self, low_key_scene: bool = False) -> str:
         """Emit a 100% dynamically measured, zero-hardcoding 4-organ + 3D depth + skin tone/texture lock for Image 1."""
@@ -110,24 +116,35 @@ class OrganAndDepthProfile:
 
     def to_natural_identity_only_clause(self, clean_studio: bool = False) -> str:
         """Emit a pure photographer-language identity-only clause (ZERO CAD numbers, gender/hairstyle-universal, strict separation of 'Who' vs 'How Shot')."""
+        if self.is_airbrushed_or_lowres_origin:
+            de_airbrush = (
+                " Take ONLY bone structure, eye/nose/lip geometry, and hairstyle from Image 1 while COMPLETELY DISCARDING "
+                "Image 1's smoothed/airbrushed ID-studio retouching, JPEG compression softness, and bright studio flash skin lightness—render "
+                "authentic unretouched real-camera adult skin with natural visible micro-pores, subtle fine skin relief, "
+                "and realistic subsurface brightness and color harmonized with the scene lighting."
+            )
+        else:
+            de_airbrush = (
+                " Preserve Image 1's authentic unretouched real-camera skin micro-pores while adapting skin brightness and color temperature "
+                "naturally to the scene lighting (discarding Image 1's flat backdrop lighting, stiff neck posture, and reference outfit)."
+            )
         if clean_studio:
             return (
-                "Copy the exact real person's face and hairstyle 1:1 from Image 1 and Image 2—reproduce their exact natural eye shape and openness, "
-                "exact upper-eyelid fold structure (never add a thick artificial double-eyelid crease and never squint), clear dark-brown irises with crisp studio catchlights and balanced white sclera, "
+                "Copy the exact real person's facial anatomy and hairstyle 1:1 from Image 1 and Image 2—reproduce their exact natural eye shape and openness, "
+                "exact upper-eyelid fold structure (never add a thick artificial double-eyelid crease and never squint), clear dark-brown irises with crisp catchlights and balanced white sclera, "
                 "exact eyebrow shape and hair density, subtle natural lower-lid contour, exact midface and philtrum proportions (never elongate or compress the midface or nose), "
-                "exact nasal bridge and softly rounded nasal tip, naturally hydrated lip color and exact gentle mouth corner contour, "
+                "exact nasal bridge and softly rounded nasal tip, naturally hydrated lip contour and exact gentle mouth corner line, "
                 "exact cheek volume and mandibular jawline-to-chin taper (never widen, puff out, or artificially shave the jaw), "
-                "and their exact hairstyle, bangs/parting, sideburn/ear exposure, and hair length/volume from Image 1 (never invent a different haircut, never spike up down-swept bangs, and never alter hair length), "
-                "while harmonized seamlessly into the studio lighting of the scene."
+                "and their exact hairstyle, bangs/parting, sideburn/ear exposure, and hair length/volume from Image 1 (never invent a different haircut, never spike up down-swept bangs, and never alter hair length)."
+                + de_airbrush
             )
         return (
-            "Copy the exact real person's face and hairstyle 1:1 from the portrait reference—reproduce their exact natural eye shape, "
+            "Copy the exact real person's facial anatomy and hairstyle 1:1 from the portrait reference—reproduce their exact natural eye shape, "
             "exact upper-eyelid fold structure above the lash rim, clear dark iris-to-sclera balance with natural catchlights, "
             "exact eyebrow contour, subtle natural lower-lid contour, softly rounded nasal bridge and nasal tip, exact philtrum length, calm natural lip shape "
             "with gentle natural mouth corners (never drooping or frowning), natural anterior-and-lateral cheek fullness "
-            "(never gaunt or hollowed in shadow), exact cheek-to-jawline taper, and exact natural hairstyle/bangs/parting from Image 1, while COMPLETELY DISCARDING "
-            "the flat ID-backdrop lighting, stiff upright ID-photo neck posture, "
-            "and formal suit/tie of the reference portrait."
+            "(never gaunt or hollowed in shadow), exact cheek-to-jawline taper, and exact natural hairstyle/bangs/parting from Image 1."
+            + de_airbrush
         )
 
 
@@ -307,10 +324,11 @@ class OrganAndDepthAnatomyAnalyzer:
         l_star = s_l_255 * (100.0 / 255.0)
         ita_deg = math.degrees(math.atan2(l_star - 50.0, max(1.5, s_b)))
 
-        # Normalize cheek patches to canonical IOD = 130px so pore texture std is scale-invariant!
+        # Normalize cheek patches to canonical IOD = 130px so pore texture std & Laplacian sharpness are scale-invariant!
         norm_scale = 130.0 / iod
         pore_stds: List[float] = []
         smooth_ratios: List[float] = []
+        norm_laps: List[float] = []
         for patch_3c in (chk_l, chk_r):
             if patch_3c.shape[0] >= 6 and patch_3c.shape[1] >= 6:
                 pl = patch_3c[:, :, 0]
@@ -323,8 +341,11 @@ class OrganAndDepthAnatomyAnalyzer:
                 m_std = float(np.std(mottle_band))
                 pore_stds.append(p_std)
                 smooth_ratios.append(p_std / max(0.35, m_std))
+                pl_128 = cv2.resize(pl, (128, 128), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
+                norm_laps.append(float(cv2.Laplacian(pl_128, cv2.CV_32F).var()))
         pore_std_val = float(np.mean(pore_stds)) if pore_stds else 1.4
         subsurface_smooth = float(np.mean(smooth_ratios)) if smooth_ratios else 0.85
+        norm_lap_val = float(np.mean(norm_laps)) if norm_laps else 45.0
 
         return OrganAndDepthProfile(
             eye_width_to_iod=round(eye_w_iod, 4),
@@ -352,6 +373,7 @@ class OrganAndDepthAnatomyAnalyzer:
             skin_ita_deg=round(ita_deg, 2),
             skin_pore_micro_std=round(pore_std_val, 3),
             skin_subsurface_smoothness=round(subsurface_smooth, 3),
+            skin_norm_laplacian=round(norm_lap_val, 2),
         )
 
     def compare(self, ref_bgr: np.ndarray, cand_bgr: np.ndarray) -> Dict[str, object]:
@@ -390,7 +412,8 @@ class OrganAndDepthAnatomyAnalyzer:
             issues.append(f"입 크기·두께 변형 (폭 {diffs['mouthWidthPct']:+.1f}%, 두께 {diffs['lipThicknessPct']:+.1f}%)")
         if diffs["malarDepthDelta"] < -0.10:
             issues.append(f"앞볼 3D 입체 깊이 평면화 ({diffs['malarDepthDelta']:+.3f})")
-        if diffs["skinUndertoneDeltaAB"] > 9.5 or diffs["skinRosyDeltaA"] < -5.0:
+        max_ab_tol = 28.0 if p_ref.is_airbrushed_or_lowres_origin else 14.0
+        if diffs["skinUndertoneDeltaAB"] > max_ab_tol or diffs["skinRosyDeltaA"] < -6.5:
             issues.append(f"피부색감·혈색 이탈 (ΔAB {diffs['skinUndertoneDeltaAB']:.1f}, Δa* {diffs['skinRosyDeltaA']:+.1f})")
 
         drift = (

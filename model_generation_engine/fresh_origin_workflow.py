@@ -43,7 +43,12 @@ from .real_multishot_studio import (
     analyze_target_scene_chiaroscuro_and_mood,
     master_full_frame_mood_and_grain,
 )
-from .scene_radiometry import PostGenCohesionMasterer, SceneRadiometryAnalyzer
+from .scene_radiometry import (
+    PostGenCohesionMasterer,
+    SceneAdaptive5Lens5LightingPlanner,
+    SceneRadiometryAnalyzer,
+)
+from .skin_processor import MatteSkinProcessor
 
 
 def _sha256_file(path: Path) -> str:
@@ -80,86 +85,83 @@ class FreshOriginEditorialWorkflow:
     """Ironclad 6-stage state machine enforcing Fresh Gen-0 Regeneration + 25-Metric Native Selection + 10-Gate 4K Delivery."""
 
     DEFAULT_CAMERA_SEEDS: Tuple[Tuple[str, str], ...] = (
-        (
-            "c1_50mm_rembrandt",
-            "Shot on Hasselblad X2D 100C with XCD 55V (50mm equiv) at f/3.2, ISO 64, environmental full-scene studio editorial photograph",
-        ),
-        (
-            "c2_65mm_sunbeam",
-            "Shot on Hasselblad X2D 100C with XCD 65mm f/2.8 at f/2.8, ISO 64, cinema full-figure directional sunbeam editorial photograph",
-        ),
-        (
-            "c3_85mm_clamshell",
-            "Shot on Canon EOS R5 with RF 85mm f/1.2L at f/2.8, ISO 64, bright commercial clamshell three-quarter portrait photograph",
-        ),
-        (
-            "c4_105mm_lowkey_rim",
-            "Shot on Leica SL3 with APO-Summicron 105mm at f/2.5, ISO 64, medium-telephoto moody split-key & warm rim editorial portrait",
-        ),
-        (
-            "c5_135mm_north_negfill",
-            "Shot on Sony Alpha 7R V with FE 135mm f/1.8 GM at f/2.2, ISO 64, tight telephoto portrait with right north-window light & left negative fill",
-        ),
+        ("50mm", "Hasselblad X2D 100C with XCD 55V (50mm equiv)"),
+        ("65mm", "Hasselblad X2D 100C with XCD 65mm f/2.8"),
+        ("85mm", "Canon EOS R5 with RF 85mm f/1.2L"),
+        ("105mm", "Leica SL3 with APO-Summicron 105mm"),
+        ("135mm", "Sony Alpha 7R V with FE 135mm f/1.8 GM"),
     )
 
-    DEFAULT_5_LENS_LIGHTING_MATRIX: Tuple[Dict[str, object], ...] = (
-        {
-            "tag": "50mm_rembrandt_3to1",
-            "lens_mm": 50,
-            "aperture": "f/3.2",
-            "framing_desc": "environmental full-frame composition showing the full architectural setting, furniture, and head-to-toe pose",
-            "lighting_name_ko": "좌상단 45° 렘브란트 3:1 그리드 키라이트 (5000K)",
-            "lighting_desc": (
-                "Sculpted ~5000K directional gridded octabox Rembrandt key light positioned 45 degrees camera-left and 35 degrees above eye level, "
-                "creating a classic illuminated Rembrandt triangle on the shadow-side (viewer-right) cheek with crisp ~3:1 three-dimensional shadow roll-off "
-                "under the chin and across the floor"
-            ),
-        },
-        {
-            "tag": "65mm_golden_sunbeam_4to1",
-            "lens_mm": 65,
-            "aperture": "f/2.8",
-            "framing_desc": "cinema classic full-figure editorial framing with natural spatial compression from upper backdrop to shoes",
-            "lighting_name_ko": "오후 골든아워 창가 직사 슬래시 채광 (4300K · 4:1)",
-            "lighting_desc": (
-                "Warm ~4300K low-angled late-afternoon golden sunbeam streaming diagonally through tall camera-left side windows, "
-                "casting distinct sunlit highlights across the camera-left side of the face, shoulder, and lap while throwing rich ~4:1 architectural window-frame shadows across the background wall and floor"
-            ),
-        },
-        {
-            "tag": "85mm_clamshell_highkey_1p5to1",
-            "lens_mm": 85,
-            "aperture": "f/2.8",
-            "framing_desc": "classic 85mm three-quarter-to-ankle portrait framing with creamy background separation",
-            "lighting_name_ko": "클램셸 버터플라이 하이키 매거진 뷰티광 (5500K · 1.5:1)",
-            "lighting_desc": (
-                "Bright, airy ~5500K commercial clamshell/butterfly lighting (large overhead-front diffused octabox paired with a soft silver bounce reflector below), "
-                "delivering clean luminous skin, crisp dual eye catchlights, open shadow detail (~1.5:1 soft contrast ratio), and crisp garment weave clarity"
-            ),
-        },
-        {
-            "tag": "105mm_moody_split_rim_6to1",
-            "lens_mm": 105,
-            "aperture": "f/2.5",
-            "framing_desc": "medium-telephoto knee-to-head portrait framing with compressed architectural depth",
-            "lighting_name_ko": "시네마틱 로우키 스플릿 + 3200K 웜 림라이트 (6:1)",
-            "lighting_desc": (
-                "Moody low-key cinema lighting featuring a focused ~4800K side split key light from 70 degrees camera-left (~6:1 deep shadow falloff across the viewer-right cheek and dimmed room) "
-                "accented by a subtle warm ~3200K tungsten hair-and-shoulder rim kicker from back-right that cleanly separates hair and shoulder contours from the dark background"
-            ),
-        },
-        {
-            "tag": "135mm_north_window_negfill_3p5to1",
-            "lens_mm": 135,
-            "aperture": "f/2.2",
-            "framing_desc": "tight telephoto waist/lap-up editorial portrait framing with shallow optical depth-of-field bokeh",
-            "lighting_name_ko": "우측 쿨 노스윈도우 확산광 + 좌측 네거티브 필 (6000K · 3.5:1)",
-            "lighting_desc": (
-                "Reversed-direction ~6000K cool-crisp overcast north-window soft light entering from 45 degrees CAMERA-RIGHT paired with a large black negative-fill flag on camera-left, "
-                "illuminating the viewer-right cheek, exposed ear, and right shoulder in clean cool daylight while sculpting calm velvety ~3.5:1 negative-fill shade across the viewer-left side"
-            ),
-        },
-    )
+    def _build_dynamic_focal_clean_plates(
+        self,
+        clean_loc_p: Path,
+        loc_bgr_pre: Optional[np.ndarray],
+        loc_pose_meta: Optional[Dict[str, object]],
+        wdir: Path,
+        presets: Sequence[Dict[str, object]],
+    ) -> List[Path]:
+        """Dynamically crop focal-matched clean location plates (50..135mm) around the detected subject/furniture anchor (0% hardcoded coords)."""
+        bgr = cv2.imread(str(clean_loc_p))
+        if bgr is None or bgr.size == 0:
+            return [clean_loc_p for _ in presets]
+        h, w = bgr.shape[:2]
+        aspect = float(w) / float(max(1, h))
+
+        cx_norm = float((loc_pose_meta or {}).get("auto_subject_x_norm", 0.50))
+        cy_norm = 0.50
+        found_face = False
+        if loc_bgr_pre is not None and loc_bgr_pre.size > 0:
+            try:
+                det_pre = self.pipeline.detector.detect(loc_bgr_pre)
+                fx, fy, fw, fh = det_pre.bbox
+                lh, lw = loc_bgr_pre.shape[:2]
+                cx_norm = float(np.clip((fx + 0.5 * fw) / float(max(1, lw)), 0.18, 0.82))
+                # Anchor slightly below face center (upper-chest/lap axis) so 85/105/135mm frame head + torso/lap naturally
+                cy_norm = float(np.clip((fy + 1.85 * fh) / float(max(1, lh)), 0.30, 0.72))
+                found_face = True
+            except Exception:
+                found_face = False
+
+        if not found_face:
+            # Saliency/edge centroid fallback on empty clean rooms (zero hardcoded chair coordinates)
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+            mag = np.hypot(gx, gy)
+            # Weight lower-middle interior furniture band slightly higher than ceiling border
+            yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+            vy_weight = np.exp(-0.5 * (((yy / float(max(1, h)) - 0.56) / 0.28) ** 2))
+            w_map = mag * vy_weight
+            total_w = float(np.sum(w_map))
+            if total_w > 1e-3:
+                cx_norm = float(np.clip(float(np.sum(w_map * (xx / float(max(1, w))))) / total_w, 0.22, 0.78))
+                cy_norm = float(np.clip(float(np.sum(w_map * (yy / float(max(1, h))))) / total_w, 0.34, 0.68))
+
+        out_paths: List[Path] = []
+        for idx, preset in enumerate(presets):
+            scale = float(preset.get("clean_plate_crop_scale", 1.0))  # type: ignore[arg-type]
+            lens_mm = int(preset.get("lens_mm", 85))  # type: ignore[arg-type]
+            if scale >= 0.995:
+                out_p = wdir / f"loc{idx + 1:02d}_{lens_mm}mm_clean.jpg"
+                shutil.copy2(clean_loc_p, out_p)
+                self.origin_guard.register_approved_origin(out_p, kind="clean_location", depth=0)
+                out_paths.append(out_p)
+                continue
+
+            # Tighter lenses shift slightly upward toward head/chest height for natural portrait headroom
+            tightness = float(np.clip((1.0 - scale) / 0.54, 0.0, 1.0))
+            eff_cy = float(np.clip(cy_norm - 0.09 * tightness, 0.22, 0.75))
+            eff_cx = float(np.clip(0.50 * (1.0 - tightness) + cx_norm * tightness, 0.15, 0.85))
+            ch = max(64, int(round(h * scale)))
+            cw = max(64, min(w, int(round(ch * aspect))))
+            x0 = int(round(np.clip(eff_cx * w - 0.5 * cw, 0, max(0, w - cw))))
+            y0 = int(round(np.clip(eff_cy * h - 0.5 * ch, 0, max(0, h - ch))))
+            sub = cv2.resize(bgr[y0 : y0 + ch, x0 : x0 + cw], (w, h), interpolation=cv2.INTER_LANCZOS4)
+            out_p = wdir / f"loc{idx + 1:02d}_{lens_mm}mm_clean.jpg"
+            cv2.imwrite(str(out_p), sub, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+            self.origin_guard.register_approved_origin(out_p, kind="clean_location", depth=0)
+            out_paths.append(out_p)
+        return out_paths
 
     def __init__(self, pipeline: Optional[ModelGenerationPipeline] = None) -> None:
         self.pipeline = pipeline or ModelGenerationPipeline(EngineConfig())
@@ -481,7 +483,7 @@ class FreshOriginEditorialWorkflow:
                 )
                 role_lines.append(
                     f"Image {len(ordered_refs)} (EDITORIAL POSE B PRE-COMPOSITE — FULL-SCENE 3D OPTICAL RE-RENDER GUIDE): "
-                    "re-photograph this exact scene as a single authentic 35mm camera exposure so true 3D side-window light and shadows sculpt her face, nose, eye sockets, jaw, neck, suit, and chair together"
+                    "re-photograph this exact scene as a single authentic 35mm camera exposure so true 3D side-window light and shadows sculpt the subject's face, nose, eye sockets, jaw, neck, suit, and chair together"
                 )
             elif design_mode == "design_b_facelock_outpaint" and bank is not None:
                 facelock_canvas_p = wdir / "stage2a_mesh_precomposite_facelock.png"
@@ -605,20 +607,40 @@ class FreshOriginEditorialWorkflow:
                 "Natural directional available light with authentic 3D shadow falloff, grounded contact occlusion, and zero studio flash cutout"
             )
 
+        adaptive_presets = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
+            radio_spec=loc_radio_spec,
+            scene_mood=scene_mood,
+            scene_text=f"{scene_instruction} {outfit_instruction}".strip(),
+            clean_studio_flag=bool(no_film_grain),
+            count=k_count,
+        )
+        focal_clean_paths: List[Path] = []
+        loc_bgr_for_anchor = cv2.imread(str(loc_src_resolved)) if loc_src_resolved is not None else None
+        if clean_loc_p is not None and facelock_canvas_p is None and k_count >= 2:
+            focal_clean_paths = self._build_dynamic_focal_clean_plates(
+                clean_loc_p=clean_loc_p,
+                loc_bgr_pre=loc_bgr_for_anchor,
+                loc_pose_meta=loc_pose_meta,
+                wdir=wdir,
+                presets=adaptive_presets,
+            )
+
+        is_airbrushed_gen0 = bool(organ_profile is not None and organ_profile.is_airbrushed_or_lowres_origin)
         for i in range(k_count):
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
-            preset = self.DEFAULT_5_LENS_LIGHTING_MATRIX[i % len(self.DEFAULT_5_LENS_LIGHTING_MATRIX)]
+            preset = adaptive_presets[i]
             lens_mm = int(preset["lens_mm"])  # type: ignore[arg-type]
             preset_ap = str(preset["aperture"])
             framing_desc = str(preset["framing_desc"])
             preset_light_ko = str(preset["lighting_name_ko"])
             preset_light_en = str(preset["lighting_desc"])
+            regime_family = str(preset["scene_regime_family"])
             aperture_str = "f/2.8, ISO 800 available light" if is_lk_scene else f"{preset_ap}, natural available light"
             if no_film_grain:
                 slot1_camera = (
-                    f"Clean, tack-sharp 100MP medium-format digital commercial studio photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens at {preset_ap}, base ISO 64, {aspect_ratio_label}, {framing_desc}), "
-                    "pure noise-free studio optical clarity with ZERO film grain, natural undistorted perspective, "
-                    "realistic adult 7.45-head multi-segment Korean body proportions, and smooth natural studio depth-of-field."
+                    f"Clean, tack-sharp 100MP medium-format digital commercial editorial photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens at {preset_ap}, base ISO 64, {aspect_ratio_label}, {framing_desc}), "
+                    "pure noise-free optical clarity with ZERO film grain, natural undistorted perspective, "
+                    "realistic adult 7.45-head multi-segment Korean body proportions, and smooth natural depth-of-field."
                 )
             else:
                 slot1_camera = (
@@ -641,7 +663,7 @@ class FreshOriginEditorialWorkflow:
                 )
             elif clean_loc_p is not None:
                 clean_note = (
-                    f" Place the subject naturally inside the exact chair and architectural space of Image {loc_slot_num} with continuous background bokeh."
+                    f" Place the subject naturally inside the exact furniture and architectural space of Image {loc_slot_num} with continuous background bokeh."
                 )
             else:
                 clean_note = ""
@@ -655,27 +677,46 @@ class FreshOriginEditorialWorkflow:
                 f"Wardrobe: {outfit_instruction.strip()}, matte fabric hanging and creasing naturally with body slouch and gravity "
                 "(completely replacing reference clothing)."
             )
-            active_light_desc = preset_light_en if k_count >= 5 else loc_light_desc
+            active_light_desc = preset_light_en if k_count >= 2 else loc_light_desc
+            skin_realism_note = (
+                "authentic unretouched real-camera adult skin micro-pores, subtle fine skin relief, and scene-matched tonal brightness/color (discarding Image 1's smoothed ID retouching and bright flash lightness) without plastic gloss"
+                if is_airbrushed_gen0
+                else "clean, translucent real-camera skin with fine natural pores and hydrated natural lip contour without plastic gloss"
+            )
             if no_film_grain:
                 slot5_light = (
-                    f"Clean Commercial Studio Lighting & Skin Realism: {active_light_desc}; "
-                    "clean, translucent real-camera studio skin with fine natural pores and hydrated natural lip color matching Image 1 without plastic gloss, "
-                    "100% noise-free base-ISO digital studio smoothness with ZERO film grain, ZERO dust, and ZERO vintage filter across the entire frame."
+                    f"Context-Matched Lighting & Skin Realism ({regime_family}): {active_light_desc}; "
+                    f"{skin_realism_note}, 100% noise-free base-ISO digital clarity with ZERO film grain, ZERO dust, and ZERO vintage filter across the entire frame."
                 )
             else:
                 slot5_light = (
-                    f"Available-Light Exposure & Analog Texture: {active_light_desc}; "
-                    "unadorned matte skin micro-texture without specular oil glare, unified by organic analog 35mm film grain across the entire frame."
+                    f"Available-Light Exposure & Analog Texture ({regime_family}): {active_light_desc}; "
+                    f"{skin_realism_note}, unified by organic analog 35mm film grain across the entire frame."
                 )
             p_text = f"{slot1_camera} {slot2_identity} {slot3_pose} {slot4_outfit} {slot5_light}"
             PromptFirewall.validate_prompt(p_text)
+
+            cand_refs = [dict(r) for r in ordered_refs]
+            cand_loc_path: Optional[str] = str(clean_loc_p) if clean_loc_p is not None else None
+            if i < len(focal_clean_paths):
+                fp = focal_clean_paths[i]
+                cand_loc_path = str(fp)
+                for r_item in cand_refs:
+                    if r_item.get("role") == "location_clean_authority":
+                        r_item["path"] = str(fp)
+                        r_item["sha256"] = _sha256_file(fp)
+                        r_item["label"] = f"Focal-matched {lens_mm}mm clean location authority ({fp.name})"
+
             prompts.append(
                 {
-                    "candidate_tag": f"c{i + 1}_{seed_tag}",
+                    "candidate_tag": f"c{i + 1}_{preset['tag']}",
+                    "scene_regime_family": regime_family,
                     "lens_mm": lens_mm,
                     "aperture": preset_ap,
-                    "lighting_preset": str(preset["tag"]),
+                    "lighting_preset": str(preset["lighting_preset"]),
                     "lighting_name_ko": preset_light_ko,
+                    "focal_clean_location_path": cand_loc_path,
+                    "ordered_reference_images": cand_refs,
                     "prompt": p_text,
                     "prompt_chars": len(p_text),
                     "slot_budgets": {
@@ -1054,7 +1095,20 @@ class FreshOriginEditorialWorkflow:
         skin_albedo_meta: Dict[str, object] = {"applied": False, "mode": "zero_post_paste_passthrough" if (pure_zero_mask or zero_post_paste) else "active"}
         if (not pure_zero_mask) and (not zero_post_paste):
             roi = up_bgr[vy1:vy2, vx1:vx2].copy()
-            roi_matte, _ = self.pipeline.skin_processor.process(roi, seed=42, reference_skin_profile=None)
+            ref_organ = self.organ_depth.extract_profile(ref_bgr)
+            ref_lap = float(ref_organ.skin_norm_laplacian) if ref_organ is not None else 45.0
+            # Scale-adaptive micro-pore & organ acuity restoration (`생-032`, 0% hardcoding):
+            # activates automatically when raw pre-upscale IOD is small (<95px) or Gen-0 was compressed/airbrushed (<24 normLap)
+            iod_deficit = float(np.clip((95.0 - raw_iod_px) / 58.0, 0.0, 1.0))
+            airbrush_deficit = float(np.clip((24.0 - ref_lap) / 18.0, 0.0, 1.0))
+            dyn_pore_amp = round(float(np.clip(0.55 * iod_deficit + 0.50 * airbrush_deficit, 0.0, 1.05)), 3)
+            dyn_organ_crisp = round(float(np.clip(0.22 * iod_deficit + 0.12 * airbrush_deficit, 0.0, 0.34)), 3)
+            dyn_skin_proc = MatteSkinProcessor(
+                self.pipeline.detector,
+                micro_texture_amplitude=dyn_pore_amp,
+                organ_crisp_strength=dyn_organ_crisp,
+            )
+            roi_matte, _ = dyn_skin_proc.process(roi, seed=42, reference_skin_profile=None)
             up_bgr[vy1:vy2, vx1:vx2] = roi_matte
 
             if design_mode == "pure_v21":

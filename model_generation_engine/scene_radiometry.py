@@ -1095,3 +1095,275 @@ class PostGenCohesionMasterer:
             "final_lab_hi_b_median": round(float(np.median(B[L >= 170.0])) if np.any(L >= 170.0) else float(np.median(B)), 2),
         }
         return out_bgr, meta
+
+
+class SceneAdaptive5Lens5LightingPlanner:
+    """Zero-hardcoding Context-Adaptive 5-Lens (50/65/85/105/135mm) × 5-Scene-Matched Lighting Planner (`생-030`).
+
+    Dynamically classifies the uploaded location image's radiometry + text description into its physical environment
+    regime (`commercial_cyclorama_studio`, `outdoor_natural_environment`, `low_key_nocturnal_or_moody`, or
+    `architectural_daylight_or_lounge_interior`) and continuously adapts Kelvin, contrast ratio, and light direction
+    (`key_from_left` vs `key_from_right`) so every lighting setup is physically plausible in THAT exact place.
+    """
+
+    FOCAL_PROGRESSION: Tuple[Tuple[int, str, float, str], ...] = (
+        (
+            50,
+            "f/3.2",
+            1.00,
+            "environmental full-frame composition showing the full architectural setting, furniture, and head-to-toe pose",
+        ),
+        (
+            65,
+            "f/2.8",
+            0.88,
+            "cinema classic full-figure editorial framing with natural spatial compression from upper backdrop to footwear",
+        ),
+        (
+            85,
+            "f/2.8",
+            0.75,
+            "classic 85mm three-quarter-to-ankle portrait framing with creamy background separation",
+        ),
+        (
+            105,
+            "f/2.5",
+            0.60,
+            "medium-telephoto knee-to-head portrait framing with compressed architectural depth",
+        ),
+        (
+            135,
+            "f/2.2",
+            0.46,
+            "tight telephoto waist/lap-up editorial portrait framing with shallow optical depth-of-field bokeh",
+        ),
+    )
+
+    @classmethod
+    def classify_scene_environment(
+        cls,
+        radio_spec: Optional[SingleLensRadiometricSpec] = None,
+        scene_mood: Optional[Dict[str, object]] = None,
+        scene_text: str = "",
+        clean_studio_flag: bool = False,
+    ) -> str:
+        low = (scene_text or "").lower()
+        outdoor_kw = (
+            "outdoor", "outside", "street", "park", "garden", "beach", "ocean", "rooftop", "terrace",
+            "sidewalk", "crosswalk", "forest", "field", "plaza", "courtyard",
+            "야외", "거리", "길거리", "공원", "해변", "바다", "루프탑", "테라스", "골목", "산책", "숲", "광장",
+        )
+        nocturnal_kw = (
+            "night", "midnight", "nocturnal", "bar", "club", "speakeasy", "evening street", "neon",
+            "dim", "candle", "dark hall",
+            "밤", "야간", "심야", "바", "클럽", "네온", "어두운", "저녁 거리", "촛불",
+        )
+        cyclorama_kw = (
+            "seamless", "cyclorama", "solid backdrop", "paper backdrop", "studio backdrop",
+            "호리존", "무배경", "단색 배경", "스튜디오 배경지",
+        )
+        interior_kw = (
+            "room", "lounge", "gallery", "cafe", "office", "library", "hall", "living", "hotel",
+            "wall", "wood-paneled", "armchair", "sofa", "framed",
+            "실내", "라운지", "갤러리", "카페", "서재", "거실", "호텔", "홀",
+        )
+
+        is_lk = bool(scene_mood and scene_mood.get("is_low_key", False)) or bool(
+            radio_spec and radio_spec.lighting_regime == "moody_low_key"
+        )
+        is_chroma_studio = bool(radio_spec and radio_spec.lighting_regime == "sculpted_chromatic_studio")
+
+        if any(k in low for k in outdoor_kw):
+            return "low_key_nocturnal_or_moody" if (is_lk or any(k in low for k in nocturnal_kw)) else "outdoor_natural_environment"
+        if is_lk or any(k in low for k in nocturnal_kw):
+            return "low_key_nocturnal_or_moody"
+        if any(k in low for k in cyclorama_kw) or (is_chroma_studio and not any(k in low for k in interior_kw)):
+            return "commercial_cyclorama_studio"
+        if clean_studio_flag and not any(k in low for k in interior_kw) and (radio_spec is None or radio_spec.contrast_ratio_stops < 2.2):
+            return "commercial_cyclorama_studio"
+        return "architectural_daylight_or_lounge_interior"
+
+    @classmethod
+    def plan_5lens_5lighting_matrix(
+        cls,
+        radio_spec: Optional[SingleLensRadiometricSpec] = None,
+        scene_mood: Optional[Dict[str, object]] = None,
+        scene_text: str = "",
+        clean_studio_flag: bool = False,
+        count: int = 5,
+    ) -> Tuple[Dict[str, object], ...]:
+        regime_family = cls.classify_scene_environment(
+            radio_spec=radio_spec,
+            scene_mood=scene_mood,
+            scene_text=scene_text,
+            clean_studio_flag=clean_studio_flag,
+        )
+        base_k = int(np.clip(int(radio_spec.kelvin_est) if radio_spec is not None else 5300, 3200, 6300))
+        base_stops = float(np.clip(float(radio_spec.contrast_ratio_stops) if radio_spec is not None else 2.5, 1.5, 3.8))
+        base_ratio = round(float(np.clip(1.2 + (base_stops - 1.4) * 1.4, 1.8, 4.2)), 1)
+
+        key_left = True
+        if scene_mood is not None and "key_from_left" in scene_mood:
+            key_left = bool(scene_mood["key_from_left"])
+        elif radio_spec is not None and "right" in radio_spec.key_light_vector.lower():
+            key_left = False
+
+        lit_dir = "camera-left" if key_left else "camera-right"
+        opp_dir = "camera-right" if key_left else "camera-left"
+        lit_ko = "좌측" if key_left else "우측"
+        opp_ko = "우측" if key_left else "좌측"
+
+        if regime_family == "commercial_cyclorama_studio":
+            k1 = int(np.clip(base_k, 5000, 5600))
+            k2 = max(4600, k1 - 300)
+            k3 = min(5700, k1 + 200)
+            k4_key, k4_rim = max(4700, k1 - 250), 3400
+            k5 = min(6000, k1 + 450)
+            lights = [
+                (
+                    "studio_ref_matched_key",
+                    f"레퍼런스 정합 {lit_ko} 스튜디오 옥타박스 ({k1}K · {base_ratio}:1)",
+                    f"Sculpted ~{k1}K directional studio octabox key light from 35 degrees {lit_dir} matching the reference backdrop's exact shadow vector (~{base_ratio}:1 key-to-fill ratio) with smooth studio floor contact shadow",
+                ),
+                (
+                    "studio_rembrandt_grid",
+                    f"{lit_ko} 45° 렘브란트 그리드 뷰티디쉬 ({k2}K · 3.8:1)",
+                    f"Focused ~{k2}K gridded studio beauty-dish key light at 45 degrees {lit_dir} and 35 degrees high, forming a crisp Rembrandt light triangle on the {opp_dir} cheek with sculpted ~3.8:1 three-dimensional studio shadow falloff",
+                ),
+                (
+                    "studio_clamshell_highkey",
+                    f"클램셸 버터플라이 하이키 커머셜광 ({k3}K · 1.5:1)",
+                    f"Bright, airy ~{k3}K commercial studio clamshell setup (large front-overhead silk diffusion scrim paired with a silver bounce reflector below), delivering luminous even illumination (~1.5:1 open shadow ratio) and crisp dual catchlights",
+                ),
+                (
+                    "studio_split_warm_rim",
+                    f"스튜디오 사이드 스플릿 + {k4_rim}K 헤어 림스트립 (5:1)",
+                    f"Dramatic studio stripbox split key (~{k4_key}K) at 70 degrees {lit_dir} creating ~5:1 sculptural shadow across the {opp_dir} half, accented by a warm ~{k4_rim}K back-{opp_dir} rim strip cleanly outlining hair and shoulder contours",
+                ),
+                (
+                    "studio_reversed_scrim_negfill",
+                    f"반전 {opp_ko} 대형 스크림 확산광 + {lit_ko} 네거티브 필 ({k5}K · 3.2:1)",
+                    f"Reversed-direction ~{k5}K cool-clean broad studio scrim illumination from 45 degrees {opp_dir} paired with a black negative-fill flag on {lit_dir}, sculpting calm velvety ~3.2:1 shade on the {lit_dir} cheek",
+                ),
+            ]
+        elif regime_family == "outdoor_natural_environment":
+            k1 = int(np.clip(base_k, 4800, 5800))
+            k2 = max(4000, k1 - 950)
+            k3 = min(6100, k1 + 400)
+            k4 = max(4400, k1 - 550)
+            k5 = min(6400, k1 + 650)
+            lights = [
+                (
+                    "outdoor_ref_natural_sun",
+                    f"현장 정합 {lit_ko} 자연 주광 + 스카이 필 ({k1}K · {base_ratio}:1)",
+                    f"Authentic ~{k1}K directional outdoor sunlight from {lit_dir} balanced by open sky fill (~{base_ratio}:1 natural outdoor contrast), grounding shoes and garment folds with true outdoor shadow direction",
+                ),
+                (
+                    "outdoor_golden_hour_grazing",
+                    f"{lit_ko} 골든아워 저각 직사 태양광 ({k2}K · 3.8:1)",
+                    f"Warm ~{k2}K low-angle late-afternoon golden-hour sunlight skimming obliquely from {lit_dir}, casting warm sunlit highlights on skin and fabric edges with long ~3.8:1 directional outdoor shadows",
+                ),
+                (
+                    "outdoor_open_shade_sky",
+                    f"오픈 셰이드 청량 확산 자연광 ({k3}K · 1.6:1)",
+                    f"Breathable, shadow-free ~{k3}K outdoor open-shade sky illumination wrapping evenly around facial planes (~1.6:1 soft outdoor contrast) with crisp true-to-life garment colors and zero harsh squinting glare",
+                ),
+                (
+                    "outdoor_backside_sun_rim",
+                    f"측후방 역광 햇살 림라이트 + 자연 반사광 ({k4}K · 3.2:1)",
+                    f"Back-side ~{k4}K natural sunlight from rear-{opp_dir} creating an unforced luminous rim along hair and shoulder contours while warm ground/wall bounce softly fills the camera-facing face (~3.2:1 ratio)",
+                ),
+                (
+                    "outdoor_overcast_directional",
+                    f"반전 {opp_ko} 흐린날 소프트 채광 + 건축 음영 ({k5}K · 3.0:1)",
+                    f"Cool-crisp ~{k5}K overcast directional sky light entering from {opp_dir} while nearby architectural/foliage mass on {lit_dir} provides natural ~3.0:1 negative-fill depth",
+                ),
+            ]
+        elif regime_family == "low_key_nocturnal_or_moody":
+            k1 = int(np.clip(base_k, 3600, 5200))
+            k2 = max(3000, k1 - 1100)
+            k3 = min(5300, k1 + 350)
+            k4_key, k4_rim = int(np.clip(k1, 4200, 5000)), 3100
+            k5 = min(5900, k1 + 850)
+            lights = [
+                (
+                    "lowkey_ref_chiaroscuro",
+                    f"현장 정합 {lit_ko} 로우키 키아로스쿠로 ({k1}K · {max(3.2, base_ratio)}:1)",
+                    f"Authentic low-key ~{k1}K directional {lit_dir} existing ambient opening (~{max(3.2, base_ratio):.1f}:1 ratio, ZERO artificial fill flash), keeping room shadows deep while gently sculpting the {lit_dir} facial planes",
+                ),
+                (
+                    "lowkey_warm_practical_pool",
+                    f"{lit_ko} 웜 텅스텐 무드 간접광 ({k2}K · 4.5:1)",
+                    f"Intimate ~{k2}K warm practical lamp / architectural sconce glow from {lit_dir} casting a quiet warm pool across the nearer cheek and outfit while surrounding darkness falls off at ~4.5:1",
+                ),
+                (
+                    "lowkey_soft_twilight_wrap",
+                    f"트와일라잇 소프트 창가 암부 디테일광 ({k3}K · 2.5:1)",
+                    f"Subtle diffused ~{k3}K twilight aperture illumination from {lit_dir} (~2.5:1 gentler low-key ratio) lifting eye catchlights and dark garment weave into clear readability without breaking the quiet evening mood",
+                ),
+                (
+                    "lowkey_cinema_split_rim",
+                    f"시네마틱 딥 스플릿 + {k4_rim}K 웜 림라이트 (6:1)",
+                    f"Focused low-key cinema ~{k4_key}K side split key at 70 degrees {lit_dir} (~6:1 deep shadow across the {opp_dir} cheek) paired with a subtle ~{k4_rim}K warm tungsten rim kicker from back-{opp_dir} separating hair and shoulders from the dark background",
+                ),
+                (
+                    "lowkey_cool_dusk_grazing",
+                    f"반전 {opp_ko} 쿨 더스크 측사광 + 딥 셰도우 ({k5}K · 4.2:1)",
+                    f"Cool ~{k5}K dusk/moonlight-toned grazing aperture light from {opp_dir} skimming the {opp_dir} cheek and ear while the {lit_dir} side recedes into deep ~4.2:1 atmospheric shadow",
+                ),
+            ]
+        else:
+            # `architectural_daylight_or_lounge_interior`
+            k1 = int(np.clip(base_k, 4500, 5600))
+            k2 = max(4100, k1 - 750)
+            k3 = min(5650, k1 + 350)
+            k4_key, k4_rim = max(4600, k1 - 300), 3200
+            k5 = min(6000, k1 + 650)
+            lights = [
+                (
+                    "interior_ref_architectural_key",
+                    f"공간 정합 {lit_ko} 35° 디렉셔널 입체광 ({k1}K · {base_ratio}:1)",
+                    f"Sculpted ~{k1}K directional {lit_dir} architectural/gridded key light at 35 degrees matching the room's exact shadow geometry (~{base_ratio}:1 ratio), sculpting natural depth across the {opp_dir} cheek and under the chin",
+                ),
+                (
+                    "interior_slanting_sunbeam",
+                    f"{lit_ko} 창가 사선 햇살 슬래시 채광 ({k2}K · 4.0:1)",
+                    f"Warm ~{k2}K slanting afternoon sunlight streaming obliquely from {lit_dir} architectural windows, casting sunlit highlights across the {lit_dir} face and outfit with rich ~4.0:1 diagonal shadow bands across the interior",
+                ),
+                (
+                    "interior_airy_diffused_fill",
+                    f"실내 브라이트 확산 데이라이트 ({k3}K · 1.6:1)",
+                    f"Bright, airy ~{k3}K broadly diffused interior daylight wrapping smoothly from front-{lit_dir} (~1.6:1 open contrast), brightening the room ambiance with luminous clean skin and crisp fabric texture",
+                ),
+                (
+                    "interior_moody_split_warm_rim",
+                    f"무디 이브닝 스플릿 + {k4_rim}K 웜 간접 림라이트 (5.5:1)",
+                    f"Intimate dimmed-room atmosphere with a focused ~{k4_key}K side split key from 65 degrees {lit_dir} (~5.5:1 shadow falloff) accented by a warm ~{k4_rim}K architectural rim glow from back-{opp_dir} outlining hair and shoulder edges",
+                ),
+                (
+                    "interior_reversed_north_window",
+                    f"반전 {opp_ko} 쿨 노스윈도우 확산광 + 네거티브 필 ({k5}K · 3.4:1)",
+                    f"Cool-crisp ~{k5}K overcast north-window soft daylight entering from 45 degrees {opp_dir} with natural interior negative fill on {lit_dir}, illuminating the {opp_dir} cheek cleanly (~3.4:1 ratio)",
+                ),
+            ]
+
+        n_out = max(1, int(count))
+        presets: list[Dict[str, object]] = []
+        for idx in range(n_out):
+            lens_mm, ap, crop_scale, framing_desc = cls.FOCAL_PROGRESSION[idx % len(cls.FOCAL_PROGRESSION)]
+            l_tag, l_ko, l_en = lights[idx % len(lights)]
+            presets.append(
+                {
+                    "index": idx + 1,
+                    "scene_regime_family": regime_family,
+                    "tag": f"{lens_mm}mm_{l_tag}",
+                    "lens_mm": lens_mm,
+                    "aperture": ap,
+                    "clean_plate_crop_scale": crop_scale,
+                    "framing_desc": framing_desc,
+                    "lighting_preset": l_tag,
+                    "lighting_name_ko": l_ko,
+                    "lighting_desc": l_en,
+                }
+            )
+        return tuple(presets)

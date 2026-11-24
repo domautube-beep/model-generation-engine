@@ -42,6 +42,7 @@ from ..scene_radiometry import (
     COHESION_MASTERING_MODES,
     FILM_PROFILES,
     LIGHTING_MODES,
+    SceneAdaptive5Lens5LightingPlanner,
     SceneRadiometryAnalyzer,
 )
 from .runtime import StudioImageRuntime
@@ -580,6 +581,34 @@ def create_studio_app(
                     lighting_note=shared_light,
                 )
             )
+        # Default 5-Lens × 5-Scene-Matched-Lighting Matrix expansion (`생-030`) when `expand_5lens_5lighting` is requested
+        expand_5x5 = bool(data.get("expand_5lens_5lighting", False))
+        if expand_5x5 and len(loc_inputs) == 1:
+            base_loc = loc_inputs[0]
+            scene_bgr = cv2.imread(str(base_loc.raw_unmasked_path or base_loc.image_path)) if (base_loc.raw_unmasked_path or base_loc.image_path) else None
+            base_spec = SceneRadiometryAnalyzer.analyze(
+                scene_bgr=scene_bgr,
+                mood_prompt=base_loc.mood_or_place_prompt,
+                lighting_note=base_loc.lighting_note,
+            )
+            planned_5 = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
+                radio_spec=base_spec,
+                scene_mood=None,
+                scene_text=f"{base_loc.mood_or_place_prompt} {base_loc.lighting_note}".strip(),
+                count=5,
+            )
+            loc_inputs = [
+                SceneLocationInput(
+                    name=f"{idx + 1:02d}_{p['lens_mm']}mm_{p['lighting_preset']}",
+                    image_path=base_loc.image_path,
+                    raw_unmasked_path=base_loc.raw_unmasked_path,
+                    mood_or_place_prompt=f"{base_loc.mood_or_place_prompt} ({p['lens_mm']}mm {p['aperture']} {p['framing_desc']})".strip(),
+                    lighting_note=str(p["lighting_desc"]),
+                    scope=base_loc.scope,
+                    override_yaw_deg=base_loc.override_yaw_deg,
+                )
+                for idx, p in enumerate(planned_5)
+            ]
 
         pose_raw = data.get("pose") or {}
         pose_spec = PosePrevizSpec(
@@ -805,6 +834,31 @@ def create_studio_app(
         target_job["quality"] = asdict(res["quality_report"])
         save_state()
         return target_job
+
+    @app.post("/api/lighting-matrix/plan")
+    def plan_context_adaptive_matrix(data: dict):
+        """Return the 5-Lens (50/65/85/105/135mm) × 5-Context-Matched Lighting Matrix for any uploaded location or text scene."""
+        loc_id = str(data.get("location_asset_id") or "").strip()
+        scene_text = str(data.get("scene_text") or "").strip()
+        clean_studio = bool(data.get("clean_studio", False))
+        scene_bgr = None
+        if loc_id and loc_id in db_state["assets"]:
+            rec = db_state["assets"][loc_id]
+            p = Path(rec.get("raw_path") or rec["active_path"])
+            if p.is_file():
+                scene_bgr = cv2.imread(str(p))
+        spec = SceneRadiometryAnalyzer.analyze(scene_bgr=scene_bgr, mood_prompt=scene_text)
+        matrix = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
+            radio_spec=spec,
+            scene_text=scene_text,
+            clean_studio_flag=clean_studio,
+            count=5,
+        )
+        return {
+            "scene_regime_family": matrix[0]["scene_regime_family"],
+            "measured_kelvin": spec.kelvin_est,
+            "presets": list(matrix),
+        }
 
     @app.get("/api/batches/{batch_id}")
     def get_batch(batch_id: str):

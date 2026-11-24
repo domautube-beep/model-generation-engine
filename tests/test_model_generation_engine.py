@@ -2173,6 +2173,89 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertTrue(out_pre.is_file())
             self.assertEqual(b_meta["locked_real_shot"], summary["entries"][0]["name"])
 
+    def test_39_context_adaptive_5lens_5lighting_and_deairbrush_zero_hardcoding(self) -> None:
+        """Verify 4 physical scene regimes, dynamic focal clean-plate builder, de-airbrushed pore detection, and zero hardcoding."""
+        import re
+        import tempfile
+        import cv2
+        import numpy as np
+        from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+        from model_generation_engine.organ_depth_anatomy import OrganAndDepthAnatomyAnalyzer
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+        from model_generation_engine.scene_radiometry import (
+            SceneAdaptive5Lens5LightingPlanner,
+            SceneRadiometryAnalyzer,
+        )
+
+        # 1. Verify all 4 environment families adapt dynamically without cross-contaminating incompatible light sources
+        p_studio = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
+            scene_text="warm terracotta seamless studio backdrop with rattan chair",
+            clean_studio_flag=True,
+        )
+        p_outdoor = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
+            scene_text="walking along a sunlit outdoor park sidewalk",
+            scene_mood={"is_low_key": False, "key_from_left": False},
+        )
+        p_night = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
+            scene_text="seated at a dim midnight whiskey bar",
+            scene_mood={"is_low_key": True, "key_from_left": True},
+        )
+        p_lounge = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
+            scene_text="seated in a wood-paneled gallery lounge armchair",
+            scene_mood={"is_low_key": False, "key_from_left": True},
+        )
+        self.assertEqual(len(p_studio), 5)
+        self.assertEqual([x["lens_mm"] for x in p_studio], [50, 65, 85, 105, 135])
+        self.assertEqual(p_studio[0]["scene_regime_family"], "commercial_cyclorama_studio")
+        self.assertEqual(p_outdoor[0]["scene_regime_family"], "outdoor_natural_environment")
+        self.assertEqual(p_night[0]["scene_regime_family"], "low_key_nocturnal_or_moody")
+        self.assertEqual(p_lounge[0]["scene_regime_family"], "architectural_daylight_or_lounge_interior")
+        # Outdoor must never mention studio octaboxes; cyclorama studio must never mention foliage/sky; right-lit flips direction
+        self.assertNotIn("octabox", " ".join(str(x["lighting_desc"]) for x in p_outdoor).lower())
+        self.assertIn("camera-right", str(p_outdoor[0]["lighting_desc"]).lower())
+        self.assertNotIn("clamshell", " ".join(str(x["lighting_desc"]) for x in p_night).lower())
+
+        # 2. Verify dynamic de-airbrush detection when a reference portrait has smoothed-away pores (49KB ID-retouch simulation)
+        pipe = ModelGenerationPipeline()
+        analyzer = OrganAndDepthAnatomyAnalyzer(pipe.apple_vision)
+        raw_ref = cv2.imread(str(self.ref_face))
+        airbrushed_ref = cv2.GaussianBlur(raw_ref, (9, 9), 2.6)
+        prof_smoothed = analyzer.extract_profile(airbrushed_ref)
+        self.assertIsNotNone(prof_smoothed)
+        self.assertTrue(prof_smoothed.is_airbrushed_or_lowres_origin)
+        clause_sm = prof_smoothed.to_natural_identity_only_clause(clean_studio=True)
+        self.assertIn("DISCARDING Image 1's smoothed/airbrushed ID-studio retouching", clause_sm)
+        # Zero gendered pronouns in universal identity clause
+        self.assertIsNone(re.search(r"\b(?:her|she|his|he)\b", clause_sm, re.IGNORECASE))
+
+        # 3. Verify `prepare_origin_bundle` defaults to `best_of_k=5` and dynamically creates 5 focal-matched clean location plates
+        wf = FreshOriginEditorialWorkflow(pipe)
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            gen0_copy = td_p / "originals" / "gen0.jpg"
+            gen0_copy.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(gen0_copy), raw_ref)
+            loc_img = np.full((960, 640, 3), (140, 155, 170), dtype=np.uint8)
+            cv2.rectangle(loc_img, (320, 420), (540, 820), (60, 95, 145), -1)
+            loc_p = td_p / "originals" / "room_ref.jpg"
+            cv2.imwrite(str(loc_p), loc_img)
+            bundle = wf.prepare_origin_bundle(
+                gen0_portrait_path=gen0_copy,
+                work_dir=td_p / "work",
+                scene_instruction="Seated comfortably in a wood-paneled lounge armchair",
+                outfit_instruction="Dark charcoal ribbed turtleneck and wool trousers",
+                location_reference_path=loc_p,
+                design_mode="pure_v21",
+                no_film_grain=True,
+            )
+            self.assertEqual(bundle["best_of_k"], 5)
+            self.assertEqual(len(bundle["prompts"]), 5)
+            lenses = [p["lens_mm"] for p in bundle["prompts"]]
+            self.assertEqual(lenses, [50, 65, 85, 105, 135])
+            focal_paths = [Path(p["focal_clean_location_path"]) for p in bundle["prompts"]]
+            self.assertEqual(len({p.name for p in focal_paths}), 5)
+            self.assertTrue(all(p.is_file() for p in focal_paths))
+
 
 if __name__ == "__main__":
     unittest.main()
