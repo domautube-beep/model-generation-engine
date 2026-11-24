@@ -11,18 +11,21 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from model_generation_engine.version_guard import (
-    check_version_integrity,
-    sync_or_bump_version,
+_VG_SPEC = importlib.util.spec_from_file_location(
+    "version_guard", REPO_ROOT / "model_generation_engine" / "version_guard.py"
 )
+assert _VG_SPEC is not None and _VG_SPEC.loader is not None
+_VG_MOD = importlib.util.module_from_spec(_VG_SPEC)
+sys.modules["version_guard"] = _VG_MOD
+_VG_SPEC.loader.exec_module(_VG_MOD)
+check_version_integrity = _VG_MOD.check_version_integrity
+sync_or_bump_version = _VG_MOD.sync_or_bump_version
 
 
 def main() -> int:

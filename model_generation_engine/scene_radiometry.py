@@ -295,6 +295,64 @@ APERTURE_MODES: Dict[str, str] = {
     "f5_6": "f/5.6",
 }
 
+FRAMING_MODES: Tuple[str, ...] = ("auto", "balanced_50_50", "closeup")
+
+CLOSEUP_INTENT_KEYWORDS: Tuple[str, ...] = (
+    "클로즈업",
+    "더 가까이",
+    "더 클로즈업",
+    "가깝게",
+    "얼굴 크게",
+    "얼굴 위주",
+    "타이트하게",
+    "바스트샷",
+    "헤드샷",
+    "얼굴 확대",
+    "closeup",
+    "close-up",
+    "tight portrait",
+    "tight crop",
+    "headshot",
+    "chest-up",
+    "shoulder-up",
+)
+
+
+def resolve_framing_mode(raw_text: str = "", explicit_mode: str = "auto") -> str:
+    """Resolve framing mode dynamically (`balanced_50_50` default; switches to `closeup` ONLY on explicit user request)."""
+    mode_norm = (explicit_mode or "auto").strip().lower()
+    if mode_norm in ("closeup", "close-up", "tight"):
+        return "closeup"
+    if mode_norm in ("balanced_50_50", "balanced", "50:50", "50_50", "half_and_half"):
+        return "balanced_50_50"
+    low = (raw_text or "").lower()
+    if any(kw in low for kw in CLOSEUP_INTENT_KEYWORDS):
+        return "closeup"
+    return "balanced_50_50"
+
+
+def build_framing_and_depth_directive(
+    lens_mm: int,
+    aperture: str = "f/1.8",
+    framing_mode: str = "balanced_50_50",
+) -> str:
+    """Build explicit camera-distance, subject-to-background ratio, and optical Z-depth bokeh directive."""
+    ap = aperture or "f/1.8"
+    if framing_mode == "closeup":
+        return (
+            f"intimate {lens_mm}mm {ap} chest-to-crown close-up portrait framing (requested close-up: human subject occupying ~68%–75% "
+            "of the frame) with tack-sharp focus strictly on the eyes and facial planes while the background melts into smooth, "
+            "deeply out-of-focus optical bokeh (zero busy background detail, strong three-dimensional Z-depth separation)"
+        )
+    return (
+        f"balanced 50:50 subject-to-space {lens_mm}mm {ap} environmental medium portrait framing—step the camera back proportionally "
+        "so the human figure occupies ~45%–50% of the canvas area while ~50%–55% open architectural breathing room, generous headroom, "
+        "and lateral negative space surround the subject (NEVER crowd or fill the entire frame edge-to-edge with the person); "
+        f"shoot wide-open at {ap} with tack-sharp focus strictly on the subject's eyes and face while foreground cues and the receding "
+        "background fall smoothly and progressively out of focus into creamy optical bokeh (do NOT render crisp background micro-details "
+        "or sharp distant textures; prioritize three-dimensional Z-depth spatial separation)"
+    )
+
 APERTURE_DOF_DESCRIPTIONS: Dict[str, str] = {
     "f/1.4": (
         "wide-open f/1.4 ultra-shallow planar depth of field—focus plane razor-thin strictly on the nearer eye and glasses frame; "
@@ -417,9 +475,10 @@ class SingleLensRadiometricSpec:
             "3) TRUE WHITE BALANCE & COLOR HARMONY (자연스러운 화이트밸런스와 색감 · 이상한 노란끼 금지): "
             f"Enforce {film['prompt_color_desc']} and {self.color_cast_summary}. Keep white/ivory garments, watch dials, and skin "
             "clean, breathable, and true-to-life—strictly ZERO jaundiced yellow/sepia/orange AI filter! "
-            f"4) THREE-PLANE SPATIAL DEPTH & LENS DOF ({ap} 심도의 예술): Apply {dof_desc}. Frame with genuine architectural depth "
-            "(subtle softly defocused foreground cue, crisp focal plane on the subject's eyes, and calm spatial recession behind) "
-            "in an uncluttered, authentic real-world space free of cliché staged props. "
+            f"4) THREE-PLANE SPATIAL DEPTH, 50:50 SPACE & SHALLOW OPTICAL BOKEH ({ap} 아웃포커싱 깊이감): Apply {dof_desc}. "
+            "Prioritize three-dimensional Z-axis spatial depth (softly defocused foreground cue, tack-sharp focal plane strictly on the subject's eyes/face, "
+            "and creamy out-of-focus background recession)—do NOT render busy sharp background micro-details or deep f/8 architectural sharpness, and "
+            "maintain generous ~50% architectural negative space around the subject unless an explicit close-up was requested. "
             "5) UNRETOUCHED REAL-CAMERA SKIN & HAIR: Match the organic real-camera pixel smoothness of Image 1—natural skin tone and "
             "subtle real texture where light touches, without repeated artificial pores, wire-sharp hair strands, or oversharpening."
         )
@@ -743,12 +802,11 @@ class SceneRadiometryAnalyzer:
 
         if forced_aperture:
             ap = forced_aperture
-        elif dof_ratio < 0.58 or is_backlit:
+        elif dof_ratio < 0.65 or is_backlit:
             ap = str(dop["aperture"])
-        elif dof_ratio < 0.82:
-            ap = "f/2.0"
         else:
-            ap = "f/2.8"
+            # Default to fast shallow depth-of-field bokeh (`f/1.8`–`f/2.0`) even when an empty clean-plate reference room is sharp!
+            ap = "f/1.8" if str(dop.get("aperture", "f/1.8")) in ("f/1.4", "f/1.8") else "f/2.0"
 
         return SingleLensRadiometricSpec(
             kelvin_est=kelvin_measured,
@@ -1106,38 +1164,74 @@ class SceneAdaptive5Lens5LightingPlanner:
     (`key_from_left` vs `key_from_right`) so every lighting setup is physically plausible in THAT exact place.
     """
 
-    FOCAL_PROGRESSION: Tuple[Tuple[int, str, float, str], ...] = (
+    FOCAL_PROGRESSION_BALANCED_50_50: Tuple[Tuple[int, str, float, str], ...] = (
         (
             50,
-            "f/3.2",
+            "f/1.8",
             1.00,
-            "environmental full-frame composition showing the full architectural setting, furniture, and head-to-toe pose",
+            "balanced 50:50 environmental medium-wide composition (human figure ~45% of canvas, ~55% softly defocused room/architectural negative space and headroom, shallow f/1.8 optical bokeh)",
         ),
         (
             65,
-            "f/2.8",
-            0.88,
-            "cinema classic full-figure editorial framing with natural spatial compression from upper backdrop to footwear",
+            "f/1.8",
+            0.94,
+            "balanced 50:50 cinema medium-three-quarter composition stepped back to preserve ~50% surrounding architectural breathing room with creamy f/1.8 Z-depth background falloff",
         ),
         (
             85,
-            "f/2.8",
-            0.75,
-            "classic 85mm three-quarter-to-ankle portrait framing with creamy background separation",
+            "f/1.8",
+            0.88,
+            "balanced 50:50 classic 85mm f/1.8 mid-thigh-up environmental portrait (subject ~48% of frame, ~52% open out-of-focus background negative space, deep three-dimensional Z-depth separation)",
         ),
         (
             105,
-            "f/2.5",
-            0.60,
-            "medium-telephoto knee-to-head portrait framing with compressed architectural depth",
+            "f/2.0",
+            0.82,
+            "balanced 50:50 medium-telephoto 105mm f/2.0 waist-up environmental portrait stepped back to maintain half-subject / half-space balance and smooth compressed optical bokeh",
         ),
         (
             135,
-            "f/2.2",
-            0.46,
-            "tight telephoto waist/lap-up editorial portrait framing with shallow optical depth-of-field bokeh",
+            "f/2.0",
+            0.76,
+            "balanced 50:50 telephoto 135mm f/2.0 mid-torso portrait with generous headroom and lateral negative space (~50% subject / ~50% creamy out-of-focus background depth, zero busy background detail)",
         ),
     )
+
+    FOCAL_PROGRESSION_CLOSEUP: Tuple[Tuple[int, str, float, str], ...] = (
+        (
+            50,
+            "f/1.8",
+            0.76,
+            "user-requested 50mm f/1.8 environmental close-up portrait (~68% subject occupancy) with shallow optical background bokeh",
+        ),
+        (
+            65,
+            "f/1.8",
+            0.68,
+            "user-requested 65mm f/1.8 chest-up cinema close-up portrait (~70% subject occupancy) with creamy Z-depth background falloff",
+        ),
+        (
+            85,
+            "f/1.8",
+            0.60,
+            "user-requested 85mm f/1.8 classic bust/chest-up close-up portrait (~72% subject occupancy) with smooth out-of-focus bokeh",
+        ),
+        (
+            105,
+            "f/2.0",
+            0.52,
+            "user-requested 105mm f/2.0 shoulder-to-crown close-up portrait (~74% subject occupancy) with deep telephoto background defocus",
+        ),
+        (
+            135,
+            "f/2.0",
+            0.46,
+            "user-requested 135mm f/2.0 intimate close-up portrait (~76% subject occupancy) with ultra-creamy shallow optical bokeh",
+        ),
+    )
+
+    # Canonical default is balanced 50:50 subject-to-background ratio + shallow optical bokeh
+    FOCAL_PROGRESSION: Tuple[Tuple[int, str, float, str], ...] = FOCAL_PROGRESSION_BALANCED_50_50
 
     @classmethod
     def classify_scene_environment(
@@ -1191,7 +1285,14 @@ class SceneAdaptive5Lens5LightingPlanner:
         scene_text: str = "",
         clean_studio_flag: bool = False,
         count: int = 5,
+        framing_mode: str = "auto",
     ) -> Tuple[Dict[str, object], ...]:
+        resolved_framing = resolve_framing_mode(scene_text, explicit_mode=framing_mode)
+        progression = (
+            cls.FOCAL_PROGRESSION_CLOSEUP
+            if resolved_framing == "closeup"
+            else cls.FOCAL_PROGRESSION_BALANCED_50_50
+        )
         regime_family = cls.classify_scene_environment(
             radio_spec=radio_spec,
             scene_mood=scene_mood,
@@ -1350,12 +1451,13 @@ class SceneAdaptive5Lens5LightingPlanner:
         n_out = max(1, int(count))
         presets: list[Dict[str, object]] = []
         for idx in range(n_out):
-            lens_mm, ap, crop_scale, framing_desc = cls.FOCAL_PROGRESSION[idx % len(cls.FOCAL_PROGRESSION)]
+            lens_mm, ap, crop_scale, framing_desc = progression[idx % len(progression)]
             l_tag, l_ko, l_en = lights[idx % len(lights)]
             presets.append(
                 {
                     "index": idx + 1,
                     "scene_regime_family": regime_family,
+                    "framing_mode": resolved_framing,
                     "tag": f"{lens_mm}mm_{l_tag}",
                     "lens_mm": lens_mm,
                     "aperture": ap,

@@ -58,7 +58,7 @@ class ModelGenerationPipeline:
         reference_face_path: Optional[Path] = None,
         reattach_mode: str = "none",
         redrawn_head_path: Optional[Path] = None,
-        cohesion_mode: str = "auto",
+        cohesion_mode: str = "off",
         reference_scene_path: Optional[Path] = None,
         radiometric_spec: Optional[SingleLensRadiometricSpec] = None,
         angle_bank: Optional[Dict[str, Path]] = None,
@@ -135,26 +135,29 @@ class ModelGenerationPipeline:
             vx2, vy2 = min(canvas_5k.shape[1], X2 + 120), min(canvas_5k.shape[0], Y2 + 160)
 
             roi = canvas_5k[vy1:vy2, vx1:vx2].copy()
-            roi_face = self.detector.detect(roi)
-            min_org_grad, _ = self.auditor.measure_per_organ_sharpness(roi, roi_face)
-            if reattach_mode == "none" and (
-                (
-                    self.config.auto_restore_distant_face_iod_px > 0.0
-                    and roi_face.inter_ocular_distance < self.config.auto_restore_distant_face_iod_px
+            zero_touch = bool(getattr(self.config, "zero_touch_4k_passthrough", True)) and reattach_mode == "none"
+            skin_metrics: Dict[str, object] = {"zero_touch_4k_passthrough": zero_touch}
+            if not zero_touch:
+                roi_face = self.detector.detect(roi)
+                min_org_grad, _ = self.auditor.measure_per_organ_sharpness(roi, roi_face)
+                if reattach_mode == "none" and (
+                    (
+                        self.config.auto_restore_distant_face_iod_px > 0.0
+                        and roi_face.inter_ocular_distance < self.config.auto_restore_distant_face_iod_px
+                    )
+                    or min_org_grad < self.config.min_organ_gradient_energy
+                ):
+                    roi, _ = self.upscaler.restore_face_focus_5pt(roi)
+
+                # CRITICAL: NEVER pass studio `reference_skin_profile` here — keep scene lighting 100% intact!
+                roi_matte, skin_metrics = self.skin_processor.process(
+                    roi, seed=seed, reference_skin_profile=None
                 )
-                or min_org_grad < self.config.min_organ_gradient_energy
-            ):
-                roi, _ = self.upscaler.restore_face_focus_5pt(roi)
+                canvas_5k[vy1:vy2, vx1:vx2] = roi_matte
 
-            # CRITICAL: NEVER pass studio `reference_skin_profile` here — keep scene lighting 100% intact!
-            roi_matte, skin_metrics = self.skin_processor.process(
-                roi, seed=seed, reference_skin_profile=None
-            )
-            canvas_5k[vy1:vy2, vx1:vx2] = roi_matte
-
-            # Post-Generation Single-Camera Optical & Radiometric Mastering (`무드·톤·명암·색감 전 프레임 일체화`)
+            # Post-Generation Single-Camera Optical & Radiometric Mastering (OFF by default in v1.0.4 Zero-Touch 4K!)
             cohesion_meta: Dict[str, object] = {"mode": cohesion_mode, "applied": False}
-            if cohesion_mode != "off":
+            if cohesion_mode not in ("off", "") and not (zero_touch and cohesion_mode == "auto"):
                 canvas_5k, cohesion_meta = PostGenCohesionMasterer.master(
                     canvas_5k,
                     face_det=face_5k,

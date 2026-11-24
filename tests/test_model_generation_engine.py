@@ -2306,6 +2306,80 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertTrue(rep_bumped.passed)
             self.assertGreater(p_sem(rep_bumped.canonical_version), p_sem(rep_clean.canonical_version))
 
+    def test_41_reelprofile_v104_5050_bokeh_and_zerotouch_4k(self) -> None:
+        """Verify v1.0.4 defaults: 50:50 subject/space balance (closeup on demand), f/1.8 bokeh depth, and Zero-Touch 4K (0.0% pixel mutation)."""
+        import tempfile
+        import cv2
+        import numpy as np
+        from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+        from model_generation_engine.prompt_builder import PromptFirewall
+        from model_generation_engine.scene_radiometry import (
+            SceneAdaptive5Lens5LightingPlanner,
+            resolve_framing_mode,
+        )
+
+        # 1. Default framing is balanced_50_50; switches to closeup ONLY when user explicitly asks
+        self.assertEqual(resolve_framing_mode("자연스러운 라운지 포즈"), "balanced_50_50")
+        self.assertEqual(resolve_framing_mode("이 컷은 더 클로즈업해줘"), "closeup")
+        self.assertEqual(resolve_framing_mode("normal scene", explicit_mode="closeup"), "closeup")
+
+        p_def = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(scene_text="sunny gallery lounge")
+        p_cu = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(scene_text="더 클로즈업해서 찍어줘")
+        self.assertTrue(all(x["framing_mode"] == "balanced_50_50" for x in p_def))
+        self.assertTrue(all(x["aperture"] in ("f/1.8", "f/2.0") for x in p_def))
+        self.assertIn("50:50", str(p_def[0]["framing_desc"]))
+        self.assertTrue(all(x["framing_mode"] == "closeup" for x in p_cu))
+        self.assertLess(float(p_cu[2]["clean_plate_crop_scale"]), float(p_def[2]["clean_plate_crop_scale"]))
+
+        # 2. Verify Zero-Touch 4K Passthrough leaves lighting, skin tone, texture, and organ pixels 100.0% untouched (max_abs_diff == 0.0)
+        pipe = ModelGenerationPipeline()
+        wf = FreshOriginEditorialWorkflow(pipe)
+        raw_ref = cv2.imread(str(self.ref_face))
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            gen0_copy = td_p / "originals" / "gen0.jpg"
+            gen0_copy.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(gen0_copy), raw_ref)
+
+            bundle = wf.prepare_origin_bundle(
+                gen0_portrait_path=gen0_copy,
+                work_dir=td_p / "work",
+                scene_instruction="Seated in a warm lamp lounge armchair with natural gesture",
+                outfit_instruction="Dark olive knit sweater and charcoal trousers",
+                fixed_lens_mm=90,
+                best_of_k=1,
+            )
+            self.assertEqual(bundle["design_mode"], "zero_touch_4k")
+            self.assertEqual(bundle["framing_mode"], "balanced_50_50")
+            p0 = bundle["prompts"][0]["prompt"]
+            PromptFirewall.validate_prompt(p0)
+            self.assertIn("50:50", p0)
+            self.assertIn("f/1.8", p0)
+
+            # Simulate a warm-lamp 4K fresh candidate (very different warm lighting from Gen-0 ID flash!)
+            cand_4k = cv2.resize(raw_ref, (3584, 4800), interpolation=cv2.INTER_LANCZOS4)
+            lab = cv2.cvtColor(cand_4k, cv2.COLOR_BGR2LAB).astype(np.float32)
+            lab[:, :, 0] = np.clip(lab[:, :, 0] * 0.84, 0.0, 255.0)
+            lab[:, :, 2] = np.clip(lab[:, :, 2] + 9.0, 0.0, 255.0)
+            warm_cand_4k = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+            cand_p = td_p / "cand_4k.png"
+            cv2.imwrite(str(cand_p), warm_cand_4k)
+
+            receipt = wf.finalize_native_winner_4k(
+                gen0_portrait_path=gen0_copy,
+                winner_candidate_path=cand_p,
+                output_dir=td_p / "out",
+                output_stem="unit_zerotouch",
+                sync_to_vault=False,
+                strict_10gate=False,
+            )
+            self.assertTrue(receipt["zero_touch_4k_passthrough"])
+            self.assertEqual(receipt["max_abs_pixel_diff_vs_raw"], 0.0)
+            self.assertFalse(receipt["skin_albedo_texture_meta"]["applied"])
+            self.assertFalse(receipt["optical_acuity_meta"]["applied"])
+            self.assertFalse(receipt["cohesion_meta"]["applied"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,8 @@ from .scene_radiometry import (
     PostGenCohesionMasterer,
     SceneAdaptive5Lens5LightingPlanner,
     SceneRadiometryAnalyzer,
+    build_framing_and_depth_directive,
+    resolve_framing_mode,
 )
 from .skin_processor import MatteSkinProcessor
 from .version_guard import CANONICAL_PROJECT_NAME, SHORT_PROJECT_NAME, check_version_integrity
@@ -187,7 +189,7 @@ class FreshOriginEditorialWorkflow:
         turnaround_8dir_sheet_path: Optional[Path] = None,
         extra_raw_asset_paths: Sequence[Path] = (),
         real_original_paths: Sequence[Path] = (),
-        design_mode: str = "pure_v22",
+        design_mode: str = "zero_touch_4k",
         aspect_ratio_label: str = "3:4",
         best_of_k: int = 5,
         match_gen0_yaw: bool = True,
@@ -195,6 +197,7 @@ class FreshOriginEditorialWorkflow:
         text_only_location: bool = False,
         no_film_grain: bool = False,
         fixed_lens_mm: Optional[int] = None,
+        framing_mode: str = "auto",
         subject: Optional[SubjectProfile] = None,
     ) -> Dict[str, object]:
         """Stages 1 & 2: Validate Gen-0 (+ optional Multi-Shot Real Bank), clean location, emit K prompts."""
@@ -614,12 +617,15 @@ class FreshOriginEditorialWorkflow:
                 "Natural directional available light with authentic 3D shadow falloff, grounded contact occlusion, and zero studio flash cutout"
             )
 
+        combined_scene_text = f"{scene_instruction} {outfit_instruction}".strip()
+        resolved_framing = resolve_framing_mode(combined_scene_text, explicit_mode=framing_mode)
         adaptive_presets = SceneAdaptive5Lens5LightingPlanner.plan_5lens_5lighting_matrix(
             radio_spec=loc_radio_spec,
             scene_mood=scene_mood,
-            scene_text=f"{scene_instruction} {outfit_instruction}".strip(),
+            scene_text=combined_scene_text,
             clean_studio_flag=bool(no_film_grain),
             count=k_count,
+            framing_mode=resolved_framing,
         )
         focal_clean_paths: List[Path] = []
         loc_bgr_for_anchor = cv2.imread(str(loc_src_resolved)) if loc_src_resolved is not None else None
@@ -638,10 +644,11 @@ class FreshOriginEditorialWorkflow:
             preset = adaptive_presets[i]
             if fixed_lens_mm is not None and int(fixed_lens_mm) > 0:
                 lens_mm = int(fixed_lens_mm)
-                preset_ap = "f/2.2"
-                framing_desc = (
-                    f"intimate {lens_mm}mm medium-telephoto chest-to-mid-thigh editorial portrait framing "
-                    "with natural optical compression, generous facial pixel resolution, and creamy shallow depth-of-field bokeh"
+                preset_ap = "f/1.8"
+                framing_desc = build_framing_and_depth_directive(
+                    lens_mm=lens_mm,
+                    aperture=preset_ap,
+                    framing_mode=resolved_framing,
                 )
             else:
                 lens_mm = int(preset["lens_mm"])  # type: ignore[arg-type]
@@ -650,18 +657,23 @@ class FreshOriginEditorialWorkflow:
             preset_light_ko = str(preset["lighting_name_ko"])
             preset_light_en = str(preset["lighting_desc"])
             regime_family = str(preset["scene_regime_family"])
-            aperture_str = "f/2.8, ISO 800 available light" if is_lk_scene else f"{preset_ap}, natural available light"
+            aperture_str = "f/2.0, ISO 800 available light" if is_lk_scene else f"{preset_ap}, natural available light"
+            space_depth_rule = (
+                "requested close-up composition (~70% subject occupancy) with tack-sharp focus strictly on the eyes and face while the background melts into creamy out-of-focus optical bokeh (zero busy background detail, strong 3D Z-depth)."
+                if resolved_framing == "closeup"
+                else "balanced 50:50 subject-to-background composition (human figure ~45%–50% of frame area, ~50%–55% open architectural breathing room, headroom, and side negative space—NEVER fill the entire frame edge-to-edge) with shallow optical depth-of-field bokeh (tack-sharp eyes/face, creamy out-of-focus background without sharp background micro-detail, strong three-dimensional Z-depth separation)."
+            )
             if no_film_grain:
                 slot1_camera = (
-                    f"Clean, tack-sharp 100MP medium-format digital commercial editorial photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens at {preset_ap}, base ISO 64, {aspect_ratio_label}, {framing_desc}), "
+                    f"Clean, tack-sharp 100MP medium-format digital commercial editorial photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens wide-open at {preset_ap}, base ISO 64, {aspect_ratio_label}, {framing_desc}), "
                     "pure noise-free optical clarity with ZERO film grain, natural undistorted perspective, "
-                    "realistic adult 7.45-head multi-segment Korean body proportions, and smooth natural depth-of-field."
+                    f"realistic adult 7.45-head multi-segment Korean body proportions, and {space_depth_rule}"
                 )
             else:
                 slot1_camera = (
-                    f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm lens at {aperture_str}, {aspect_ratio_label}, {framing_desc}), "
+                    f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm prime lens wide-open at {aperture_str}, {aspect_ratio_label}, {framing_desc}), "
                     "natural undistorted perspective with realistic adult 7.45-head multi-segment body proportions "
-                    "and organic shallow depth-of-field falloff across hair edges, furniture back, and distant background."
+                    f"and {space_depth_rule}"
                 )
             slot2_identity = (
                 f"Subject: {subj_label} ({ref_note}). "
@@ -726,6 +738,7 @@ class FreshOriginEditorialWorkflow:
                 {
                     "candidate_tag": f"c{i + 1}_{preset['tag']}",
                     "scene_regime_family": regime_family,
+                    "framing_mode": resolved_framing,
                     "lens_mm": lens_mm,
                     "aperture": preset_ap,
                     "lighting_preset": str(preset["lighting_preset"]),
@@ -768,6 +781,7 @@ class FreshOriginEditorialWorkflow:
             **_vmeta,
             "workflow_version": _vmeta["canonical_version"],
             "design_mode": design_mode,
+            "framing_mode": resolved_framing,
             "no_film_grain": bool(no_film_grain),
             "stage": "READY_FOR_FRESH_GEN",
             "created_at": time.time(),
@@ -988,16 +1002,16 @@ class FreshOriginEditorialWorkflow:
         min_created_epoch: float = 0.0,
         sync_to_vault: bool = True,
         strict_10gate: bool = True,
-        upscale_mode: str = "upscayl_hybrid",
+        upscale_mode: str = "optical_fullframe",
         upscayl_model_name: str = "ultramix-balanced-4x",
         reference_scene_path: Optional[Path] = None,
-        cohesion_mode: str = "auto",
-        design_mode: str = "pure_v22",
+        cohesion_mode: str = "off",
+        design_mode: str = "zero_touch_4k",
         no_film_grain: bool = False,
         real_bank_entries: Optional[Sequence[Dict[str, object]]] = None,
         locked_real_shot_path: Optional[Path] = None,
     ) -> Dict[str, object]:
-        """Stage 5: Region-Aware Upscayl Hybrid (`v2.2` default: Optical Face + Ultramix 4K Body), Pure Optical Lanczos-4, or Upscayl 4x."""
+        """Stage 5: Zero-Touch 4K Passthrough (`v1.0.4` default: 0.0% lighting/skin/acuity/likeness alteration) + 10-Gate Audit."""
         gen0_p = Path(gen0_portrait_path).resolve()
         win_p = Path(winner_candidate_path).resolve()
         if not win_p.is_file():
@@ -1025,15 +1039,20 @@ class FreshOriginEditorialWorkflow:
         raw_fw, raw_fh = round(float(raw_face_det.bbox[2]), 1), round(float(raw_face_det.bbox[3]), 1)
         raw_iod_px = round(float(raw_face_det.inter_ocular_distance), 1)
 
-        # 1. Region-Aware Upscayl Hybrid (`v2.2` default: 100% Optical Face/Eyes + Lossless Upscayl 4K Hair/Suit/Room),
-        #    Pure Optical Lanczos-4, OR full Upscayl 4x
+        # 1. Zero-Touch 4K Passthrough (`v1.0.4` canonical default: 0.0% face/lighting/skin/acuity alteration!),
+        #    or legacy opt-in hybrid / optical / upscayl modes
         acuity_meta: Dict[str, object] = {"applied": False}
-        zero_post_paste = design_mode in ("pure_character_sheet", "design_b_rerender")
+        zero_post_paste = design_mode in ("zero_touch_4k", "pure_character_sheet", "design_b_rerender")
         pure_zero_mask = zero_post_paste and (upscale_mode == "optical_fullframe")
-        if (design_mode == "pure_character_sheet") or (upscale_mode == "optical_fullframe"):
-            # 100.0% Uniform Whole-Frame Pure Optical 4K Scaling — ZERO face/body split mask, ZERO face pasting, ZERO local ROI color painting!
-            up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
-            up_model = "optical_fullframe_uniform_4k_zero_composite"
+        if (design_mode in ("zero_touch_4k", "pure_character_sheet")) or (upscale_mode == "optical_fullframe"):
+            # 100.0% Zero-Touch Passthrough (if already 4K) or Uniform Whole-Frame Pure Optical Scaling ONLY —
+            # ZERO face/body split mask, ZERO ID-flash skin repainting, ZERO MatteSkin highlight crush, ZERO organ acuity unsharp!
+            if raw_bgr.shape[0] >= 4416 or max(raw_bgr.shape[:2]) >= 3840:
+                up_bgr = raw_bgr.copy()
+                up_model = "zero_touch_native_4k_passthrough"
+            else:
+                up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
+                up_model = "zero_touch_optical_fullframe_uniform_4k"
             pure_zero_mask = True
         elif upscale_mode == "upscayl_hybrid":
             up_bgr, hyb_meta = self.pipeline.upscaler.upscale_hybrid_optical_face_upscayl_body(
@@ -1242,10 +1261,17 @@ class FreshOriginEditorialWorkflow:
                 "version_check_passed": True,
             }
 
+        max_abs_diff_vs_raw: Optional[float] = (
+            round(float(np.max(np.abs(up_bgr.astype(np.int16) - raw_bgr.astype(np.int16)))), 3)
+            if up_bgr.shape == raw_bgr.shape
+            else None
+        )
         receipt = {
             **_vmeta_fin,
             "workflow_version": _vmeta_fin["canonical_version"],
             "design_mode": design_mode,
+            "zero_touch_4k_passthrough": bool(pure_zero_mask or zero_post_paste),
+            "max_abs_pixel_diff_vs_raw": max_abs_diff_vs_raw,
             "stage": "FINALIZED_10GATES_PASSED" if all_passed else "FINALIZED_10GATES_FAILED",
             "timestamp": time.time(),
             "passed_10gates": all_passed,

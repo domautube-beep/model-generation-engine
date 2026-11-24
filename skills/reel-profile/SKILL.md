@@ -33,19 +33,19 @@ description: Use this skill immediately whenever the user mentions '릴프로필
 
 ---
 
-## 3. 정본 `v1.0.0` 디폴트 생성 파이프라인 (무하드코딩 6단계)
+## 3. 정본 `v1.0.4+` 디폴트 생성 파이프라인 (무하드코딩 6단계)
 1. **Step 1 — 순수 원본(`Gen-0`) 1-Hop 8방향(`-90° ~ +90°`) 마스터 뱅크 필수 선행**:
    - 새 인물은 반드시 순수 `Gen-0` 단독 입력(`hop == 1`)으로 `-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°` 8방향을 먼저 생성·조립(`*_master_8angle_turnaround_sheet.jpg`)한다.
-2. **Stage 1~2 — `prepare --best-of 5 --no-film-grain` (장소·상황 적응형 5렌즈×5조명)**:
+2. **Stage 1~2 — `prepare` (`50:50 인물·배경 여백` 디폴트 · 요청 시에만 `closeup` · `f/1.8~f/2.0` 아웃포커싱 깊이감)**:
    ```bash
    python3 <repo>/scripts/run_fresh_origin_workflow.py prepare \
      --gen0 <Gen0.jpg> --turnaround-sheet <master_8angle_sheet.jpg> \
-     --location <clean_plate.jpg> --clean-location-override <clean_plate.jpg> \
-     --work-dir <stage_dir> --design-mode pure_v21 --no-film-grain --aspect 2:3 --best-of 5 \
+     --work-dir <stage_dir> --design-mode zero_touch_4k --framing-mode auto \
+     --no-film-grain --aspect 3:4 --best-of 5 \
      --scene "..." --outfit "..."
    ```
-   - `SceneAdaptive5Lens5LightingPlanner`가 공간 조도와 상황을 자동 분류해 **`50 / 65 / 85 / 105 / 135mm` 5렌즈 × 5현장맞춤 독립조명** + 초점거리별 자동 클린플레이트(`loc01..loc05`)를 생성한다.
-   - 초소형·증명사진 보정 원본(`skin_norm_laplacian < 24.0`)은 자동으로 에어브러싱/플래시 백탁을 분리하고 실제 모공 질감을 복원한다.
+   - **기본 구도 (`balanced_50_50`)**: 인물로 프레임을 꽉 채우지 않고 **인물 약 `45~50%` : 주변 배경 여백 약 `50~55%`**를 기본으로 잡으며, 사용자가 클로즈업을 명시 요청할 때만 `closeup`으로 자동 전환한다.
+   - **기본 심도 (`f/1.8 ~ f/2.0` 아웃포커싱 깊이감)**: 초점은 눈/얼굴에만 칼핀으로 맞추고 배경 디테일은 살리지 않은 채 자연스러운 보케로 날려 **3단 공간 깊이감(`Z-Depth`)**을 살린다.
 3. **Stage 3 — 원패스 통인물 3D 생성**: 이전 생성물 재투입 `0%`, 얼굴 과장·미화 `0%`, 외부 유료 API `0%`.
-4. **Stage 4~6 — `rank` -> `finalize --upscale-mode optical_lanczos --no-film-grain` -> `read_file` 400% 육안 검수**:
-   - 최종 4K 마스터, `*_4k_macro.jpg`, `*_eye_compare_400pct.jpg`, `*_silhouette_overlay.jpg`를 육안 확인 후 보고한다.
+4. **Stage 4~6 — `rank` -> `finalize --upscale-mode optical_fullframe --cohesion-mode off` (`Zero-Touch 4K` 무변형 직통) -> `read_file` 400% 육안 검수**:
+   - **Zero-Touch 4K 직통 기본**: 4K 변환 시 증명사진 피부색 역주입(`0%`), 하이라이트 압축(`0%`), 눈·코·입 국소 샤프닝(`0%`), 배경 분리 GAN 합성(`0%`)을 전부 차단하여 **처음 생성된 조명·색감·질감·생김새를 `100.0%` 무변형(`0.0px diff`)으로 보존**한다.

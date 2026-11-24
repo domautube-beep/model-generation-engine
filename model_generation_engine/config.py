@@ -142,26 +142,32 @@ class LocationSpec:
 
 @dataclass(frozen=True)
 class CameraRigSpec:
-    """Universal camera angle, shot scale, focal length, pose, and negative-space specification."""
+    """Universal camera angle, shot scale, focal length, aperture bokeh, and 50:50 negative-space specification."""
 
-    shot_scale: str = "three-quarter portrait shot"
+    shot_scale: str = "balanced 50:50 environmental medium portrait (subject ~48% of frame, ~52% open architectural negative space)"
     camera_angle: str = "eye-level camera angle"
     focal_length_mm: int = 85
+    aperture: str = "f/1.8"
+    framing_mode: str = "balanced_50_50"  # "balanced_50_50" (default) or "closeup" (on user request)
     pose_description: str = "natural composed editorial posture"
     negative_space_side: str = "left"  # "left", "right", "center", "top", "none"
     aspect_ratio_label: str = "16:9"
 
     def to_prompt_clause(self) -> str:
         neg_map = {
-            "left": "subject positioned right-of-center leaving clean negative space on the left side of the frame",
-            "right": "subject positioned left-of-center leaving clean negative space on the right side of the frame",
-            "top": "subject positioned in the lower two-thirds leaving clean negative space in the upper sky/wall",
-            "center": "balanced centered editorial framing",
-            "none": "full-frame balanced composition",
+            "left": "subject positioned right-of-center (~45%–50% of frame) leaving ~50%–55% open out-of-focus architectural negative space and headroom on the left",
+            "right": "subject positioned left-of-center (~45%–50% of frame) leaving ~50%–55% open out-of-focus architectural negative space and headroom on the right",
+            "top": "subject positioned in the lower half (~48% of frame) leaving ~52% open softly defocused architectural headroom above",
+            "center": "balanced 50:50 subject-to-background environmental framing with generous surrounding negative space (never edge-to-edge tight)",
+            "none": "balanced 50:50 subject-to-background composition with natural breathing room",
         }
-        neg_clause = neg_map.get(self.negative_space_side.lower(), self.negative_space_side)
+        if self.framing_mode == "closeup":
+            neg_clause = "intimate user-requested close-up portrait framing (~70% subject occupancy) with creamy out-of-focus background bokeh"
+        else:
+            neg_clause = neg_map.get(self.negative_space_side.lower(), self.negative_space_side)
         return (
-            f"{self.shot_scale} captured from a {self.camera_angle} with an {self.focal_length_mm}mm lens; "
+            f"{self.shot_scale} captured from a {self.camera_angle} with an {self.focal_length_mm}mm {self.aperture} prime lens "
+            f"(shallow optical depth of field—tack-sharp focus on eyes/face, smooth creamy background bokeh without busy background detail, strong 3D Z-depth); "
             f"pose: {self.pose_description}; composition: {neg_clause}; {self.aspect_ratio_label} aspect ratio"
         )
 
@@ -190,13 +196,15 @@ class EngineConfig:
     project_name: str = "릴프로필"
     vault_dir: Optional[Path] = field(default_factory=lambda: resolve_gdrive_vault(("릴프로필", "프로필", "모델생성", "인물사진")))
     upscale_mode: str = "optical_lanczos"  # "optical_lanczos" (default, zero GAN corrosion) or "esrgan"
+    zero_touch_4k_passthrough: bool = True  # Default True (v1.0.4): 0.0% face/lighting/skin/acuity post-mutation during 4K save!
+    default_framing_mode: str = "balanced_50_50"  # Default 50:50 subject-to-space balance; switches to "closeup" on request
     upscale_model_name: str = "4xNomos8kSC"
     upscale_factor: int = 4
     codeformer_fidelity_w: float = 0.82
     unsharp_amount: float = 0.35
     unsharp_sigma: float = 1.0
     max_seam_l1_diff: float = 6.0
-    min_face_laplacian_var: float = 17.5
+    min_face_laplacian_var: float = 12.0
     min_organ_gradient_energy: float = 1.6
     min_inter_ocular_5k_px: float = 40.0
     auto_facelock_below_iod_5k_px: float = 0.0

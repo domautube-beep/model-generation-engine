@@ -22,11 +22,12 @@
 
 ---
 
-## 2. Default `정본 v1.0.0` Non-Skippable 6-Stage Workflow
+## 2. Default `정본 v1.0.4+` Non-Skippable 6-Stage Workflow
 1. **Step 1 (`8방향 마스터 뱅크`)**: 새 인물 원본(`Gen-0`)은 반드시 순수 `Gen-0` 단독 1-Hop으로 `-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°` 8방향을 생성·조립(`*_master_8angle_turnaround_sheet.jpg`)한 뒤 진행한다.
-2. **Stage 1~2 (`prepare --best-of 5 --no-film-grain`)**:
-   - 25항목 두상·턱각도(`Gonion`)·볼면적·7항목 눈매 계측 + 소형/증명사진 에어브러싱 자동 감지(`skin_norm_laplacian < 24.0`).
-   - `SceneAdaptive5Lens5LightingPlanner`가 장소·조도를 분석해 **5렌즈(`50·65·85·105·135mm`) × 5현장맞춤 독립조명** + 초점거리별 자동 클린플레이트(`loc01..loc05`)를 생성한다.
+2. **Stage 1~2 (`prepare --design-mode zero_touch_4k --framing-mode auto`)**:
+   - **기본 `50:50` 인물·배경 여백 밸런스 (`balanced_50_50`)**: 인물로 화면을 가득 채우지 않고 인물 `~45~50%` : 공간 여백 `~50~55%`를 기본으로 잡으며, 사용자가 클로즈업을 명시 요청할 때만 `closeup`으로 자동 전환한다.
+   - **기본 `f/1.8~f/2.0` 광학 아웃포커싱 깊이감**: 배경 디테일을 과잉 묘사하지 않고 얕은 심도 보케로 날려 3단 `Z-Depth` 공간 깊이감을 살린다.
+   - `SceneAdaptive5Lens5LightingPlanner`가 장소·조도를 분석해 **5렌즈(`50·65·85·105·135mm`) × 5현장맞춤 독립조명**을 생성한다.
 3. **Stage 3 (`1-Pass Native Full-Person 3D Generation`)**: 이전 생성물 재투입 `0%`, 얼굴 과장·미화 `0%`, 외부 유료 API `0%`.
-4. **Stage 4~6 (`rank` -> `finalize --upscale-mode optical_lanczos` -> `read_file` 400% 육안 검수)**:
-   - 스케일 비례 4K 마이크로 포어 복원 + 무그레인 광학 `Lanczos-4` 마스터링 후 `*_4k_macro.jpg`, `*_eye_compare_400pct.jpg`, `*_silhouette_overlay.jpg`를 필수로 검수한다.
+4. **Stage 4~6 (`rank` -> `finalize --upscale-mode optical_fullframe --cohesion-mode off` -> `read_file` 400% 육안 검수)**:
+   - **`Zero-Touch 4K` 직통 기본**: 4K 변환 시 얼굴 피부색 역주입·하이라이트 압축·국소 샤프닝·부위별 합성을 `0.0%`로 차단하여 처음 생성된 조명·질감·생김새를 100% 보존한다.

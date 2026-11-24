@@ -644,7 +644,8 @@ def create_studio_app(
         aperture_mode = str(data.get("aperture_mode") or "auto")
         camera_id = str(data.get("camera_id") or "auto")
         film_id = str(data.get("film_id") or "auto")
-        cohesion_mode = str(data.get("cohesion_mode") or film_id)
+        cohesion_mode = str(data.get("cohesion_mode") or "off")
+        framing_mode = str(data.get("framing_mode") or "auto")
 
         bid = f"batch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         bdir = base_dir / "batches" / bid
@@ -671,6 +672,7 @@ def create_studio_app(
                 camera_id=camera_id,
                 film_id=film_id,
                 cohesion_mode=cohesion_mode,
+                framing_mode=framing_mode,
                 attach_previz_image=False,  # Strict `1원본들 → 1생성`: ONLY 8-dir faces + raw original assets!
                 require_complete_8dir_bank=True,
             )
@@ -730,7 +732,7 @@ def create_studio_app(
         save_state()
 
         if eff_provider != "manifest":
-            upscale_mode_req = str(data.get("upscale_mode") or "upscayl_auto")
+            upscale_mode_req = str(data.get("upscale_mode") or "optical_lanczos")
             reattach_mode_req = str(data.get("reattach_mode") or "none")
             custom_pipe = ModelGenerationPipeline(
                 EngineConfig(

@@ -35,7 +35,12 @@ from .identity_turnaround import (
 from .origin_guard import Mandatory8DirBankVerifier, OriginOnlyOneShotGuard
 from .previz_pose import PosePrevizSpec, Previz3DRenderer
 from .prompt_builder import PromptFirewall
-from .scene_radiometry import SceneRadiometryAnalyzer, SingleLensRadiometricSpec
+from .scene_radiometry import (
+    SceneRadiometryAnalyzer,
+    SingleLensRadiometricSpec,
+    build_framing_and_depth_directive,
+    resolve_framing_mode,
+)
 
 ITEM_CATEGORIES: Tuple[str, ...] = ("garment", "accessory", "bag", "shoe")
 
@@ -335,7 +340,8 @@ class MultiSceneBatchComposer:
         aperture_mode: str = "auto",
         camera_id: str = "auto",
         film_id: str = "auto",
-        cohesion_mode: str = "auto",
+        cohesion_mode: str = "off",
+        framing_mode: str = "auto",
         attach_previz_image: bool = False,  # HARD DEFAULT FALSE (`1원본들 → 1생성`: never pollute `--image` with synthetic wireframes)
         require_complete_8dir_bank: bool = True,  # HARD VERIFIER: blocks scene composition if 8-direction bank is incomplete!
         pure_gen0_max_delta_deg: float = 35.0,  # Within ±35 deg of Gen-0, attach ONLY untouched full-shoulder Gen-0 (0% synthetic dilution!)
@@ -480,6 +486,10 @@ class MultiSceneBatchComposer:
                     if (face_direction_mode == "auto" and orig_pose.focal_length_mm == 85)
                     else orig_pose.focal_length_mm
                 )
+                resolved_framing = resolve_framing_mode(
+                    f"{loc.mood_or_place_prompt} {orig_pose.custom_pose_note}",
+                    explicit_mode=framing_mode,
+                )
                 pose = PosePrevizSpec(
                     preset_id=eff_preset_id,
                     head_azimuth_deg=eff_head_yaw,
@@ -491,9 +501,13 @@ class MultiSceneBatchComposer:
                     focal_length_mm=eff_focal_mm,
                     subject_x_norm=eff_x_norm,
                     shot_scale=(
-                        "full-body editorial head-to-toe shot (framed closely from shoes near bottom edge to crown near top edge)"
-                        if (has_shoes and "full-body" not in orig_pose.shot_scale)
-                        else orig_pose.shot_scale
+                        "intimate chest-to-crown close-up portrait shot"
+                        if resolved_framing == "closeup"
+                        else (
+                            "balanced 50:50 environmental full-body shot (human figure ~48% of frame, ~52% softly defocused architectural negative space)"
+                            if (has_shoes and "full-body" not in orig_pose.shot_scale)
+                            else f"balanced 50:50 environmental {orig_pose.shot_scale} (subject ~48% of frame, ~52% open out-of-focus background space)"
+                        )
                     ),
                     custom_pose_note=orig_pose.custom_pose_note,
                     joints_override=dict(orig_pose.joints_override) if orig_pose.joints_override else None,
@@ -640,13 +654,18 @@ class MultiSceneBatchComposer:
                     has_catalog_items=has_catalog_items,
                     has_placed_bag=has_placed_bag,
                 )
-                post_master_key = rad_spec.film_id if cohesion_mode in {"auto", ""} else cohesion_mode
+                framing_depth_law = build_framing_and_depth_directive(
+                    lens_mm=pose.focal_length_mm,
+                    aperture=rad_spec.recommended_aperture or "f/1.8",
+                    framing_mode=resolved_framing,
+                )
+                post_master_key = "off" if cohesion_mode in {"off", ""} else (rad_spec.film_id if cohesion_mode == "auto" else cohesion_mode)
 
                 id_anchor_ref_txt = "Image 1 & Image 2" if (needs_steep_rotation_bridge and len(id_refs) > 1) else "Image 1"
                 prompt = (
                     f"{optical_header} "
                     "CRITICAL MANDATORY RULE — 1-ORIGINALS-TO-1-GENERATION REAL IDENTITY LOCK + HIERARCHICAL LAYERING + SCALE LOCK: "
-                    f"Create ONE single photorealistic {aspect_ratio_label} real-photo editorial image of the {subject.subject_identity_label} "
+                    f"Create ONE single photorealistic {aspect_ratio_label} real-photo editorial image ({framing_depth_law}) of the {subject.subject_identity_label} "
                     "whose exact face and cranial silhouette are shown in Image 1. "
                     "Attached Original Reference Roles: " + "; ".join(role_clauses) + ". "
                     f"Identity & Eyewear Continuity: Preserve {subject.facial_identity_descriptor()}. "

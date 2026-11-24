@@ -45,7 +45,11 @@ def main() -> int:
     p_prep.add_argument("--clean-location-override", type=Path, default=None, help="Optional crisp empty room clean-plate override")
     p_prep.add_argument("--turnaround-sheet", type=Path, default=None, help="Verified 1-Hop 4K 8-Direction Master Turnaround Sheet (-90..+90 deg)")
     p_prep.add_argument("--real-originals", nargs="*", type=Path, default=[], help="Additional untouched real studio/candid photos of the same subject")
-    p_prep.add_argument("--design-mode", choices=("pure_v21", "pure_character_sheet", "pure_v22", "design_a_relight", "design_b_facelock_outpaint", "design_b_rerender"), default="pure_v21")
+    p_prep.add_argument(
+        "--design-mode",
+        choices=("zero_touch_4k", "pure_v21", "pure_character_sheet", "pure_v22", "design_a_relight", "design_b_facelock_outpaint", "design_b_rerender"),
+        default="zero_touch_4k",
+    )
     p_prep.add_argument("--extra-assets", nargs="*", type=Path, default=[])
     p_prep.add_argument("--aspect", default="3:4")
     p_prep.add_argument("--best-of", type=int, default=5, help="Default 5-Lens (50/65/85/105/135mm) x 5-Distinct-Lighting Matrix")
@@ -54,20 +58,26 @@ def main() -> int:
     p_prep.add_argument("--text-only-location", action="store_true", help="Analyze --location mood/lighting for text prompt ONLY without attaching any location image")
     p_prep.add_argument("--no-film-grain", action="store_true", help="Clean base-ISO commercial studio mode with ZERO film grain in prompt and 4K mastering")
     p_prep.add_argument("--focal-mm", type=int, default=None, help="Optional fixed lens focal length in mm across all K cuts (e.g. 90)")
+    p_prep.add_argument(
+        "--framing-mode",
+        choices=("auto", "balanced_50_50", "closeup"),
+        default="auto",
+        help="Default balanced 50:50 subject-to-space ratio + shallow optical bokeh; switches to closeup only when requested",
+    )
 
     p_rank = sub.add_parser("rank", help="Stage 4: Score K fresh candidates natively across SFace + 18 Craniofacial + 7 Ocular")
     p_rank.add_argument("--manifest", required=True, type=Path)
     p_rank.add_argument("--candidates", required=True, nargs="+", type=Path)
 
-    p_fin = sub.add_parser("finalize", help="Stage 5: Pure Optical Lanczos-4 (v2.1 default) or Upscayl 4x + P88 MatteSkin + Cohesion + 10-Gate Audit")
+    p_fin = sub.add_parser("finalize", help="Stage 5: Zero-Touch 4K Passthrough (v1.0.4 default: 0% lighting/texture/likeness change) + 10-Gate Audit")
     p_fin.add_argument("--manifest", required=True, type=Path)
     p_fin.add_argument("--winner", required=True, type=Path)
     p_fin.add_argument("--output-dir", required=True, type=Path)
     p_fin.add_argument("--stem", required=True, type=str)
-    p_fin.add_argument("--upscale-mode", choices=("optical_fullframe", "upscayl_hybrid", "optical_lanczos", "upscayl"), default="upscayl_hybrid")
+    p_fin.add_argument("--upscale-mode", choices=("optical_fullframe", "upscayl_hybrid", "optical_lanczos", "upscayl"), default="optical_fullframe")
     p_fin.add_argument("--upscayl-model", default="ultramix-balanced-4x", help="Upscayl model name in Vault models/")
     p_fin.add_argument("--reference-scene", type=Path, default=None)
-    p_fin.add_argument("--cohesion-mode", type=str, default="auto")
+    p_fin.add_argument("--cohesion-mode", type=str, default="off")
     p_fin.add_argument("--no-vault-sync", action="store_true")
     p_fin.add_argument("--allow-audit-fail", action="store_true")
     p_fin.add_argument("--no-film-grain", action="store_true", help="Disable all synthetic film grain during 4K mastering")
@@ -94,6 +104,7 @@ def main() -> int:
             text_only_location=args.text_only_location,
             no_film_grain=args.no_film_grain,
             fixed_lens_mm=args.focal_mm,
+            framing_mode=args.framing_mode,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
@@ -135,7 +146,7 @@ def main() -> int:
             upscayl_model_name=args.upscayl_model,
             reference_scene_path=args.reference_scene,
             cohesion_mode=args.cohesion_mode,
-            design_mode=str(manifest.get("design_mode") or "pure_v22"),
+            design_mode=str(manifest.get("design_mode") or "zero_touch_4k"),
             no_film_grain=bool(args.no_film_grain or manifest.get("no_film_grain", False)),
             real_bank_entries=bank_info.get("entries"),
             locked_real_shot_path=locked_p,
