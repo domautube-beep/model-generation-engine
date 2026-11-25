@@ -5,7 +5,7 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO_DIR"
 
 echo "============================================================"
-echo "  릴프로필 (프로필) — 정본 v1.0.0 원클릭 설치 스크립트"
+echo "  릴프로필 (프로필) — 정본 v1.0.5+ 원클릭 설치 스크립트"
 echo "  설치 경로: $REPO_DIR"
 echo "============================================================"
 
@@ -41,17 +41,25 @@ EOF
   echo "[Git 훅 등록] pre-commit 자동 버전체크 활성화 완료"
 fi
 
-# 4. Antigravity & Claude Code 글로벌 스킬 등록 (경로 자동 치환)
-for SKILL_ROOT in "$HOME/.gemini/config/skills" "$HOME/.claude/skills"; do
-  mkdir -p "$SKILL_ROOT/reel-profile"
-  if [ -f "$REPO_DIR/skills/reel-profile/SKILL.md" ]; then
-    sed "s|__REELPROFILE_REPO_DIR__|$REPO_DIR|g" "$REPO_DIR/skills/reel-profile/SKILL.md" > "$SKILL_ROOT/reel-profile/SKILL.md"
-    echo "[AI 스킬 등록] $SKILL_ROOT/reel-profile/SKILL.md"
-  fi
+# 4. Antigravity, Claude Code & iCloud Control Tower 경량 스킬 등록 (< 50KB)
+SKILL_ROOTS=("$HOME/.gemini/config/skills" "$HOME/.claude/skills")
+ICLOUD_SKILLS="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Antigravity_Control_Tower/skills"
+if [ -d "$(dirname "$ICLOUD_SKILLS")" ]; then
+  SKILL_ROOTS+=("$ICLOUD_SKILLS")
+fi
+
+for SKILL_ROOT in "${SKILL_ROOTS[@]}"; do
+  for SNAME in "reel-profile" "model-generation-engine"; do
+    if [ -f "$REPO_DIR/skills/$SNAME/SKILL.md" ]; then
+      mkdir -p "$SKILL_ROOT/$SNAME"
+      sed "s|__REELPROFILE_REPO_DIR__|$REPO_DIR|g" "$REPO_DIR/skills/$SNAME/SKILL.md" > "$SKILL_ROOT/$SNAME/SKILL.md"
+      echo "[AI 스킬 등록] $SKILL_ROOT/$SNAME/SKILL.md"
+    fi
+  done
 done
 
 # 5. 버전 무결성 최종 체크
-"$REPO_DIR/.venv/bin/python" "$REPO_DIR/scripts/version_ctl.py" check
+python3 "$REPO_DIR/scripts/version_ctl.py" check
 
 echo ""
 echo "설치가 완료되었습니다!"
