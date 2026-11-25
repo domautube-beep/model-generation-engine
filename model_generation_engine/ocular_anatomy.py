@@ -329,7 +329,7 @@ class OcularAnatomyAnalyzer:
         r_prof = self.analyze(ref_bgr, marks=ref_marks)
         c_prof = self.analyze(cand_bgr, marks=cand_marks)
         if r_prof is None or c_prof is None:
-            return {"valid": False, "passed": True, "ocularDriftScore": 0.0, "eyelidEdgeNcc": 0.0, "issues": []}
+            return {"valid": False, "passed": False, "ocularDriftScore": 99.0, "eyelidEdgeNcc": 0.0, "issues": ["눈매 랜드마크 검출 실패"]}
 
         ear_diff_pct = 100.0 * (c_prof.avg_ear - r_prof.avg_ear) / max(1e-4, r_prof.avg_ear)
         tilt_diff_deg = c_prof.avg_canthal_tilt_deg - r_prof.avg_canthal_tilt_deg

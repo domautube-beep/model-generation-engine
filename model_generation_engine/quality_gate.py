@@ -47,16 +47,13 @@ class QualityGateAuditor:
         self._sface_rec = None
         self._sface_sess = None
         self._ref_cache: dict = {}
-        try:
-            sface_path = config.resolve_model_path("sface.onnx")
-            self._sface_rec = cv2.FaceRecognizerSF.create(str(sface_path), "")
-            opts = ort.SessionOptions()
-            opts.log_severity_level = 3
-            self._sface_sess = ort.InferenceSession(
-                str(sface_path), sess_options=opts, providers=["CPUExecutionProvider"]
-            )
-        except Exception:
-            pass
+        sface_path = config.resolve_model_path("sface.onnx")
+        self._sface_rec = cv2.FaceRecognizerSF.create(str(sface_path), "")
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        self._sface_sess = ort.InferenceSession(
+            str(sface_path), sess_options=opts, providers=["CPUExecutionProvider"]
+        )
 
     def _extract_sface_vec(self, img: np.ndarray, f) -> Optional[np.ndarray]:
         if self._sface_rec is None or self._sface_sess is None:
@@ -99,11 +96,11 @@ class QualityGateAuditor:
     def measure_identity_similarity(
         self, ref_bgr: np.ndarray, dst_bgr: np.ndarray, ref_face, dst_face
     ) -> float:
-        """Compute 128-D Neural Face Recognition Cosine Similarity via OpenCV SFace (`sface.onnx`)."""
+        """Compute 128-D Neural Face Recognition Cosine Similarity via OpenCV SFace (`sface.onnx`, Fail-Closed)."""
         v1 = self._extract_sface_vec(ref_bgr, ref_face)
         v2 = self._extract_sface_vec(dst_bgr, dst_face)
         if v1 is None or v2 is None:
-            return 1.0
+            return 0.0
         return float(np.dot(v1, v2))
 
     @staticmethod
@@ -297,9 +294,9 @@ class QualityGateAuditor:
             tilt_diff = abs(float(face.eye_tilt_degrees) - float(ref_face.eye_tilt_degrees))
             yaw_diff = abs(float(ref_face.yaw_asymmetry_ratio) - float(face.yaw_asymmetry_ratio))
 
-            # ALWAYS compute SFace similarity (closed Red-Team Blind Spot: never silently skip when yaw_diff > 0.16!)
+            # ALWAYS compute SFace similarity (Fail-Closed: return 0.0 if feature extraction fails!)
             dst_vec = self._extract_sface_vec(patch, face)
-            id_sim = float(np.dot(ref_vec, dst_vec)) if (ref_vec is not None and dst_vec is not None) else 1.0
+            id_sim = float(np.dot(ref_vec, dst_vec)) if (ref_vec is not None and dst_vec is not None) else 0.0
             if yaw_diff <= 0.16:
                 eff_min_sim = (
                     max(0.58, self.config.min_identity_cosine_sim - 0.06)
@@ -372,9 +369,11 @@ class QualityGateAuditor:
                             f"{shape_note} · 눈개방 {oc_d['earDiffPct']:+.1f}% · 눈꼬리 {oc_d['canthalTiltDiffDeg']:+.1f}° "
                             f"· 흰자 {oc_d['scleraDiffPct']:+.1f}% · 눈매NCC {oc_cmp['eyelidEdgeNcc']:.2f}"
                         ).strip(" ·")
-                        if getattr(self.config, "enforce_ocular_gate", True) and not oc_cmp.get("passed", True):
+                        if getattr(self.config, "enforce_ocular_gate", True) and not oc_cmp.get("passed", False):
                             for iss in oc_cmp.get("issues", []):
                                 failures.append(f"눈매 왜곡: {iss}")
+                    elif getattr(self.config, "enforce_ocular_gate", True):
+                        failures.append("눈매 랜드마크 계측 실패 (Fail-Closed)")
 
                     # Gate 10c: 7-Axis Anti-Exaggeration Face Guard (`눈·눈썹·코·입술·채도·윤곽 과장 전면 차단`)
                     from .face_exaggeration_guard import FaceExaggerationGuard
@@ -382,9 +381,11 @@ class QualityGateAuditor:
                     ex_rep = feg.audit(reference_face_bgr, patch)
                     if ex_rep.get("valid"):
                         shape_note = f"{shape_note} · 과장지수 {ex_rep['exaggerationIndex']:.1f}".strip(" ·")
-                        if getattr(self.config, "enforce_ocular_gate", True) and not ex_rep.get("passed", True):
+                        if getattr(self.config, "enforce_ocular_gate", True) and not ex_rep.get("passed", False):
                             for iss in ex_rep.get("issues", []):
                                 failures.append(f"얼굴 과장 차단: {iss}")
+                    elif getattr(self.config, "enforce_ocular_gate", True):
+                        failures.append("얼굴 과장 게이트 랜드마크 계측 실패 (Fail-Closed)")
 
                     # Gate 10d: Jaw-to-Ear Diagonal Line, Submandibular Shadow, Neck Width & Eye-Arch/Brow Density Audit
                     je_rep = feg.measure_jaw_to_ear_neck_and_eye_audit(reference_face_bgr, patch)
@@ -396,11 +397,13 @@ class QualityGateAuditor:
                             f"· 턱밑음영 {jd['submandibularShadowDiffL']:+.1f}L · 목굵기 {jd['neckWidthDiffPct']:+.1f}% "
                             f"· 눈아치 {jd['upperLidArchDiffPct']:+.1f}% · 눈썹굵기 {jd['browThickDiffPct']:+.1f}%"
                         ).strip(" ·")
-                        if getattr(self.config, "enforce_ocular_gate", True) and not je_rep.get("passed", True):
+                        if getattr(self.config, "enforce_ocular_gate", True) and not je_rep.get("passed", False):
                             for iss in je_rep.get("issues", []):
                                 failures.append(f"턱→귀·눈매 정밀 차단: {iss}")
-            except Exception:
-                pass
+                    elif getattr(self.config, "enforce_ocular_gate", True):
+                        failures.append("턱→귀·눈매 정밀 계측 실패 (Fail-Closed)")
+            except Exception as exc:
+                failures.append(f"해부학·정체성 게이트 예외 차단 (Fail-Closed): {exc}")
 
         passed = len(failures) == 0
         msg = "ALL QUALITY GATES PASSED" if passed else "; ".join(failures)

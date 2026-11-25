@@ -296,10 +296,26 @@ class FreshOriginEditorialWorkflow:
         facelock_meta: Optional[Dict[str, object]] = None
         facelock_canvas_p: Optional[Path] = None
 
-        if turnaround_8dir_sheet_path is not None and Path(turnaround_8dir_sheet_path).exists():
-            raw_turn_p = Path(turnaround_8dir_sheet_path).resolve()
-            if raw_turn_p.is_file():
-                turnaround_master_sheet_meta = str(raw_turn_p)
+        if turnaround_8dir_sheet_path is not None:
+            raw_turn_p = Path(turnaround_8dir_sheet_path).expanduser().resolve()
+            if not raw_turn_p.is_file():
+                raise FileNotFoundError(
+                    f"[8-Dir Bank Verification Failed] --turnaround-sheet file does not exist: {raw_turn_p}"
+                )
+            if _sha256_file(raw_turn_p) == _sha256_file(gen0_p):
+                raise RuntimeError(
+                    "[8-Dir Bank Verification Failed] --turnaround-sheet cannot point to Gen-0 itself; must be a verified 8-direction bank!"
+                )
+            distinct_views = set()
+            for probe_yaw in (-90.0, -45.0, -22.5, 22.5, 45.0, 90.0):
+                iv = self.pipeline.turnaround.resolve_nearest_individual_8dir_portrait(raw_turn_p, probe_yaw)
+                if iv is not None and iv[0].is_file() and _sha256_file(iv[0].resolve()) != _sha256_file(gen0_p):
+                    distinct_views.add(_sha256_file(iv[0].resolve()))
+            if len(distinct_views) < 4:
+                raise RuntimeError(
+                    f"[8-Dir Bank Verification Failed] '{raw_turn_p.name}' lacks verified distinct 1-Hop 8-direction portraits (found {len(distinct_views)} < 4)!"
+                )
+            turnaround_master_sheet_meta = str(raw_turn_p)
 
         if design_mode == "pure_character_sheet" and turnaround_8dir_sheet_path is not None and Path(turnaround_8dir_sheet_path).exists():
             # Character-Sheet Angle-Matched Pure 1-Pass Mode (ZERO clean-plate hole composite, ZERO post face-masking!):
@@ -863,20 +879,51 @@ class FreshOriginEditorialWorkflow:
             return 0.0
         return round((actual_head_h - expected_head_h) / expected_head_h * 100.0, 1)
 
+    def _resolve_angle_matched_ref_bgr(
+        self,
+        default_ref_p: Path,
+        default_ref_bgr: np.ndarray,
+        cand_bgr: np.ndarray,
+        turnaround_sheet_path: Optional[Path] = None,
+    ) -> Tuple[Path, np.ndarray]:
+        """Select the closest yaw-matched verified 1-Hop 8-dir portrait when candidate head yaw differs from Gen-0 by >= 8 deg."""
+        if turnaround_sheet_path is None or not Path(turnaround_sheet_path).exists():
+            return default_ref_p, default_ref_bgr
+        try:
+            ref_bp = self.pipeline.turnaround.extract_anatomical_blueprint(default_ref_bgr)
+            cand_bp = self.pipeline.turnaround.extract_anatomical_blueprint(cand_bgr)
+            ref_yaw = float(ref_bp.source_signed_yaw_deg)
+            cand_yaw = float(cand_bp.source_signed_yaw_deg)
+            if abs(cand_yaw - ref_yaw) < 8.0:
+                return default_ref_p, default_ref_bgr
+            indiv = self.pipeline.turnaround.resolve_nearest_individual_8dir_portrait(
+                Path(turnaround_sheet_path).resolve(), cand_yaw
+            )
+            if indiv is not None and indiv[0].is_file():
+                matched_p, _view_k, matched_yaw = indiv[0].resolve(), indiv[1], float(indiv[2])
+                if abs(cand_yaw - matched_yaw) + 2.0 < abs(cand_yaw - ref_yaw):
+                    m_bgr = cv2.imread(str(matched_p))
+                    if m_bgr is not None:
+                        return matched_p, m_bgr
+        except Exception:
+            pass
+        return default_ref_p, default_ref_bgr
+
     def score_and_select_native_winner(
         self,
         gen0_portrait_path: Path,
         candidate_paths: Sequence[Path],
         min_created_epoch: float = 0.0,
+        turnaround_sheet_path: Optional[Path] = None,
     ) -> Dict[str, object]:
         """Stage 4: Score all K fresh candidates natively (`0px` warp, `0%` pasting) across SFace + Contour IoU + Multi-Segment Anthropometry + 25 Metrics."""
         gen0_p = Path(gen0_portrait_path).resolve()
-        ref_bgr = cv2.imread(str(gen0_p))
-        if ref_bgr is None:
+        base_ref_bgr = cv2.imread(str(gen0_p))
+        if base_ref_bgr is None:
             raise FileNotFoundError(f"Cannot read Gen-0 portrait: {gen0_p}")
-        ref_face = self.pipeline.detector.detect(ref_bgr)
-        ref_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, ref_bgr)
-        if ref_vec is None:
+        base_ref_face = self.pipeline.detector.detect(base_ref_bgr)
+        base_ref_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, base_ref_bgr)
+        if base_ref_vec is None:
             raise RuntimeError("Failed to extract 18-metric craniofacial vector from Gen-0.")
 
         scored: List[CandidateScore] = []
@@ -892,8 +939,19 @@ class FreshOriginEditorialWorkflow:
             bgr = cv2.imread(str(p))
             if bgr is None:
                 continue
+            _matched_p, ref_bgr = self._resolve_angle_matched_ref_bgr(
+                gen0_p, base_ref_bgr, bgr, turnaround_sheet_path=turnaround_sheet_path
+            )
+            ref_face = self.pipeline.detector.detect(ref_bgr) if ref_bgr is not base_ref_bgr else base_ref_face
+            ref_vec = (
+                (extract_14pt_proportion_vector(self.pipeline.apple_vision, ref_bgr) or base_ref_vec)
+                if ref_bgr is not base_ref_bgr
+                else base_ref_vec
+            )
             dst_face = self.pipeline.detector.detect(bgr)
-            sface_sim = float(self.pipeline.auditor.measure_identity_similarity(ref_bgr, bgr, ref_face, dst_face))
+            sface_angle = float(self.pipeline.auditor.measure_identity_similarity(ref_bgr, bgr, ref_face, dst_face))
+            sface_gen0 = float(self.pipeline.auditor.measure_identity_similarity(base_ref_bgr, bgr, base_ref_face, dst_face))
+            sface_sim = max(sface_angle, sface_gen0) if sface_gen0 >= 0.58 else sface_gen0
             c_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, bgr, full_canvas_bgr=bgr)
             if c_vec is None:
                 continue
@@ -986,6 +1044,11 @@ class FreshOriginEditorialWorkflow:
             raise RuntimeError("No valid face candidates could be scored.")
 
         scored.sort(key=lambda c: c.composite_rank_score, reverse=True)
+        for c_item in scored:
+            try:
+                self.origin_guard.register_generated_scene_output(Path(c_item.candidate_path), job_id="stage3_candidate")
+            except Exception:
+                pass
         winner = scored[0]
         return {
             "winner": asdict(winner),
@@ -1002,7 +1065,7 @@ class FreshOriginEditorialWorkflow:
         min_created_epoch: float = 0.0,
         sync_to_vault: bool = True,
         strict_10gate: bool = True,
-        upscale_mode: str = "optical_fullframe",
+        upscale_mode: str = "tonelocked_upscayl_4k",
         upscayl_model_name: str = "ultramix-balanced-4x",
         reference_scene_path: Optional[Path] = None,
         cohesion_mode: str = "off",
@@ -1010,9 +1073,17 @@ class FreshOriginEditorialWorkflow:
         no_film_grain: bool = False,
         real_bank_entries: Optional[Sequence[Dict[str, object]]] = None,
         locked_real_shot_path: Optional[Path] = None,
+        turnaround_sheet_path: Optional[Path] = None,
+        pure_gen0_portrait_path: Optional[Path] = None,
     ) -> Dict[str, object]:
-        """Stage 5: Zero-Touch 4K Passthrough (`v1.0.4` default: 0.0% lighting/skin/acuity/likeness alteration) + 10-Gate Audit."""
+        """Stage 5: Tone-Locked True 4K Super-Resolution (`v1.0.6` default: True 4K + 0.0% lighting/color/likeness shift) + Mandatory 10-Gate Lock."""
+        if not strict_10gate:
+            raise RuntimeError(
+                "[Anti-Bypass Lock v1.0.6] strict_10gate=False (--allow-audit-fail) is permanently forbidden! "
+                "Every finalized 4K deliverable MUST pass all 10 quality gates."
+            )
         gen0_p = Path(gen0_portrait_path).resolve()
+        pure_gen0_p = Path(pure_gen0_portrait_path).resolve() if pure_gen0_portrait_path is not None else gen0_p
         win_p = Path(winner_candidate_path).resolve()
         if not win_p.is_file():
             raise FileNotFoundError(f"Winner candidate not found: {win_p}")
@@ -1028,49 +1099,43 @@ class FreshOriginEditorialWorkflow:
         out_macro = out_dir / f"{output_stem}_4k_macro.jpg"
         out_eye_cmp = out_dir / f"{output_stem}_eye_compare_400pct.jpg"
         out_sil_ov = out_dir / f"{output_stem}_silhouette_overlay.jpg"
+        receipt_path_pre = out_dir / f"{output_stem}_workflow_receipt.json"
+        for stale_out in (out_4k, out_closeup, receipt_path_pre):
+            stale_out.unlink(missing_ok=True)
 
         raw_bgr = cv2.imread(str(win_p))
         ref_bgr = cv2.imread(str(gen0_p))
-        if raw_bgr is None or ref_bgr is None:
+        pure_gen0_bgr = cv2.imread(str(pure_gen0_p))
+        if raw_bgr is None or ref_bgr is None or pure_gen0_bgr is None:
             raise RuntimeError("Failed to decode winner or Gen-0 portrait.")
+
+        # Register raw Stage-3 winner into forbidden generated outputs immediately so it can NEVER be re-fed!
+        self.origin_guard.register_generated_scene_output(win_p, job_id=f"{output_stem}_raw_winner")
+
+        r_sh, r_sw = raw_bgr.shape[:2]
+        is_native_4k_raw = bool(max(r_sh, r_sw) >= 3840 and min(r_sh, r_sw) >= 2160)
+        if not is_native_4k_raw and upscale_mode in ("optical_fullframe", "optical_lanczos", "upscayl_hybrid"):
+            raise RuntimeError(
+                f"[Fake-4K Blocked v1.0.6] Raw candidate '{win_p.name}' ({r_sw}x{r_sh}) is sub-4K "
+                f"and CANNOT use '{upscale_mode}' (which leaves facial organs at 1K Lanczos). Use 'tonelocked_upscayl_4k'!"
+            )
 
         # Measure HONEST pre-upscale face resolution BEFORE 4K scaling
         raw_face_det = self.pipeline.detector.detect(raw_bgr)
         raw_fw, raw_fh = round(float(raw_face_det.bbox[2]), 1), round(float(raw_face_det.bbox[3]), 1)
         raw_iod_px = round(float(raw_face_det.inter_ocular_distance), 1)
 
-        # 1. Zero-Touch 4K Passthrough (`v1.0.4` canonical default: 0.0% face/lighting/skin/acuity alteration!),
-        #    or legacy opt-in hybrid / optical / upscayl modes
+        # 1. Tone-Locked True 4K Super-Resolution (`v1.0.6` canonical default):
+        #    - Native 4K inputs: 100.0% lossless 0.0px passthrough.
+        #    - Sub-4K inputs: Upscayl 4x True Super-Resolution with 100.0% CIE LAB low-frequency & chromaticity lock (`delta_L ~ 0, delta_ab = 0`).
         acuity_meta: Dict[str, object] = {"applied": False}
+        tonelock_sr_meta: Dict[str, object] = {"applied": False}
         zero_post_paste = design_mode in ("zero_touch_4k", "pure_character_sheet", "design_b_rerender")
-        pure_zero_mask = zero_post_paste and (upscale_mode == "optical_fullframe")
-        if (design_mode in ("zero_touch_4k", "pure_character_sheet")) or (upscale_mode == "optical_fullframe"):
-            # 100.0% Zero-Touch Passthrough (if already 4K) or Uniform Whole-Frame Pure Optical Scaling ONLY —
-            # ZERO face/body split mask, ZERO ID-flash skin repainting, ZERO MatteSkin highlight crush, ZERO organ acuity unsharp!
-            if raw_bgr.shape[0] >= 4416 or max(raw_bgr.shape[:2]) >= 3840:
-                up_bgr = raw_bgr.copy()
-                up_model = "zero_touch_native_4k_passthrough"
-            else:
-                up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
-                up_model = "zero_touch_optical_fullframe_uniform_4k"
-            pure_zero_mask = True
-        elif upscale_mode == "upscayl_hybrid":
-            up_bgr, hyb_meta = self.pipeline.upscaler.upscale_hybrid_optical_face_upscayl_body(
-                raw_bgr, target_min_height=4800, model_name=upscayl_model_name
-            )
-            up_model = str(hyb_meta.get("model", "hybrid_opt_face+ultramix-balanced-4x"))
-            acuity_meta = hyb_meta.get("acuity") or {"applied": True}
-        elif upscale_mode == "optical_lanczos":
-            up_bgr = self.pipeline.upscaler.upscale_bgr_in_memory(raw_bgr, target_min_height=4800)
-            if design_mode == "pure_v21":
-                up_model = "optical_lanczos4_pure_v21"
-            else:
-                up_bgr, acuity_meta = self.pipeline.upscaler.enhance_optical_organ_acuity(up_bgr)
-                up_model = "optical_lanczos4_acuity_v22"
-        else:
-            up_bgr, up_model = self.pipeline.upscaler.upscale_with_upscayl(
-                raw_bgr, style=upscayl_model_name if upscayl_model_name else "auto", scale=4
-            )
+        pure_zero_mask = zero_post_paste
+        up_bgr, tonelock_sr_meta = self.pipeline.upscaler.upscale_tonelocked_true_4k(
+            raw_bgr, target_min_height=4800, model_name=upscayl_model_name
+        )
+        up_model = str(tonelock_sr_meta.get("model", "tonelocked_ultramix-balanced-4x"))
         uh, uw = up_bgr.shape[:2]
 
         # 2. Single-Camera Radiometric & Tonal Cohesion Mastering + Scene Chiaroscuro Mood Analysis
@@ -1200,22 +1265,34 @@ class FreshOriginEditorialWorkflow:
         if bank_obj is not None:
             real_bank_eval = bank_obj.evaluate_against_all_real_shots(up_bgr)
 
-        # 3. Full 10-Gate Quality Audit at exact native 4K dimensions
-        cfg_4k = dataclasses.replace(
-            self.pipeline.config,
-            canvas=dataclasses.replace(self.pipeline.config.canvas, target_width=uw, target_height=uh),
-        )
-        auditor_4k = ModelGenerationPipeline(cfg_4k).auditor
-        report = auditor_4k.audit(up_bgr, crop_box, seam_l1_diff=0.0, reference_face_bgr=ref_bgr)
-
-        # Save all 5 mandatory deliverables even before strict check so failures can be visually diagnosed
-        cv2.imwrite(str(out_4k), up_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
-        cv2.imwrite(str(out_closeup), up_bgr[vy1:vy2, vx1:vx2], [int(cv2.IMWRITE_JPEG_QUALITY), 97])
-
+        # 3. Auto-select angle-matched verified 1-Hop 8-dir reference when head yaw differs >= 8 deg, while locking pure Gen-0 identity!
         fx, fy, fw, fh = face_4k.bbox
         mx1, my1 = max(0, int(fx - fw * 0.65)), max(0, int(fy - fh * 0.55))
         mx2, my2 = min(uw, int(fx + fw * 1.65)), min(uh, int(fy + fh * 1.55))
         macro_bgr = up_bgr[my1:my2, mx1:mx2].copy()
+
+        angle_ref_p, ref_bgr = self._resolve_angle_matched_ref_bgr(
+            gen0_p, ref_bgr, macro_bgr, turnaround_sheet_path=turnaround_sheet_path
+        )
+
+        # Full 10-Gate Quality Audit using immutable canonical production EngineConfig (immune to caller config weakening!)
+        from .config import CanvasSpec as _CS, EngineConfig as _EC
+        cfg_4k = _EC(
+            vault_dir=self.pipeline.config.vault_dir,
+            canvas=_CS(target_width=uw, target_height=uh),
+        )
+        auditor_4k = ModelGenerationPipeline(cfg_4k).auditor
+        report = auditor_4k.audit(up_bgr, crop_box, seam_l1_diff=0.0, reference_face_bgr=ref_bgr)
+
+        # Also enforce direct pure Gen-0 SFace floor (>= 0.58 even under 3/4 yaw) so 8-dir reference NEVER dilutes Gen-0 identity!
+        pure_gen0_face = self.pipeline.detector.detect(pure_gen0_bgr)
+        sface_pure_gen0 = round(
+            float(auditor_4k.measure_identity_similarity(pure_gen0_bgr, up_bgr[vy1:vy2, vx1:vx2], pure_gen0_face, self.pipeline.detector.detect(up_bgr[vy1:vy2, vx1:vx2]))),
+            4,
+        )
+
+        # Save diagnostic macro / eye / silhouette strips first; ONLY write deliverable `*_4k.jpg` if all 10 gates PASS!
+        cv2.imwrite(str(out_closeup), up_bgr[vy1:vy2, vx1:vx2], [int(cv2.IMWRITE_JPEG_QUALITY), 97])
         cv2.imwrite(str(out_macro), macro_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
 
         eye_strip_saved = self.ocular.save_400pct_eye_comparison_strip(ref_bgr, macro_bgr, str(out_eye_cmp))
@@ -1224,16 +1301,36 @@ class FreshOriginEditorialWorkflow:
             ref_bgr, macro_bgr, output_overlay_path=str(out_sil_ov)
         )
         ex_cmp = self.exaggeration_guard.audit(ref_bgr, macro_bgr)
-        od_cmp = self.organ_depth.compare(ref_bgr, macro_bgr)
+        od_cmp = self.organ_depth.compare(pure_gen0_bgr, macro_bgr)
 
-        all_passed = bool(report.passed and sil_cmp.get("passed", True))
+        all_passed = bool(
+            report.passed
+            and bool(oc_cmp.get("valid", False))
+            and bool(oc_cmp.get("passed", False))
+            and bool(sil_cmp.get("valid", False))
+            and bool(sil_cmp.get("passed", False))
+            and bool(ex_cmp.get("valid", False))
+            and bool(ex_cmp.get("passed", False))
+            and float(report.face_laplacian_variance) >= float(cfg_4k.min_face_laplacian_var)
+            and sface_pure_gen0 >= 0.58
+        )
         fail_msg = report.message
-        if not sil_cmp.get("passed", True):
+        if not sil_cmp.get("passed", False):
             sil_err = "; ".join(str(x) for x in sil_cmp.get("issues", []))
             fail_msg = f"{fail_msg}; {sil_err}" if not report.passed else f"1:1 외곽선 게이트 미달: {sil_err}"
+        if sface_pure_gen0 < 0.58:
+            fail_msg = f"{fail_msg}; 순수 Gen-0 직접 SFace 미달 ({sface_pure_gen0:.3f} < 0.580)"
 
-        # Blacklist generated output in OriginOnlyOneShotGuard so it can NEVER be re-fed as input!
-        self.origin_guard.register_generated_scene_output(out_4k, job_id=output_stem)
+        hero_4k_sha256: Optional[str] = None
+        if all_passed:
+            cv2.imwrite(str(out_4k), up_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+            hero_4k_sha256 = _sha256_file(out_4k)
+            # Blacklist generated output in OriginOnlyOneShotGuard so it can NEVER be re-fed as input!
+            self.origin_guard.register_generated_scene_output(out_4k, job_id=output_stem)
+        else:
+            # Physically remove deliverable *_4k.jpg on failure so unapproved images can NEVER be delivered!
+            out_4k.unlink(missing_ok=True)
+            out_closeup.unlink(missing_ok=True)
 
         vault_synced: List[str] = []
         if sync_to_vault and all_passed and self.pipeline.config.vault_dir:
@@ -1275,8 +1372,14 @@ class FreshOriginEditorialWorkflow:
             "stage": "FINALIZED_10GATES_PASSED" if all_passed else "FINALIZED_10GATES_FAILED",
             "timestamp": time.time(),
             "passed_10gates": all_passed,
+            "hero_4k_sha256": hero_4k_sha256,
+            "face_laplacian_variance": round(float(report.face_laplacian_variance), 2),
+            "min_organ_gradient": round(float(report.min_organ_gradient), 2),
+            "sface_pure_gen0": sface_pure_gen0,
+            "angle_matched_reference_path": str(angle_ref_p),
             "upscale_mode": upscale_mode,
             "upscayl_model": up_model,
+            "tonelock_sr_meta": tonelock_sr_meta,
             "optical_acuity_meta": acuity_meta,
             "cohesion_meta": cohesion_meta,
             "real_multishot_relight_meta": relight_meta,
@@ -1319,8 +1422,8 @@ class FreshOriginEditorialWorkflow:
                 "issues": oc_cmp.get("issues"),
             },
             "deliverables": {
-                "hero_4k": str(out_4k),
-                "closeup": str(out_closeup),
+                "hero_4k": str(out_4k) if all_passed else None,
+                "closeup": str(out_closeup) if all_passed else None,
                 "macro": str(out_macro),
                 "eye_compare_400pct": eye_strip_saved,
                 "silhouette_overlay": sil_cmp.get("overlayPath"),

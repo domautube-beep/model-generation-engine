@@ -33,17 +33,17 @@ from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWo
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Fresh-Origin 6-Stage Editorial Workflow CLI (v9.0)")
+    parser = argparse.ArgumentParser(description="Fresh-Origin 6-Stage Editorial Workflow CLI (v1.0.6)", allow_abbrev=False)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_prep = sub.add_parser("prepare", help="Stages 1 & 2: Validate Gen-0, extract 25-metric Blueprint + ocular anchor, clean location, emit K prompts")
+    p_prep = sub.add_parser("prepare", help="Stages 1 & 2: Validate Gen-0 + 8-Dir Bank, extract 25-metric Blueprint, emit K prompts")
     p_prep.add_argument("--gen0", required=True, type=Path)
     p_prep.add_argument("--work-dir", required=True, type=Path)
     p_prep.add_argument("--scene", required=True, type=str)
     p_prep.add_argument("--outfit", required=True, type=str)
     p_prep.add_argument("--location", type=Path, default=None)
     p_prep.add_argument("--clean-location-override", type=Path, default=None, help="Optional crisp empty room clean-plate override")
-    p_prep.add_argument("--turnaround-sheet", type=Path, default=None, help="Verified 1-Hop 4K 8-Direction Master Turnaround Sheet (-90..+90 deg)")
+    p_prep.add_argument("--turnaround-sheet", required=True, type=Path, help="Mandatory Verified 1-Hop 4K 8-Direction Master Turnaround Sheet (-90..+90 deg)")
     p_prep.add_argument("--real-originals", nargs="*", type=Path, default=[], help="Additional untouched real studio/candid photos of the same subject")
     p_prep.add_argument(
         "--design-mode",
@@ -69,20 +69,29 @@ def main() -> int:
     p_rank.add_argument("--manifest", required=True, type=Path)
     p_rank.add_argument("--candidates", required=True, nargs="+", type=Path)
 
-    p_fin = sub.add_parser("finalize", help="Stage 5: Zero-Touch 4K Passthrough (v1.0.4+ default: zero lighting/texture/likeness change) + 10-Gate Audit")
+    p_fin = sub.add_parser("finalize", help="Stage 5: Tone-Locked True 4K Super-Resolution (v1.0.6+ default) + Mandatory 10-Gate Lock")
     p_fin.add_argument("--manifest", required=True, type=Path)
     p_fin.add_argument("--winner", required=True, type=Path)
     p_fin.add_argument("--output-dir", required=True, type=Path)
     p_fin.add_argument("--stem", required=True, type=str)
-    p_fin.add_argument("--upscale-mode", choices=("optical_fullframe", "upscayl_hybrid", "optical_lanczos", "upscayl"), default="optical_fullframe")
+    p_fin.add_argument(
+        "--upscale-mode",
+        choices=("tonelocked_upscayl_4k", "optical_fullframe"),
+        default="tonelocked_upscayl_4k",
+    )
     p_fin.add_argument("--upscayl-model", default="ultramix-balanced-4x", help="Upscayl model name in Vault models/")
     p_fin.add_argument("--reference-scene", type=Path, default=None)
     p_fin.add_argument("--cohesion-mode", type=str, default="off")
     p_fin.add_argument("--no-vault-sync", action="store_true")
-    p_fin.add_argument("--allow-audit-fail", action="store_true")
+    p_fin.add_argument("--allow-audit-fail", action="store_true", help=argparse.SUPPRESS)
     p_fin.add_argument("--no-film-grain", action="store_true", help="Disable all synthetic film grain during 4K mastering")
 
     args = parser.parse_args()
+    if getattr(args, "allow_audit_fail", False):
+        parser.error(
+            "[Anti-Bypass Lock v1.0.6] --allow-audit-fail is permanently banned! "
+            "Every 4K output MUST pass all 10 quality gates."
+        )
     wf = FreshOriginEditorialWorkflow()
 
     if args.cmd == "prepare":
@@ -116,10 +125,13 @@ def main() -> int:
             if manifest.get("matched_8dir_portrait_path")
             else Path(manifest["gen0_portrait_path"])
         )
+        ts_meta = manifest.get("turnaround_master_sheet_path")
+        ts_path = Path(ts_meta["sheet_path"]) if isinstance(ts_meta, dict) and ts_meta.get("sheet_path") else (Path(ts_meta) if isinstance(ts_meta, str) else None)
         res = wf.score_and_select_native_winner(
             gen0_portrait_path=ref_for_angle,
             candidate_paths=args.candidates,
             min_created_epoch=float(manifest.get("created_at", 0.0)),
+            turnaround_sheet_path=ts_path,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
@@ -129,11 +141,14 @@ def main() -> int:
         bank_info = manifest.get("real_multishot_bank") or {}
         fl_meta = manifest.get("facelock_precomposite_meta") or {}
         locked_p = Path(fl_meta["locked_real_shot_path"]) if fl_meta.get("locked_real_shot_path") else None
+        pure_gen0 = Path(manifest["gen0_portrait_path"])
         ref_for_angle = (
             Path(manifest["matched_8dir_portrait_path"])
             if manifest.get("matched_8dir_portrait_path")
-            else Path(manifest["gen0_portrait_path"])
+            else pure_gen0
         )
+        ts_meta = manifest.get("turnaround_master_sheet_path")
+        ts_path = Path(ts_meta["sheet_path"]) if isinstance(ts_meta, dict) and ts_meta.get("sheet_path") else (Path(ts_meta) if isinstance(ts_meta, str) else None)
         res = wf.finalize_native_winner_4k(
             gen0_portrait_path=ref_for_angle,
             winner_candidate_path=args.winner,
@@ -141,7 +156,7 @@ def main() -> int:
             output_stem=args.stem,
             min_created_epoch=float(manifest.get("created_at", 0.0)),
             sync_to_vault=not args.no_vault_sync,
-            strict_10gate=not args.allow_audit_fail,
+            strict_10gate=True,
             upscale_mode=args.upscale_mode,
             upscayl_model_name=args.upscayl_model,
             reference_scene_path=args.reference_scene,
@@ -150,6 +165,8 @@ def main() -> int:
             no_film_grain=bool(args.no_film_grain or manifest.get("no_film_grain", False)),
             real_bank_entries=bank_info.get("entries"),
             locked_real_shot_path=locked_p,
+            turnaround_sheet_path=ts_path,
+            pure_gen0_portrait_path=pure_gen0,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0

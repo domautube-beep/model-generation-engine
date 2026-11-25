@@ -189,14 +189,14 @@ class CanvasSpec:
         return self.target_width / float(self.target_height)
 
 
-@dataclass
+@dataclass(frozen=True)
 class EngineConfig:
-    """Master configuration for 릴프로필 (프로필 / 모델생성 — 정본 v1.0.0+)."""
+    """Master configuration for 릴프로필 (프로필 / 모델생성 — 정본 v1.0.6+, Immutable Anti-Bypass Lock)."""
 
     project_name: str = "릴프로필"
     vault_dir: Optional[Path] = field(default_factory=lambda: resolve_gdrive_vault(("릴프로필", "프로필", "모델생성", "인물사진")))
-    upscale_mode: str = "optical_lanczos"  # "optical_lanczos" (default, zero GAN corrosion) or "esrgan"
-    zero_touch_4k_passthrough: bool = True  # Default True (v1.0.4): 0.0% face/lighting/skin/acuity post-mutation during 4K save!
+    upscale_mode: str = "tonelocked_upscayl_4k"  # True 4K Tone-Locked Upscayl 4x (<4K) + 0.0px Passthrough (Native 4K)
+    zero_touch_4k_passthrough: bool = True  # Default True (v1.0.4+): 0.0% face/lighting/color/likeness shift during 4K mastering!
     default_framing_mode: str = "balanced_50_50"  # Default 50:50 subject-to-space balance; switches to "closeup" on request
     upscale_model_name: str = "4xNomos8kSC"
     upscale_factor: int = 4
@@ -204,7 +204,7 @@ class EngineConfig:
     unsharp_amount: float = 0.35
     unsharp_sigma: float = 1.0
     max_seam_l1_diff: float = 6.0
-    min_face_laplacian_var: float = 12.0
+    min_face_laplacian_var: float = 17.5
     min_organ_gradient_energy: float = 1.6
     min_inter_ocular_5k_px: float = 40.0
     auto_facelock_below_iod_5k_px: float = 0.0
@@ -228,6 +228,30 @@ class EngineConfig:
             )
         if self.upscale_factor not in (2, 3, 4):
             raise ValueError(f"upscale_factor must be 2, 3, or 4 (got {self.upscale_factor}).")
+        if float(self.min_face_laplacian_var) < 17.5:
+            raise ValueError(
+                f"[Anti-Bypass Lock v1.0.6] min_face_laplacian_var={self.min_face_laplacian_var} cannot be set below 17.5."
+            )
+        if float(self.min_identity_cosine_sim) < 0.62:
+            raise ValueError(
+                f"[Anti-Bypass Lock v1.0.6] min_identity_cosine_sim={self.min_identity_cosine_sim} cannot be set below 0.62."
+            )
+        if float(self.min_organ_gradient_energy) < 1.5:
+            raise ValueError(
+                f"[Anti-Bypass Lock v1.0.6] min_organ_gradient_energy={self.min_organ_gradient_energy} cannot be set below 1.5."
+            )
+        if float(self.min_inter_ocular_5k_px) < 36.0:
+            raise ValueError(
+                f"[Anti-Bypass Lock v1.0.6] min_inter_ocular_5k_px={self.min_inter_ocular_5k_px} cannot be set below 36.0."
+            )
+        if float(self.min_skin_micro_texture_std) < 0.80:
+            raise ValueError(
+                f"[Anti-Bypass Lock v1.0.6] min_skin_micro_texture_std={self.min_skin_micro_texture_std} cannot be set below 0.80."
+            )
+        if float(self.max_specular_glare_ratio) > 0.06:
+            raise ValueError(
+                f"[Anti-Bypass Lock v1.0.6] max_specular_glare_ratio={self.max_specular_glare_ratio} cannot exceed 0.06."
+            )
 
     def resolve_model_path(self, filename: str) -> Path:
         """Locate a binary or ONNX/NCNN model file in the Google Drive Vault or local directories."""

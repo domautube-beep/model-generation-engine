@@ -76,6 +76,26 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def compute_visual_16x16_sig(path: Path) -> Optional[list[int]]:
+    """Compute a compression/re-upload-invariant 16x16 grayscale signature to block re-encoded generated images."""
+    try:
+        import cv2
+
+        bgr = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if bgr is None or bgr.size == 0:
+            return None
+        small = cv2.resize(bgr, (16, 16), interpolation=cv2.INTER_AREA)
+        return [int(v) for v in small.ravel()]
+    except Exception:
+        return None
+
+
+def visual_sig_mad(sig_a: Optional[list[int]], sig_b: Optional[list[int]]) -> float:
+    if not sig_a or not sig_b or len(sig_a) != 256 or len(sig_b) != 256:
+        return 999.0
+    return sum(abs(int(a) - int(b)) for a, b in zip(sig_a, sig_b)) / 256.0
+
+
 class Mandatory8DirBankVerifier:
     """Hard gate guaranteeing STEP 1 (Complete 8-Direction Turnaround Bank + Gen-0 Origin) is NEVER skipped before STEP 2."""
 
@@ -165,13 +185,20 @@ class OriginOnlyOneShotGuard:
         if not p.is_file():
             raise FileNotFoundError(f"Origin file does not exist: {p}")
         digest = sha256_file(p)
+        sig16 = compute_visual_16x16_sig(p)
         eff_depth = 1 if (kind == "8dir_face" and depth == 0 and TURNAROUND_GENERATED_FILENAME_PATTERN.search(str(p))) else depth
         with self._lock:
             data = self._load()
             bucket = "approved_8dir_faces_sha256" if kind == "8dir_face" else "approved_origins_sha256"
             rec = dict(data.get(bucket) or {})  # type: ignore[arg-type]
-            rec[digest] = {"path": str(p), "kind": kind, "depth": eff_depth, "registered_at": time.time()}
+            rec[digest] = {"path": str(p), "kind": kind, "depth": eff_depth, "sig16": sig16, "registered_at": time.time()}
             data[bucket] = rec
+            # Ensure a genuine approved Gen-0 resource is never poisoned in forbidden_generated_outputs_sha256
+            if kind != "8dir_face":
+                forb = dict(data.get("forbidden_generated_outputs_sha256") or {})  # type: ignore[arg-type]
+                if digest in forb and any(tag in str(p) for tag in ("/resources/", "/.user_uploaded/", "/originals/")):
+                    forb.pop(digest, None)
+                    data["forbidden_generated_outputs_sha256"] = forb
             self._save(data)
         return digest
 
@@ -195,18 +222,60 @@ class OriginOnlyOneShotGuard:
         return front_hash
 
     def register_generated_scene_output(self, output_path: Path, job_id: str = "") -> Optional[str]:
-        """Permanently blacklist a generated scene output SHA-256 (`depth=terminal`) so it can NEVER be re-fed."""
+        """Permanently blacklist a generated scene output SHA-256 + 16x16 visual signature (`depth=terminal`) so it can NEVER be re-fed."""
         p = Path(output_path).resolve()
         if not p.is_file():
             return None
         digest = sha256_file(p)
+        sig16 = compute_visual_16x16_sig(p)
         with self._lock:
             data = self._load()
+            app_o = dict(data.get("approved_origins_sha256") or {})  # type: ignore[arg-type]
+            if digest in app_o:
+                return None
             forb = dict(data.get("forbidden_generated_outputs_sha256") or {})  # type: ignore[arg-type]
-            forb[digest] = {"path": str(p), "job_id": job_id, "depth": "terminal", "generated_at": time.time()}
+            forb[digest] = {
+                "path": str(p),
+                "job_id": job_id,
+                "depth": "terminal",
+                "sig16": sig16,
+                "generated_at": time.time(),
+            }
             data["forbidden_generated_outputs_sha256"] = forb
             self._save(data)
         return digest
+
+    def _find_visual_match_in_forbidden(
+        self,
+        cand_path: Path,
+        forbidden_hashes: Dict[str, dict],
+        approved_orig: Dict[str, dict],
+        approved_8dir: Dict[str, dict],
+        max_mad: float = 5.2,
+    ) -> Optional[str]:
+        """Detect re-compressed / renamed / re-uploaded generated images via 16x16 visual L1 MAD <= 5.2."""
+        digest = sha256_file(cand_path)
+        if digest in approved_orig or digest in approved_8dir:
+            return None
+        cand_sig = compute_visual_16x16_sig(cand_path)
+        if not cand_sig:
+            return None
+        orig_sigs = [
+            v.get("sig16") for v in approved_orig.values() if isinstance(v, dict) and isinstance(v.get("sig16"), list)
+        ]
+        for f_sha, f_info in forbidden_hashes.items():
+            if f_sha in approved_orig or f_sha in approved_8dir or not isinstance(f_info, dict):
+                continue
+            f_sig = f_info.get("sig16")
+            if not isinstance(f_sig, list) and f_info.get("path") and Path(str(f_info["path"])).is_file():
+                f_sig = compute_visual_16x16_sig(Path(str(f_info["path"])))
+            mad = visual_sig_mad(cand_sig, f_sig)
+            if mad <= max_mad:
+                # Never misflag if cand is closer to an approved Gen-0 original (e.g. unit test copying Gen-0 as synthetic cand)
+                if any(visual_sig_mad(cand_sig, osig) <= mad + 0.5 for osig in orig_sigs):
+                    continue
+                return f"{f_info.get('path', f_sha[:12])} (시각 지문 MAD={mad:.2f})"
+        return None
 
     def verify_turnaround_1hop_inputs(self, reference_image_paths: Iterable[Path], job_id: Optional[str] = None) -> None:
         """Red-Team Stage-1 Guard: 8-Direction Turnaround generation MUST ONLY accept pure Gen-0 (`depth == 0`) photos!
@@ -220,6 +289,7 @@ class OriginOnlyOneShotGuard:
             data = self._load()
             forbidden_hashes: Dict[str, dict] = dict(data.get("forbidden_generated_outputs_sha256") or {})  # type: ignore[arg-type]
             approved_8dir: Dict[str, dict] = dict(data.get("approved_8dir_faces_sha256") or {})  # type: ignore[arg-type]
+            approved_orig: Dict[str, dict] = dict(data.get("approved_origins_sha256") or {})  # type: ignore[arg-type]
 
             for idx, rp in enumerate(refs, 1):
                 if not rp.is_file():
@@ -227,9 +297,15 @@ class OriginOnlyOneShotGuard:
                 resolved_str = str(rp.resolve())
                 digest = sha256_file(rp)
 
-                if digest in forbidden_hashes:
+                if digest in forbidden_hashes and digest not in approved_orig:
                     raise ChainedGenerationViolationError(
                         f"[레드팀 차단: 생성물 재먹이기 금지] '{rp.name}'은 이미 생성된 출력물입니다."
+                    )
+                vis_hit_t1 = self._find_visual_match_in_forbidden(rp, forbidden_hashes, approved_orig, approved_8dir)
+                if vis_hit_t1:
+                    raise ChainedGenerationViolationError(
+                        f"[레드팀 차단: 재압축/재업로드 생성물 다중 재생성 금지] '{rp.name}'이(가) 이전 생성물({vis_hit_t1})과 일치합니다! "
+                        "반드시 순수 처음 원본(Gen-0)만 입력해야 합니다."
                     )
                 for pat, reason in FORBIDDEN_DERIVED_FILENAME_PATTERNS:
                     if pat.search(resolved_str):
@@ -283,6 +359,14 @@ class OriginOnlyOneShotGuard:
                     raise ChainedGenerationViolationError(
                         f"[1원본들 → 1생성 위반] 입력 이미지 #{idx} ({rp.name})는 이전에 생성된 결과물({prev_info.get('path')})과 "
                         "동일한 SHA-256 해시를 가집니다. 생성물에 다시 생성하는 재먹이기는 절대 금지됩니다."
+                    )
+
+                vis_hit = self._find_visual_match_in_forbidden(rp, forbidden_hashes, approved_orig, approved_8dir)
+                if vis_hit:
+                    raise ChainedGenerationViolationError(
+                        f"[1원본들 → 1생성 위반: 재압축/재업로드 생성물 차단] 입력 이미지 #{idx} ({rp.name})가 "
+                        f"이전 생성 결과물({vis_hit})과 시각적으로 일치합니다! 생성된 이미지를 다시 생성기에 넣는 다중 재생성은 절대 금지되며, "
+                        "반드시 순수 처음 원본(Gen-0)만 입력해야 합니다."
                     )
 
                 for pat, reason in FORBIDDEN_DERIVED_FILENAME_PATTERNS:

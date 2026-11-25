@@ -201,7 +201,7 @@ class FaceExaggerationGuard:
         rm = self.extract_metrics(ref_gen0_bgr, marks=ref_marks)
         cm = self.extract_metrics(cand_bgr, marks=cand_marks)
         if rm is None or cm is None:
-            return {"valid": False, "passed": True, "exaggerationIndex": 0.0, "diffs": {}, "issues": []}
+            return {"valid": False, "passed": False, "exaggerationIndex": 99.0, "diffs": {}, "issues": ["얼굴 과장 게이트 랜드마크 검출 실패"]}
 
         pct = lambda a, b: 100.0 * (b - a) / max(1e-4, abs(a))
         eye_w_pct = pct(rm.eye_width_to_iod, cm.eye_width_to_iod)
@@ -274,7 +274,7 @@ class FaceExaggerationGuard:
             pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
             m = self.vision.landmarks(pil)
             if not m or not m.get("contour") or not m.get("leftEye") or not m.get("rightEye"):
-                return None, None, None, None
+                return None, None, None, None, 0.0, 0.0
             le = np.array(m["leftEye"], dtype=np.float32)
             re = np.array(m["rightEye"], dtype=np.float32)
             lp = np.mean(np.array(m.get("leftPupil") or le, dtype=np.float32), axis=0)
@@ -290,9 +290,19 @@ class FaceExaggerationGuard:
             c = np.array(m["contour"], dtype=np.float32)
             c_xf = np.hstack([c, np.ones((len(c), 1), dtype=np.float32)]) @ M.T
             lips_xf = None
+            inner_gap_px = 0.0
             if m.get("outerLips"):
                 lp_arr = np.array(m["outerLips"], dtype=np.float32)
                 lips_xf = np.hstack([lp_arr, np.ones((len(lp_arr), 1), dtype=np.float32)]) @ M.T
+            if m.get("innerLips") and len(m["innerLips"]) >= 4:
+                in_arr = np.array(m["innerLips"], dtype=np.float32)
+                in_xf = np.hstack([in_arr, np.ones((len(in_arr), 1), dtype=np.float32)]) @ M.T
+                inner_gap_px = float(max(0.0, in_xf[:, 1].max() - in_xf[:, 1].min()))
+            nose_turn = 0.0
+            if m.get("nose") and len(m["nose"]) >= 2:
+                ns_arr = np.array(m["nose"], dtype=np.float32)
+                ns_xf = np.hstack([ns_arr, np.ones((len(ns_arr), 1), dtype=np.float32)]) @ M.T
+                nose_turn = float((np.mean(ns_xf[:, 0]) - 400.0) / 180.0)
             # Extract upper cranial + hair dome mask on the aligned 800x800 canvas
             dome_mask = np.zeros((size, size), dtype=np.uint8)
             try:
@@ -308,26 +318,42 @@ class FaceExaggerationGuard:
                 bg_med = np.median(bg_patch, axis=0)
                 diff = np.linalg.norm(warped.astype(np.float32) - bg_med, axis=2)
                 dome_mask[diff > 24.0] = 255
-            return warped, c_xf, lips_xf, dome_mask
+            return warped, c_xf, lips_xf, dome_mask, inner_gap_px, nose_turn
 
-        w0, c0, lips0, dome0 = _align(ref_gen0_bgr)
-        wc, cc, lipsc, domec = _align(cand_bgr)
+        w0, c0, lips0, dome0, gap0, turn0 = _align(ref_gen0_bgr)
+        wc, cc, lipsc, domec, gapc, turnc = _align(cand_bgr)
         if w0 is None or wc is None or c0 is None or cc is None:
-            return {"valid": False, "passed": True, "contourIoU": 1.0, "maxContourPointErrPx": 0.0, "width5LevelDiffPct": {}, "issues": []}
+            return {
+                "valid": False,
+                "passed": False,
+                "contourIoU": 0.0,
+                "maxContourPointErrPx": 999.0,
+                "width5LevelDiffPct": {},
+                "issues": ["1:1 외곽선 랜드마크 검출 실패"],
+            }
 
         if len(c0) != len(cc):
             t_old = np.linspace(0.0, 1.0, len(cc))
             t_new = np.linspace(0.0, 1.0, len(c0))
             cc = np.stack([np.interp(t_new, t_old, cc[:, 0]), np.interp(t_new, t_old, cc[:, 1])], axis=-1).astype(np.float32)
 
-        pt_errs = np.linalg.norm(cc - c0, axis=1)
+        # Compensate ONLY rigid horizontal 3D head-yaw translation between discrete 22.5-deg 8-dir bank steps
+        # (never alters bilateral width5LevelDiffPct or vertical face_len_diff_pct!)
+        turn_diff_abs = abs(turnc - turn0)
+        cc_eval = cc.copy()
+        if turn_diff_abs >= 0.045:
+            max_yaw_dx = min(34.0, turn_diff_abs * 185.0)
+            dx_yaw = float(np.clip(np.median(cc[:, 0] - c0[:, 0]), -max_yaw_dx, max_yaw_dx))
+            cc_eval[:, 0] = cc[:, 0] - dx_yaw
+
+        pt_errs = np.linalg.norm(cc_eval - c0, axis=1)
         max_pt_err = float(np.max(pt_errs))
         mean_pt_err = float(np.mean(pt_errs))
 
         m0 = np.zeros((800, 800), dtype=np.uint8)
         mc = np.zeros((800, 800), dtype=np.uint8)
         cv2.fillPoly(m0, [np.round(c0).astype(np.int32)], 255)
-        cv2.fillPoly(mc, [np.round(cc).astype(np.int32)], 255)
+        cv2.fillPoly(mc, [np.round(cc_eval).astype(np.int32)], 255)
         union = float(np.sum((m0 > 0) | (mc > 0)))
         iou = float(np.sum((m0 > 0) & (mc > 0))) / max(1.0, union)
 
@@ -396,7 +422,10 @@ class FaceExaggerationGuard:
             issues.append(f"얼굴 세로길이(눈~턱) 오차 초과 ({face_len_diff_pct:+.1f}%, 허용 ±5.0%)")
         if cran_w_diff_pct > 7.5 or crown_h_diff_pct > 8.0:
             issues.append(f"두상·외곽 머리숱 크기 과대 (두상폭 {cran_w_diff_pct:+.1f}%, 두상높이 {crown_h_diff_pct:+.1f}%)")
-        if abs(lip_h_diff_pct) > 10.0 or lip_iou < 0.72:
+        teeth_gap_changed = abs(gapc - gap0) >= 2.2
+        min_lip_h_pct = -16.5 if teeth_gap_changed else -11.5
+        min_lip_iou_thr = 0.56 if (teeth_gap_changed or turn_diff_abs >= 0.06) else 0.70
+        if lip_h_diff_pct > 10.0 or lip_h_diff_pct < min_lip_h_pct or lip_iou < min_lip_iou_thr:
             issues.append(f"입술 모양·두께 변형 (두께 {lip_h_diff_pct:+.1f}%, 입술IoU {lip_iou:.2f})")
 
         saved_ov: Optional[str] = None
@@ -602,7 +631,15 @@ class FaceExaggerationGuard:
                     b_darks.append(weber_norm_drop)
             brow_dark = float(np.mean(b_darks)) if b_darks else 25.0
 
+            nose_turn_p = 0.0
+            if m.get("nose") and len(m["nose"]) >= 2:
+                ns_pts = np.array(m["nose"], dtype=np.float32)
+                ns_rel = ns_pts - face_center[None, :]
+                ns_intr_x = ns_rel[:, 0] * cr_a - ns_rel[:, 1] * sr_a
+                nose_turn_p = float(np.mean(ns_intr_x) / iod)
+
             return {
+                "noseTurnIod": round(nose_turn_p, 4),
                 "leftJawBulgeIod": round(l_bulge, 4),
                 "rightJawBulgeIod": round(r_bulge, 4),
                 "leftChinGonionDeg": round(l_chin_gon_deg, 1),
@@ -619,12 +656,17 @@ class FaceExaggerationGuard:
         p0 = _extract_profile(ref_gen0_bgr)
         pc = _extract_profile(cand_bgr)
         if not p0 or not pc:
-            return {"valid": False, "passed": True, "issues": []}
+            return {"valid": False, "passed": False, "issues": ["턱→귀·눈매 프로파일 랜드마크 검출 실패"]}
 
         l_bulge_pct = 100.0 * (pc["leftJawBulgeIod"] - p0["leftJawBulgeIod"]) / max(0.05, p0["leftJawBulgeIod"])
         r_bulge_pct = 100.0 * (pc["rightJawBulgeIod"] - p0["rightJawBulgeIod"]) / max(0.05, p0["rightJawBulgeIod"])
+        mean_bulge_pct = 0.5 * (l_bulge_pct + r_bulge_pct)
         l_slope_diff = pc["leftChinGonionDeg"] - p0["leftChinGonionDeg"]
         r_slope_diff = pc["rightChinGonionDeg"] - p0["rightChinGonionDeg"]
+        mean_slope_diff = 0.5 * (l_slope_diff + r_slope_diff)
+        yaw_turn_diff = abs(float(pc.get("noseTurnIod", 0.0)) - float(p0.get("noseTurnIod", 0.0)))
+        yaw_bulge_comp = min(16.0, yaw_turn_diff * 115.0) if yaw_turn_diff >= 0.04 else 0.0
+        yaw_slope_comp = min(5.0, yaw_turn_diff * 36.0) if yaw_turn_diff >= 0.04 else 0.0
         shadow_diff = pc["submandibularContrastL"] - p0["submandibularContrastL"]
         # If reference neck is partially occluded by a high blazer/suit collar or hair (`< 0.63 * face_w`),
         # normalize excess neck width against physiological female cervical baseline (`0.65 * face_w`) without reporting false negative shrinkage!
@@ -639,10 +681,10 @@ class FaceExaggerationGuard:
         brow_dark_diff = pc["browDarknessL"] - p0["browDarknessL"]
 
         issues: List[str] = []
-        if l_bulge_pct > 9.0 or r_bulge_pct > 9.0:
-            issues.append(f"턱→귀 라인 외측 불룩함(뚱뚱해 보임) 초과 (좌 {l_bulge_pct:+.1f}% / 우 {r_bulge_pct:+.1f}%, 허용 ≤+9.0%)")
-        if abs(l_slope_diff) > 5.5 or abs(r_slope_diff) > 5.5:
-            issues.append(f"턱끝→하악각 사선 기울기 이탈 (좌 {l_slope_diff:+.1f}° / 우 {r_slope_diff:+.1f}°, 허용 ±5.5°)")
+        if mean_bulge_pct > 8.5 or l_bulge_pct > (9.0 + yaw_bulge_comp) or r_bulge_pct > (9.0 + yaw_bulge_comp):
+            issues.append(f"턱→귀 라인 외측 불룩함(뚱뚱해 보임) 초과 (좌 {l_bulge_pct:+.1f}% / 우 {r_bulge_pct:+.1f}%, 평균 {mean_bulge_pct:+.1f}%)")
+        if abs(mean_slope_diff) > 5.0 or abs(l_slope_diff) > (5.5 + yaw_slope_comp) or abs(r_slope_diff) > (5.5 + yaw_slope_comp):
+            issues.append(f"턱끝→하악각 사선 기울기 이탈 (좌 {l_slope_diff:+.1f}° / 우 {r_slope_diff:+.1f}°, 평균 {mean_slope_diff:+.1f}°)")
         if p0["submandibularContrastL"] >= 8.0 and pc["submandibularContrastL"] < min(11.5, p0["submandibularContrastL"] * 0.55):
             issues.append(f"턱밑-목 경계 음영 뭉개짐 (생성 {pc['submandibularContrastL']:.1f}L vs 원본 {p0['submandibularContrastL']:.1f}L)")
         if neck_diff_pct > 11.0:

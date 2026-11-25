@@ -3,7 +3,7 @@ name: reel-profile
 description: Use this skill immediately whenever the user mentions '릴프로필', '프로필', '릴 프로필', '모델생성', '릴프로필 스튜디오', or asks to generate, edit, or upscale real-person profile / editorial / portrait photos across any location, pose, outfit, or lens. Loads the canonical '릴프로필 (프로필)' project (정본 v1.0.0+ baseline, currently v1.0.5+), enforces mandatory automated version checking (`scripts/version_ctl.py check` / `bump` above v1.0.0 whenever modified, with < v1.0 archived as history), Mandatory Step 1 1-Hop 8-Direction (-90°..+90°) Bank, Default 50:50 Subject-to-Space Balance (switching to close-up ONLY on explicit request), Default f/1.8–f/2.0 Wide-Aperture Optical Bokeh Z-Depth, and Zero-Touch 4K Passthrough Mastering (`0.0px` lighting/texture/likeness mutation).
 ---
 
-# `릴프로필` (`프로필` — 정본 `v1.0.5+` Canonical Skill)
+# `릴프로필` (`프로필` — 정본 `v1.0.6+` Canonical Skill)
 
 ## 1. 프로젝트 공식 명칭 · 별칭 라우팅 · 2-Tier 하이브리드 클라우드 경로 해석
 - **정식 명칭**: **`릴프로필`** (약칭: **`프로필`**, 하위호환: `모델생성`, `reel-profile`, `profile`)
@@ -51,10 +51,10 @@ description: Use this skill immediately whenever the user mentions '릴프로필
 
 ---
 
-## 3. 정본 `v1.0.5+` 디폴트 생성 파이프라인 (무하드코딩 6단계)
+## 3. 정본 `v1.0.6+` 디폴트 생성 파이프라인 (무하드코딩 6단계 · 다중재생성 및 가짜4K 물리 봉쇄)
 1. **Step 1 — 순수 원본(`Gen-0`) 1-Hop 8방향(`-90° ~ +90°`) 마스터 뱅크 필수 선행**:
    - 새 인물은 반드시 순수 `Gen-0` 단독 입력(`hop == 1`)으로 `-90°, -67.5°, -45°, -22.5°, +22.5°, +45°, +67.5°, +90°` 8방향을 먼저 생성·조립(`*_master_8angle_turnaround_sheet.jpg`)한다 (`원본1생성게이트.py` 물리 강제).
-2. **Stage 1~2 — `prepare` (`50:50 인물·배경 여백` 디폴트 · 요청 시에만 `closeup` · `f/1.8~f/2.0` 아웃포커싱 깊이감)**:
+2. **Stage 1~2 — `prepare` (`50:50 인물·배경 여백` 디폴트 · 수정요청 시에도 매 턴 Stage 1부터 순수 원본 재시작 필수)**:
    ```bash
    python3 <repo>/scripts/run_fresh_origin_workflow.py prepare \
      --gen0 <Gen0.jpg> --turnaround-sheet <master_8angle_sheet.jpg> \
@@ -64,6 +64,7 @@ description: Use this skill immediately whenever the user mentions '릴프로필
    ```
    - **기본 구도 (`balanced_50_50`, 말사전 `생-035`)**: 프레임을 인물로 꽉 채우지 않고 **인물 약 `45~50%` : 주변 배경 여백·헤드룸 약 `50~55%`**를 기본으로 잡으며, 사용자가 클로즈업을 명시 요청할 때만 `closeup`으로 자동 전환한다.
    - **기본 심도 (`f/1.8 ~ f/2.0` 개방 아웃포커싱 깊이감)**: 배경 디테일을 과잉 묘사하지 않고 눈·얼굴 초점면만 선명하게 맞춘 뒤 전경·후경을 부드러운 광학 보케로 날려 **3단 공간 깊이감(`Z-Depth`)**을 살린다.
-3. **Stage 3 — 원패스 통인물 3D 생성**: 1인 1 Google Flow 프로젝트 고정, 이전 생성물 재투입 `0%`, 얼굴 과장·미화 `0%`, 외부 유료 API `0%`.
-4. **Stage 4~6 — `rank` -> `finalize --upscale-mode optical_fullframe --cohesion-mode off` (`Zero-Touch 4K`, 말사전 `생-034`) -> `read_file` 400% 육안 검수**:
-   - **Zero-Touch 4K 무변형 직통 기본**: 4K 변환 시 증명사진 피부색 역주입(`0%`), 하이라이트 압축(`0%`), 눈·코·입 국소 샤프닝(`0%`), 부위별 분리 GAN 합성(`0%`)을 전부 차단해 **처음 생성된 조명·색감·질감·생김새를 `100.0%` 무변형(`maxDiff = 0.0px`)으로 보존**하며, `*_4k_macro.jpg`, `*_eye_compare_400pct.jpg`, `*_silhouette_overlay.jpg`를 육안 검수한 뒤 보고한다.
+3. **Stage 3 — 원패스 통인물 3D 생성 (다중 재생성 · 생성물 재투입 `0%` 화이트리스트 물리 강제)**:
+   - 생성된 이미지를 다시 넣거나 기존 `image-generator`에 `send_message`로 수정·덧그리기를 지시하는 **다중 재생성(Img2Img)은 `원본1생성게이트.py` Default-Deny 화이트리스트 + `16x16` 시각 지문으로 `100%` 차단**된다. 어떤 수정 요청이 들어와도 반드시 Stage 1 `prepare`부터 순수 원본(`Gen-0`)으로 새로 생성한다.
+4. **Stage 4~6 — `rank` -> `finalize --upscale-mode tonelocked_upscayl_4k --cohesion-mode off` (`Tone-Locked True 4K` + 10대 게이트 전원 통과 필수) -> `read_file` 400% 육안 검수**:
+   - **Tone-Locked True 4K 기본 (`v1.0.6+`)**: 네이티브 4K는 `0.0px` 무변형 직통 보존하고, `1K`/`2K` 원시 생성물은 `Upscayl 4x` 초해상에 `CIE LAB` 저주파 조도·색온도 `100.0%` 고정(`ΔL ≈ 0, Δa* = 0, Δb* = 0`)을 적용해 **조명·색감·인상 변형 `0%` + 진짜 4K 선명도(`LapVar >= 17.5`)**를 동시에 달성한다 (`--allow-audit-fail` 및 `1K` 단순 `Lanczos` 가짜 4K 영구 봉쇄).

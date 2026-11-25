@@ -13,7 +13,7 @@ echo "============================================================"
 mkdir -p "$HOME/Projects"
 for ALIAS_NAME in "릴프로필" "프로필"; do
   TARGET_LINK="$HOME/Projects/$ALIAS_NAME"
-  if [ ! -e "$TARGET_LINK" ]; then
+  if [ ! -e "$TARGET_LINK" ] && [ ! -L "$TARGET_LINK" ]; then
     ln -s "$REPO_DIR" "$TARGET_LINK"
     echo "[별칭 등록] $TARGET_LINK -> $REPO_DIR"
   fi
@@ -58,7 +58,15 @@ for SKILL_ROOT in "${SKILL_ROOTS[@]}"; do
   done
 done
 
-# 5. 버전 무결성 최종 체크
+# 5. Antigravity 전역 `원본1생성게이트.py` 및 `hooks.json` 동기화
+if [ -f "$REPO_DIR/hooks/enforce_1origin_1gen_hook.py" ]; then
+  mkdir -p "$HOME/.gemini/config"
+  cp "$REPO_DIR/hooks/enforce_1origin_1gen_hook.py" "$HOME/.gemini/config/원본1생성게이트.py"
+  chmod +x "$HOME/.gemini/config/원본1생성게이트.py"
+  echo "[전역 보안 훅 동기화] $HOME/.gemini/config/원본1생성게이트.py"
+fi
+
+# 6. 버전 무결성 최종 체크
 python3 "$REPO_DIR/scripts/version_ctl.py" check
 
 echo ""

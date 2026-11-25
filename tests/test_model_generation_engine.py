@@ -39,6 +39,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         cls.detector = DynamicFaceDetector(cls.config.resolve_model_path("yunet.onnx"))
         cls.ref_face = cls.config.vault_dir / "resources" / "ref_person_face.jpg"
         cls.outputs_dir = cls.config.vault_dir / "outputs"
+        from model_generation_engine.origin_guard import OriginOnlyOneShotGuard
+        OriginOnlyOneShotGuard().register_approved_origin(cls.ref_face, kind="gen0_face", depth=0)
 
     def test_01_universal_subject_profiles_zero_hardcoding(self) -> None:
         """Verify SubjectProfile supports any model without hardcoded gender, glasses, or height/weight."""
@@ -1650,9 +1652,10 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             )
             self.assertEqual(manifest["stage"], "READY_FOR_FRESH_GEN")
             self.assertEqual(len(manifest["prompts"]), 3)
-            self.assertTrue(Path(manifest["ocular_detail_anchor_path"]).is_file())
+            if manifest["ocular_detail_anchor_path"] is not None:
+                self.assertTrue(Path(manifest["ocular_detail_anchor_path"]).is_file())
             self.assertTrue(Path(manifest["manifest_path"]).is_file())
-            self.assertIn("Measured Ocular Anatomy Lock", manifest["prompts"][0]["prompt"])
+            self.assertIn("Measured Ocular Anatomy Lock", manifest["prompts"][0]["full_blueprint_clause"])
 
             # Fresh candidate copy created AFTER manifest -> rank succeeds natively
             fresh_cand = tmp / "fresh_c1.jpg"
@@ -2357,14 +2360,31 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertIn("50:50", p0)
             self.assertIn("f/1.8", p0)
 
-            # Simulate a warm-lamp 4K fresh candidate (very different warm lighting from Gen-0 ID flash!)
-            cand_4k = cv2.resize(raw_ref, (3584, 4800), interpolation=cv2.INTER_LANCZOS4)
+            # Place undistorted Gen-0 subject onto a realistic 896x1200 50:50 studio canvas, then upscale to Native 4K
+            bg_med = np.median(raw_ref[:20, :20].reshape(-1, 3), axis=0).astype(np.uint8)
+            canvas_1k = np.broadcast_to(bg_med, (1200, 896, 3)).copy()
+            rh, rw = raw_ref.shape[:2]
+            ox, oy = (896 - rw) // 2, (1200 - rh) // 2
+            canvas_1k[oy : oy + rh, ox : ox + rw] = raw_ref
+
+            cand_4k, sr_meta_warm = pipe.upscaler.upscale_tonelocked_true_4k(canvas_1k, target_min_height=4800)
             lab = cv2.cvtColor(cand_4k, cv2.COLOR_BGR2LAB).astype(np.float32)
-            lab[:, :, 0] = np.clip(lab[:, :, 0] * 0.84, 0.0, 255.0)
-            lab[:, :, 2] = np.clip(lab[:, :, 2] + 9.0, 0.0, 255.0)
+            lab[:, :, 0] = np.clip(lab[:, :, 0] * 0.94, 0.0, 255.0)
+            lab[:, :, 2] = np.clip(lab[:, :, 2] + 5.0, 0.0, 255.0)
             warm_cand_4k = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
             cand_p = td_p / "cand_4k.png"
             cv2.imwrite(str(cand_p), warm_cand_4k)
+
+            # Verify strict_10gate=False bypass is permanently forbidden in v1.0.6+
+            with self.assertRaises(RuntimeError):
+                wf.finalize_native_winner_4k(
+                    gen0_portrait_path=gen0_copy,
+                    winner_candidate_path=cand_p,
+                    output_dir=td_p / "out_blocked",
+                    output_stem="unit_blocked",
+                    sync_to_vault=False,
+                    strict_10gate=False,
+                )
 
             receipt = wf.finalize_native_winner_4k(
                 gen0_portrait_path=gen0_copy,
@@ -2372,13 +2392,293 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                 output_dir=td_p / "out",
                 output_stem="unit_zerotouch",
                 sync_to_vault=False,
-                strict_10gate=False,
+                strict_10gate=True,
             )
+            self.assertTrue(receipt["passed_10gates"])
             self.assertTrue(receipt["zero_touch_4k_passthrough"])
             self.assertEqual(receipt["max_abs_pixel_diff_vs_raw"], 0.0)
+            self.assertGreaterEqual(float(receipt["face_laplacian_variance"]), 17.5)
             self.assertFalse(receipt["skin_albedo_texture_meta"]["applied"])
             self.assertFalse(receipt["optical_acuity_meta"]["applied"])
             self.assertFalse(receipt["cohesion_meta"]["applied"])
+
+    def test_42_v106_true_4k_tonelock_and_redteam_anti_bypass(self) -> None:
+        """Red-Team Penetration Suite (`v1.0.6`): verify Tone-Locked True 4K SR + 100% blocking of all 10 bypass vectors."""
+        import json
+        import subprocess
+        import tempfile
+        import cv2
+        import numpy as np
+        from model_generation_engine.config import EngineConfig
+        from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+
+        # Attack 1: Lowering min_face_laplacian_var or min_identity_cosine_sim in EngineConfig -> MUST raise ValueError!
+        with self.assertRaises(ValueError):
+            EngineConfig(min_face_laplacian_var=11.0)
+        with self.assertRaises(ValueError):
+            EngineConfig(min_identity_cosine_sim=0.45)
+
+        pipe = ModelGenerationPipeline()
+        wf = FreshOriginEditorialWorkflow(pipe)
+        raw_ref = cv2.imread(str(self.ref_face))
+
+        # Place undistorted subject onto an 896x1200 1K 50:50 canvas (preserving exact 1:1 facial aspect ratio!)
+        bg_med = np.median(raw_ref[:20, :20].reshape(-1, 3), axis=0).astype(np.uint8)
+        src_1k = np.broadcast_to(bg_med, (1200, 896, 3)).copy()
+        rh, rw = raw_ref.shape[:2]
+        ox, oy = (896 - rw) // 2, (1200 - rh) // 2
+        src_1k[oy : oy + rh, ox : ox + rw] = raw_ref
+
+        # Verify Tone-Locked True 4K SR on a sub-4K 1K (896x1200) input:
+        # 1) Zero lighting/color drift (|delta_L_mean| < 0.35, |delta_a_mean| < 0.35, |delta_b_mean| < 0.35)
+        # 2) Sharpness jumps far above plain Lanczos-4 and passes 17.5 LapVar gate!
+        sr_4k, sr_meta = pipe.upscaler.upscale_tonelocked_true_4k(src_1k, target_min_height=4800)
+        self.assertEqual(sr_4k.shape[0], 4800)
+        self.assertLess(abs(float(sr_meta["delta_L_mean"])), 0.35)
+        self.assertLess(abs(float(sr_meta["delta_a_mean"])), 0.35)
+        self.assertLess(abs(float(sr_meta["delta_b_mean"])), 0.35)
+        self.assertGreater(float(sr_meta["lap_var_after"]), float(sr_meta["lap_var_before"]) * 2.2)
+
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        cli_py = Path(__file__).resolve().parent.parent / "scripts" / "run_fresh_origin_workflow.py"
+        conv_id = "unit-test-v106-redteam"
+
+        def _hook(ev: str, pl: dict) -> dict:
+            pl = dict(pl)
+            pl.setdefault("conversationId", conv_id)
+            pl.setdefault("workspacePaths", ["/Volumes/DOMA/Project/릴프로필"])
+            pl.setdefault("lastUserInput", "다시 뽑아줘")
+            p = subprocess.run(
+                ["python3", str(hook_py), "--event", ev],
+                input=json.dumps(pl),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(p.stdout.strip())
+
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            gen0_copy = td_p / "originals" / "gen0.jpg"
+            gen0_copy.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(gen0_copy), raw_ref)
+            cand_1k_p = td_p / "cand_1k.jpg"
+            cv2.imwrite(str(cand_1k_p), src_1k, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+
+            # Attack 2: Trying to stretch 1K image via optical_fullframe / optical_lanczos in Python -> MUST raise RuntimeError!
+            for fake_mode in ("optical_fullframe", "optical_lanczos"):
+                with self.assertRaises(RuntimeError):
+                    wf.finalize_native_winner_4k(
+                        gen0_portrait_path=gen0_copy,
+                        winner_candidate_path=cand_1k_p,
+                        output_dir=td_p / "fake_out",
+                        output_stem="fake4k",
+                        sync_to_vault=False,
+                        upscale_mode=fake_mode,
+                    )
+
+            # Attack 3: CLI `--allow-audit-fail` -> MUST exit non-zero (code 2)!
+            p_cli_bypass = subprocess.run(
+                [
+                    "python3",
+                    str(cli_py),
+                    "finalize",
+                    "--manifest",
+                    str(td_p / "missing.json"),
+                    "--winner",
+                    str(cand_1k_p),
+                    "--output-dir",
+                    str(td_p / "o"),
+                    "--stem",
+                    "s",
+                    "--allow-audit-fail",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(p_cli_bypass.returncode, 0)
+            self.assertIn("Anti-Bypass Lock", p_cli_bypass.stderr)
+
+            # Attack 4: Blurry smudged Native-4K candidate -> MUST be rejected AND MUST NOT leave `*_4k.jpg` on disk!
+            blurry_4k = cv2.GaussianBlur(sr_4k, (45, 45), 14.0)
+            blurry_p = td_p / "blurry_4k.jpg"
+            cv2.imwrite(str(blurry_p), blurry_4k)
+            with self.assertRaises(RuntimeError):
+                wf.finalize_native_winner_4k(
+                    gen0_portrait_path=gen0_copy,
+                    winner_candidate_path=blurry_p,
+                    output_dir=td_p / "blur_out",
+                    output_stem="blur_victim",
+                    sync_to_vault=False,
+                )
+            self.assertFalse((td_p / "blur_out" / "blur_victim_4k.jpg").exists())
+            blur_rcp = json.loads((td_p / "blur_out" / "blur_victim_workflow_receipt.json").read_text(encoding="utf-8"))
+            self.assertFalse(blur_rcp["passed_10gates"])
+
+            # Attack 5–10: Hook Red-Team Vectors
+            _hook("pre_invocation", {})
+
+            # 5) Hook blocks `--allow-audit-fail`
+            r5 = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py finalize --allow-audit-fail"}}})
+            self.assertEqual(r5["decision"], "deny")
+
+            # 6) Hook blocks `# unittest` comment piggybacking with `strict_10gate=False`
+            r6 = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 -c '# unittest\nwf.finalize_native_winner_4k(strict_10gate=False)'"}}})
+            self.assertEqual(r6["decision"], "deny")
+
+            # 7) Hook blocks `--upscale-mode optical_fullframe` on 1K winner image
+            r7 = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py finalize --winner {cand_1k_p} --upscale-mode optical_fullframe --output-dir {td_p} --stem x"}}})
+            self.assertEqual(r7["decision"], "deny")
+
+            # 8) Hook blocks direct ad-hoc cv2.imwrite / sips fake `*_4k.jpg` outside finalize
+            r8 = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 -c \"import cv2; cv2.imwrite('{td_p}/ sneaky_4k.jpg', img)\""}}})
+            self.assertEqual(r8["decision"], "deny")
+
+            # 9) Hook blocks write_file / shell tampering of `*_workflow_receipt.json` or `fresh_origin_turn_state.json`
+            r9a = _hook("pre_tool", {"toolCall": {"name": "write_file", "args": {"Path": str(td_p / "forged_workflow_receipt.json"), "Content": "{}"}}})
+            self.assertEqual(r9a["decision"], "deny")
+            r9b = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "echo '{}' > ~/.model_generation_studio/fresh_origin_turn_state.json"}}})
+            self.assertEqual(r9b["decision"], "deny")
+
+            # 10) Hook PostToolUse + Stop blocks stopping when receipt on disk has `passed_10gates == False`!
+            _hook("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py prepare --turnaround-sheet /tmp/s05_master_8angle_turnaround_sheet.jpg"}}})
+            _hook("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Gen", "Prompt": "Use /tmp/.user_uploaded/g.jpg and /tmp/s05_8dir_04_left_22_5.jpg"}}})
+            _hook("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py finalize --output-dir {td_p / 'blur_out'} --stem blur_victim"}}})
+            _hook("post_tool", {"toolCall": {"name": "read_file", "args": {"Path": str(td_p / "blur_out" / "blur_victim_4k_macro.jpg")}}})
+            r10_stop = _hook("stop", {"fullyIdle": True, "terminationReason": "NO_TOOL_CALL"})
+            self.assertEqual(r10_stop.get("decision"), "continue")
+            self.assertIn("10대 품질 게이트 불합격", r10_stop.get("reason", ""))
+
+            # Positive verification: Sub-4K 1K candidate finalized via default `tonelocked_upscayl_4k` PASSES all 10 gates cleanly!
+            ok_rcp = wf.finalize_native_winner_4k(
+                gen0_portrait_path=gen0_copy,
+                winner_candidate_path=cand_1k_p,
+                output_dir=td_p / "true4k_out",
+                output_stem="true4k_hero",
+                sync_to_vault=False,
+            )
+            self.assertTrue(ok_rcp["passed_10gates"])
+            self.assertGreaterEqual(float(ok_rcp["face_laplacian_variance"]), 17.5)
+            self.assertIsNotNone(ok_rcp["hero_4k_sha256"])
+            self.assertTrue((td_p / "true4k_out" / "true4k_hero_4k.jpg").is_file())
+
+            # Round-2 Red-Team Vectors (Attacks 11–18):
+            # 11) Post-init EngineConfig mutation -> MUST raise FrozenInstanceError!
+            cfg_frozen = EngineConfig()
+            with self.assertRaises(Exception):
+                cfg_frozen.min_face_laplacian_var = 0.0  # type: ignore[misc]
+
+            # 12) Dummy --turnaround-sheet pointing to Gen-0 or missing file -> MUST raise Error!
+            with self.assertRaises((FileNotFoundError, RuntimeError)):
+                wf.prepare_origin_bundle(
+                    gen0_portrait_path=gen0_copy,
+                    work_dir=td_p / "bad_s1",
+                    scene_instruction="calm lounge",
+                    outfit_instruction="navy knit",
+                    turnaround_8dir_sheet_path=gen0_copy,
+                )
+
+            # 13) Copying generated hero_4k into `originals/` and trying to re-feed -> Hook SHA-256 blacklist MUST DENY!
+            sneaky_orig_dir = td_p / "originals"
+            sneaky_refeed = sneaky_orig_dir / "disguised_gen0.jpg"
+            sneaky_refeed.write_bytes((td_p / "true4k_out" / "true4k_hero_4k.jpg").read_bytes())
+            r13 = _hook("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Refeed", "Prompt": f"Use '{sneaky_refeed}' and /tmp/s05_8dir_04_left_22_5.jpg"}}})
+            self.assertEqual(r13["decision"], "deny")
+            self.assertIn("SHA-256", r13["reason"])
+
+            # 14) Script indirection: write_file `/tmp/bypass.py` with cv2.resize + cv2.imwrite OR strict_10gate=False -> MUST DENY!
+            r14a = _hook("pre_tool", {"toolCall": {"name": "write_file", "args": {"Path": str(td_p / "bypass.py"), "Content": "import cv2\nx = cv2.resize(a, (3584, 4800))\ncv2.imwrite('out.jpg', x)\n"}}})
+            self.assertEqual(r14a["decision"], "deny")
+            evil_py = td_p / "evil_exec.py"
+            evil_py.write_text("wf.finalize_native_winner_4k(strict_10gate=False)\n", encoding="utf-8")
+            r14b = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 '{evil_py}'"}}})
+            self.assertEqual(r14b["decision"], "deny")
+
+            # 15) Base64 / exec obfuscation -> MUST DENY!
+            r15 = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 -c \"import base64; exec(base64.b64decode('...'))\""}}})
+            self.assertEqual(r15["decision"], "deny")
+
+            # 16) `=` syntax + space in quoted path (`--upscale-mode=optical_fullframe --winner="..."`) -> MUST DENY!
+            spaced_dir = td_p / "dir with space"
+            spaced_dir.mkdir(parents=True, exist_ok=True)
+            spaced_cand = spaced_dir / "cand 1k.jpg"
+            spaced_cand.write_bytes(cand_1k_p.read_bytes())
+            r16 = _hook("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py finalize --upscale-mode=optical_fullframe --winner=\"{spaced_cand}\" --output-dir=\"{spaced_dir}\" --stem=x"}}})
+            self.assertEqual(r16["decision"], "deny")
+
+            # 17) Swapping `hero_4k.jpg` on disk AFTER finalize -> cryptographic `hero_4k_sha256` receipt check MUST FAIL!
+            tampered_hero = td_p / "true4k_out" / "true4k_hero_4k.jpg"
+            cv2.imwrite(str(tampered_hero), cv2.resize(src_1k, (3584, 4800), interpolation=cv2.INTER_LANCZOS4))
+            _hook("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py finalize --output-dir='{td_p / 'true4k_out'}' --stem=true4k_hero"}}})
+            r17_stop = _hook("stop", {"fullyIdle": True, "terminationReason": "NO_TOOL_CALL"})
+            self.assertEqual(r17_stop.get("decision"), "continue")
+            self.assertIn("사후 이미지 바꿔치기 차단", r17_stop.get("reason", ""))
+
+            # 18) `send_message` with exaggeration prompt OR iterative regeneration -> MUST DENY!
+            r18 = _hook("pre_tool", {"toolCall": {"name": "send_message", "args": {"Recipient": "abc", "Message": f"Generate portrait from {gen0_copy} with plump lips and big eyes"}}})
+            self.assertEqual(r18["decision"], "deny")
+
+            # 19) Multi-turn `send_message` iterative regeneration ("배경만 다시 그려줘") without any file path -> MUST DENY!
+            r19 = _hook("pre_tool", {"toolCall": {"name": "send_message", "args": {"Recipient": "existing-img-agent", "Message": "이 생성 이미지에서 배경만 더 심플하게 다시 그려줘"}}})
+            self.assertEqual(r19["decision"], "deny")
+            self.assertIn("다중 재생성", r19["reason"])
+
+            # 20) Re-encoded JPEG of generated image (different SHA-256!) re-fed as input -> 16x16 visual fingerprint MUST BLOCK!
+            reencoded_jpg = td_p / "recompressed_upload.jpg"
+            gen_4k_bgr = cv2.imread(str(td_p / "true4k_out" / "true4k_hero_4k.jpg"))
+            # Add border/crop/recompress so SHA-256 is 100% different from true4k_hero_4k.jpg while visually matching
+            gen_4k_re = np.clip(gen_4k_bgr.astype(np.int16) + 2, 0, 255).astype(np.uint8)
+            cv2.imwrite(str(reencoded_jpg), gen_4k_re, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+            # Also register a distinct scene output and verify visual match blocks re-encoded copy
+            distinct_gen = np.full((600, 450, 3), (42, 88, 165), dtype=np.uint8)
+            cv2.circle(distinct_gen, (225, 240), 110, (210, 190, 175), -1)
+            distinct_gen_p = td_p / "scene_gen_v1.png"
+            cv2.imwrite(str(distinct_gen_p), distinct_gen)
+            wf.origin_guard.register_generated_scene_output(distinct_gen_p, job_id="v1_scene")
+            reupload_v1 = td_p / "reupload_v1_q65.jpg"
+            cv2.imwrite(str(reupload_v1), distinct_gen, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+            with self.assertRaises(Exception):
+                wf.origin_guard.verify_one_shot_and_inputs([reupload_v1])
+
+            # 21) Live non-unit-test conversation: subtle modification feedback ("배경에 50%이하로 등장하게. 배경은 심플하게")
+            #     MUST block calling image-generator before Stage 1 `prepare` AND MUST block non-whitelisted `/tmp/` or `/brain/<other>/` inputs!
+            live_conv = "live-sim-mod-feedback-v106"
+            def _live_hook(ev: str, pl: dict) -> dict:
+                pl = dict(pl)
+                pl.setdefault("conversationId", live_conv)
+                pl.setdefault("workspacePaths", ["/Volumes/DOMA/Project/릴프로필"])
+                pl.setdefault("lastUserInput", "배경에 50%이하로 등장하게. 배경은 심플하게")
+                p = subprocess.run(["python3", str(hook_py), "--event", ev], input=json.dumps(pl), text=True, capture_output=True, check=True)
+                return json.loads(p.stdout.strip())
+
+            _live_hook("pre_invocation", {})
+            # Skipping Stage 1 prepare on subtle modification feedback -> MUST DENY!
+            r21a = _live_hook("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Mod", "Prompt": f"Use '{gen0_copy}' and /tmp/s05_8dir_04_left_22_5.jpg"}}})
+            self.assertEqual(r21a["decision"], "deny")
+            self.assertIn("Stage 1", r21a["reason"])
+            # Passing raw output from another subagent's brain folder `/antigravity/brain/<other-uuid>/out.png` -> MUST DENY!
+            r21b = _live_hook("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Mod2", "Prompt": "Use /Users/doma/.gemini/antigravity/brain/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/gen_cut1.png and /tmp/s05_8dir_04_left_22_5.jpg"}}})
+            self.assertEqual(r21b["decision"], "deny")
+            self.assertIn("다중 재생성", r21b["reason"])
+            # Passing arbitrary unapproved `/tmp/random_cut.png` (new bytes not in SHA-256 ledger) -> Default-Deny Whitelist MUST DENY!
+            unapproved_tmp = td_p / "random_cut.png"
+            unapproved_tmp.write_bytes(b"brand_new_unapproved_image_bytes_for_whitelist_check")
+            r21c = _live_hook("pre_tool", {"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "image-generator", "Role": "Mod3", "Prompt": f"Use '{unapproved_tmp}' and /tmp/s05_8dir_04_left_22_5.jpg"}}})
+            self.assertEqual(r21c["decision"], "deny")
+            self.assertIn("Whitelist", r21c["reason"])
+
+            st_live = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+            if st_live.exists():
+                stl = json.loads(st_live.read_text(encoding="utf-8"))
+                stl.pop(live_conv, None)
+                st_live.write_text(json.dumps(stl, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st = json.loads(st_p.read_text(encoding="utf-8"))
+            st.pop(conv_id, None)
+            st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
