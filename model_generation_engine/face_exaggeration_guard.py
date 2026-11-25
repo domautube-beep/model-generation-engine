@@ -346,9 +346,27 @@ class FaceExaggerationGuard:
             dx_yaw = float(np.clip(np.median(cc[:, 0] - c0[:, 0]), -max_yaw_dx, max_yaw_dx))
             cc_eval[:, 0] = cc[:, 0] - dx_yaw
 
-        pt_errs = np.linalg.norm(cc_eval - c0, axis=1)
-        max_pt_err = float(np.max(pt_errs))
-        mean_pt_err = float(np.mean(pt_errs))
+        def _point_to_polyline_dists(pts_src: np.ndarray, poly_dst: np.ndarray) -> np.ndarray:
+            segs_a = poly_dst[:-1]
+            segs_b = poly_dst[1:]
+            ab = segs_b - segs_a
+            ab_len2 = np.maximum(1e-6, np.sum(ab * ab, axis=1))
+            dists = []
+            for p_pt in pts_src:
+                ap = p_pt[None, :] - segs_a
+                t_proj = np.clip(np.sum(ap * ab, axis=1) / ab_len2, 0.0, 1.0)
+                closest = segs_a + t_proj[:, None] * ab
+                d = float(np.min(np.linalg.norm(p_pt[None, :] - closest, axis=1)))
+                dists.append(d)
+            return np.array(dists, dtype=np.float32)
+
+        # Measure true perpendicular point-to-curve Hausdorff deviation across jaw contour (excluding hair-occluded top temple endpoints 0 & n-1)
+        jaw_slice = slice(1, -1) if len(c0) >= 6 else slice(None)
+        d_c_to_0 = _point_to_polyline_dists(cc_eval[jaw_slice], c0)
+        d_0_to_c = _point_to_polyline_dists(c0[jaw_slice], cc_eval)
+        sym_errs = np.concatenate([d_c_to_0, d_0_to_c])
+        max_pt_err = float(np.max(sym_errs)) if sym_errs.size > 0 else 0.0
+        mean_pt_err = float(np.mean(sym_errs)) if sym_errs.size > 0 else 0.0
 
         m0 = np.zeros((800, 800), dtype=np.uint8)
         mc = np.zeros((800, 800), dtype=np.uint8)
@@ -543,6 +561,12 @@ class FaceExaggerationGuard:
             L_ch = lab[:, :, 0]
             h, w = L_ch.shape
             off = max(4, int(round(0.08 * iod)))
+            # Sample cheek/chin skin LAB first so ivory/dark shirt collars beneath the jaw are never mistaken for neck skin!
+            sy1_r, sy2_r = max(0, int(chin[1] - 0.35 * iod)), max(1, int(chin[1] - 0.08 * iod))
+            sx1_r, sx2_r = max(0, int(chin[0] - 0.25 * iod)), min(w, int(chin[0] + 0.25 * iod))
+            skin_ref_jaw = lab[sy1_r:sy2_r, sx1_r:sx2_r].reshape(-1, 3)
+            med_skin_jaw = np.median(skin_ref_jaw, axis=0) if skin_ref_jaw.size >= 9 else np.array([175.0, 136.0, 142.0], dtype=np.float32)
+
             jaw_contrasts = []
             # Sample lower mandible-over-neck points using inward normal toward `face_center` (independent of c[0] vs c[-1] order!)
             arc_a = c[max(1, int(round(0.28 * n))) : mid_idx]
@@ -554,9 +578,10 @@ class FaceExaggerationGuard:
                 ux_in, uy_in = float(vin[0]) / vnorm, float(vin[1]) / vnorm
                 ix, iy = int(np.clip(round(float(pt[0]) + ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) + uy_in * off), 0, h - 1))
                 ox, oy = int(np.clip(round(float(pt[0]) - ux_in * off), 0, w - 1)), int(np.clip(round(float(pt[1]) - uy_in * off), 0, h - 1))
-                if 42.0 <= float(L_ch[oy, ox]) <= 215.0 and float(lab[oy, ox, 1]) >= 129.5:
+                out_d_ab = math.hypot(float(lab[oy, ox, 1] - med_skin_jaw[1]), float(lab[oy, ox, 2] - med_skin_jaw[2]))
+                if 48.0 <= float(L_ch[oy, ox]) <= float(med_skin_jaw[0] + 8.0) and out_d_ab <= 16.5 and float(lab[oy, ox, 1]) >= 130.5:
                     jaw_contrasts.append(float(L_ch[iy, ix] - L_ch[oy, ox]))
-            submandibular_contrast = float(np.mean(jaw_contrasts)) if jaw_contrasts else 12.0
+            submandibular_contrast = float(np.mean(jaw_contrasts)) if len(jaw_contrasts) >= 2 else 12.0
 
             # 3) Upper cervical neck width right beneath the chin (`+0.18 * iod`, centered on head mid-span, not yawed chin tip!)
             face_w = max(1.0, float(c[:, 0].max() - c[:, 0].min()))
@@ -626,8 +651,8 @@ class FaceExaggerationGuard:
                 by1, by2 = max(0, int(bpts[:, 1].min() - 0.04 * iod)), min(h, int(bpts[:, 1].max() + 0.04 * iod))
                 patch = L_ch[by1:by2, bx1:bx2]
                 if patch.size >= 12:
-                    raw_drop = max(0.0, loc_skin_L - float(np.percentile(patch, 25)))
-                    weber_norm_drop = raw_drop * float(np.clip(185.0 / max(75.0, loc_skin_L), 0.85, 2.25))
+                    raw_drop = max(0.0, loc_skin_L - float(np.percentile(patch, 35)))
+                    weber_norm_drop = raw_drop * float(np.clip(185.0 / max(75.0, loc_skin_L), 0.72, 2.25))
                     b_darks.append(weber_norm_drop)
             brow_dark = float(np.mean(b_darks)) if b_darks else 25.0
 

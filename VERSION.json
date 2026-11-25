@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.0.6",
-  "canonical_label": "릴프로필 v1.0.6",
+  "canonical_version": "1.0.7",
+  "canonical_label": "릴프로필 v1.0.7",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-25T18:56:42+09:00",
+  "updated_at": "2026-11-25T19:13:28+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -167,26 +167,37 @@
         "model_generation_engine/upscaler.py",
         "scripts/run_fresh_origin_workflow.py"
       ]
+    },
+    {
+      "version": "1.0.7",
+      "date": "2026-11-25",
+      "timestamp": "2026-11-25T19:13:28+09:00",
+      "summary": "v1.0.7: Tone-Locked True 4K 무할로 대수적 저주파 보정(up_L + delta_lf, ±16 클램프 할로 제거) 및 점-폴리라인 수직 윤곽거리·캐치라이트 홍채 계측 정밀화",
+      "changed_files": [
+        "model_generation_engine/face_exaggeration_guard.py",
+        "model_generation_engine/ocular_anatomy.py",
+        "model_generation_engine/upscaler.py"
+      ]
     }
   ],
-  "code_tree_sha256": "4c78861092885f8e9e3fd7f3f54e9a8dfe8832c49f0f67387028f8e896025c5d",
+  "code_tree_sha256": "2081ee216e242e4a82e6f10ecd9bbddabb8468bffb1af582094a3932a6bf910d",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "949315d3ba75ca8895aa3893cf7ae94be5172f3ab76edcaf1986c2a6466dbcbb",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "85fe01311345fdfa7b335d948107454c77e6cda36e63ac4bf7856c6b4185c0a0",
+    "model_generation_engine/__init__.py": "a0ddce583fba3dd361662a8b9de4708658cddf519ede73d4e211c1a9ee9cc389",
     "model_generation_engine/apple_vision.py": "4cc46afebca32d5d6fafcda195d14d60959871f8c71a30a376a35a0a83b11798",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
     "model_generation_engine/config.py": "5819d72c870e22c052b7b5beca8f55a99ba3fde33f96d32c49d6f4970c13cd7a",
     "model_generation_engine/detector.py": "1e177f13576663eacb866ecf9947cd9986bd8a473c4de92ce0d6b568422ab2b8",
-    "model_generation_engine/face_exaggeration_guard.py": "917110ad10184908de4389838827cfd66b73eebbe9f9e4aab937aeb83bc4fe52",
+    "model_generation_engine/face_exaggeration_guard.py": "59557b3e61616e8d8e40b73dc65ea82b121c38c57d6509bd43cdc8cb665c332b",
     "model_generation_engine/face_reattach.py": "2f8bf1df83bdbdecffad7da9fc823afd2ecb10eca65798fc1964b0b6019c6dcb",
     "model_generation_engine/fresh_origin_workflow.py": "21b2feda897add6746096c54d57b4ec0df94f3ff8febd5f8d6f76d8fb8d4bdd7",
     "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
     "model_generation_engine/identity_turnaround.py": "d815d36d39c7fa3f089db970cde5c765652e1d6558fcd20fec441f059eef51e1",
     "model_generation_engine/multi_asset_composer.py": "e768cb951b4d4636e1030e3b52a89d91cfede98f985f7b8fe5c1c588cdb8abf7",
-    "model_generation_engine/ocular_anatomy.py": "e1a168b0aed8209cc9537ed390824b9fa627826dcbe985b9bc445ae07bbdbdf8",
+    "model_generation_engine/ocular_anatomy.py": "d326d73664418e10ee2cb5da26213a39bce08b33eb02492bd3ab3e1d25b08ac6",
     "model_generation_engine/organ_depth_anatomy.py": "96145ee59a48bebb6045fa76c28c7f82cd2b6ebf4102314b263d5efcd5ae8a2b",
     "model_generation_engine/origin_guard.py": "679a57b2d8a92538f030366aeb0693a9a5d484cf2646dda89225c5be2f0a5797",
     "model_generation_engine/pipeline.py": "dc4f3e0bce48483d3a48b5ca3bb2a1030f227bb3e3c77154a1e971ab2f1889dd",
@@ -200,7 +211,7 @@
     "model_generation_engine/studio_app/__init__.py": "6d9b656e770e01d447e5603922747bd253af4d08345b1a6de1255f5fe1477851",
     "model_generation_engine/studio_app/runtime.py": "051e79d038f24a1e213c17b21ed89efbbfa26c1dd2de5a998d84fed220b666a1",
     "model_generation_engine/studio_app/server.py": "dd3bbbb21bc215bcfcf650b3b8c8e05a0014a36fefbc6fbe4ab4794368a5a94e",
-    "model_generation_engine/upscaler.py": "a0e09ca20be25f5aabaab310e88ea62150a12ad3a08702ac1377d9b0cccea471",
+    "model_generation_engine/upscaler.py": "8c727bd854e8421bde908872d8937c022f41d852d5a18410c156e3af4169f4e7",
     "model_generation_engine/version_guard.py": "6e16b8b9167ffea9257cec6e093dff44c489884977976b5583e5b0acab878bd4",
     "model_generation_engine/workflow.py": "22f1fffd424d41517a3384fbf8636f4d587b34a3aef52ecb578e0ee3fa392007",
     "scripts/google_flow_ultra_cli.py": "211cb6676a54fe4cfba9a0f0facd94b0871622eb7c2195b5cd6bbba0406576b4",

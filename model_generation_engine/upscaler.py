@@ -360,10 +360,12 @@ class SuperResolutionEngine:
         except Exception:
             pass
 
-        # Soft headroom clamp near L=0 and L=255 to prevent gamut/catchlight clipping
-        hf_boosted = np.clip(1.06 * up_L_hf, -16.0, 16.0)
-        headroom = np.clip(np.minimum(opt_L_lf, 255.0 - opt_L_lf) / 14.0, 0.25, 1.0)
-        out_L = np.clip(opt_L_lf + bokeh_gate * (hf_boosted * headroom) + (1.0 - bokeh_gate) * opt_L_hf, 0.0, 255.0)
+        # Halo-free algebraic low-frequency tone lock:
+        # Both opt_L_lf and up_L_lf are GaussianBlur(..., 16.0) of the exact same scene, so delta_lf = opt_L_lf - up_L_lf
+        # is purely the small low-frequency GAN luminance bias (±0.3..3.0 L) with ZERO step-edge halo and ZERO contrast loss!
+        delta_lf = np.clip(opt_L_lf - up_L_lf, -8.0, 8.0)
+        up_L_tonelocked = np.clip(up_L + delta_lf, 0.0, 255.0)
+        out_L = np.clip(bokeh_gate * up_L_tonelocked + (1.0 - bokeh_gate) * opt_L, 0.0, 255.0)
         out_lab = np.empty_like(opt_lab)
         out_lab[:, :, 0] = out_L
         out_lab[:, :, 1] = opt_lab[:, :, 1]

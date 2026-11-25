@@ -18,6 +18,8 @@
   - **Step 4~6**: 초소형(`18.9KB`)·증명사진 보정 원본 자동 감지(`skin_norm_laplacian < 24.0`) 기반 **디에어브러싱 실사 모공 복원(`생-031`/`생-032`)** + 무그레인 순수 광학 `Lanczos-4` 4K 마스터링 + 400% 눈매·윤곽 육안 검수 디폴트화
   - `version_guard.py` + `scripts/version_ctl.py` + `hooks/pre-commit-version-check.py` 자동 버전체크 체계 탑재
 <!-- POST_V1_UPGRADES -->
+- **`v1.0.7`** (`2026-11-25`): v1.0.7: Tone-Locked True 4K 무할로 대수적 저주파 보정(up_L + delta_lf, ±16 클램프 할로 제거) 및 점-폴리라인 수직 윤곽거리·캐치라이트 홍채 계측 정밀화
+
 - **`v1.0.6`** (`2026-11-25`): v1.0.6: Tone-Locked True 4K 초해상(조도·색온도 0% 변형 + Upscayl 4x 진짜 4K) 기본화 + 다중 재생성(Img2Img/재투입) Default-Deny 화이트리스트·16x16 시각지문 원천 봉쇄 + 수정요청 시 Stage 1 강제 재시작 + 21벡터 레드팀 0% 침투 검증
 
 - **`v1.0.5`** (`2026-11-24`): v1.0.5: Python 3.14 argparse % 포맷 이스케이프 수정 (run_fresh_origin_workflow.py, run_headless_mesh_workflow.py)

@@ -164,11 +164,12 @@ class OcularAnatomyAnalyzer:
                 if float(np.percentile(col_vals, 35)) < iris_thr:
                     dark_cols.append(col)
         if dark_cols:
-            # Measure longest contiguous dark band (tolerating 2px catchlight gap)
+            # Measure longest contiguous dark band (tolerating studio catchlight reflection inside pupil up to ~11% eye width)
+            max_catchlight_gap = max(4, int(round(0.11 * n_ew)))
             best_run = 1
             cur_run = 1
             for k in range(1, len(dark_cols)):
-                if dark_cols[k] - dark_cols[k - 1] <= 3:
+                if dark_cols[k] - dark_cols[k - 1] <= max_catchlight_gap:
                     cur_run += dark_cols[k] - dark_cols[k - 1]
                 else:
                     cur_run = 1
