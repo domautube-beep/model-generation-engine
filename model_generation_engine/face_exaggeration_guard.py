@@ -423,12 +423,18 @@ class FaceExaggerationGuard:
         if lips0 is not None and lipsc is not None and len(lips0) >= 8 and len(lipsc) >= 8:
             lh0_raw = max(4.0, float(lips0[:, 1].max() - lips0[:, 1].min()))
             lhc_raw = max(4.0, float(lipsc[:, 1].max() - lipsc[:, 1].min()))
-            # Subtract inter-labial mouth opening gap so lip_h_diff_pct measures anatomical vermilion flesh thickness
-            lh0 = max(4.0, lh0_raw - 0.85 * float(max(0.0, gap0)))
-            lhc = max(4.0, lhc_raw - 0.85 * float(max(0.0, gapc)))
+            # Account for natural mouth-parting range [closed .. Gen-0 gap] when Apple Vision innerLips collapses on wide shots
+            lh0_closed = max(4.0, lh0_raw - 0.85 * float(max(0.0, gap0)))
+            ref_hi = max(lh0_raw, lh0_closed + 0.85 * float(max(0.0, gapc)))
+            ref_lo = min(lh0_raw, lh0_closed + 0.85 * float(max(0.0, gapc)))
+            if lhc_raw > ref_hi:
+                lip_h_diff_pct = round(100.0 * (lhc_raw - ref_hi) / ref_hi, 1)
+            elif lhc_raw < ref_lo:
+                lip_h_diff_pct = round(100.0 * (lhc_raw - ref_lo) / ref_lo, 1)
+            else:
+                lip_h_diff_pct = 0.0
             lw0 = max(10.0, float(lips0[:, 0].max() - lips0[:, 0].min()))
             lwc = max(10.0, float(lipsc[:, 0].max() - lipsc[:, 0].min()))
-            lip_h_diff_pct = round(100.0 * (lhc - lh0) / lh0, 1)
             lip_w_diff_pct = round(100.0 * (lwc - lw0) / lw0, 1)
             lm0 = np.zeros((800, 800), dtype=np.uint8)
             lmc = np.zeros((800, 800), dtype=np.uint8)
