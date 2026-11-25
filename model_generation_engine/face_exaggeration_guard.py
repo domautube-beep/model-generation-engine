@@ -304,20 +304,24 @@ class FaceExaggerationGuard:
                 ns_xf = np.hstack([ns_arr, np.ones((len(ns_arr), 1), dtype=np.float32)]) @ M.T
                 nose_turn = float((np.mean(ns_xf[:, 0]) - 400.0) / 180.0)
             # Extract upper cranial + hair dome mask on the aligned 800x800 canvas
+            bg_patch = np.vstack([warped[:40, :60].reshape(-1, 3), warped[:40, -60:].reshape(-1, 3)]).astype(np.float32)
+            bg_med = np.median(bg_patch, axis=0)
+            bg_std = float(np.mean(np.std(bg_patch, axis=0)))
+            bg_diff = np.linalg.norm(warped.astype(np.float32) - bg_med, axis=2)
             dome_mask = np.zeros((size, size), dtype=np.uint8)
             try:
                 pm = self.vision.person_mask(Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)))
                 if pm is not None:
                     pm_np = np.array(pm.resize((size, size), Image.Resampling.BILINEAR))
-                    dome_mask[pm_np > 110] = 255
+                    dome_mask[pm_np > 160] = 255
+                    # Strip soft matte background halo where pixels clearly match uniform studio wall
+                    if bg_std < 20.0:
+                        dome_mask[(bg_diff < 18.0) & (pm_np < 235)] = 0
             except Exception:
                 pass
             if int(np.sum(dome_mask[:360, :] > 0)) < 1500:
                 # Fallback: segment dark hair/head against top-corner studio background
-                bg_patch = np.vstack([warped[:40, :60].reshape(-1, 3), warped[:40, -60:].reshape(-1, 3)]).astype(np.float32)
-                bg_med = np.median(bg_patch, axis=0)
-                diff = np.linalg.norm(warped.astype(np.float32) - bg_med, axis=2)
-                dome_mask[diff > 24.0] = 255
+                dome_mask[bg_diff > 24.0] = 255
             return warped, c_xf, lips_xf, dome_mask, inner_gap_px, nose_turn
 
         w0, c0, lips0, dome0, gap0, turn0 = _align(ref_gen0_bgr)
@@ -351,17 +355,28 @@ class FaceExaggerationGuard:
             segs_b = poly_dst[1:]
             ab = segs_b - segs_a
             ab_len2 = np.maximum(1e-6, np.sum(ab * ab, axis=1))
+            n_segs = len(segs_a)
             dists = []
             for p_pt in pts_src:
                 ap = p_pt[None, :] - segs_a
                 t_proj = np.clip(np.sum(ap * ab, axis=1) / ab_len2, 0.0, 1.0)
                 closest = segs_a + t_proj[:, None] * ab
-                d = float(np.min(np.linalg.norm(p_pt[None, :] - closest, axis=1)))
+                seg_dists = np.linalg.norm(p_pt[None, :] - closest, axis=1)
+                best_k = int(np.argmin(seg_dists))
+                # If an upper-temple point (y < 410) clamps onto an open contour top endpoint (0 or n_segs-1),
+                # measure horizontal temple width error |dx| rather than vertical sideburn start-height truncation.
+                if float(p_pt[1]) < 410.0 and (
+                    (best_k == 0 and float(t_proj[0]) <= 1e-4)
+                    or (best_k == n_segs - 1 and float(t_proj[n_segs - 1]) >= 1.0 - 1e-4)
+                ):
+                    d = float(abs(float(p_pt[0]) - float(closest[best_k, 0])))
+                else:
+                    d = float(seg_dists[best_k])
                 dists.append(d)
             return np.array(dists, dtype=np.float32)
 
-        # Measure true perpendicular point-to-curve Hausdorff deviation across jaw contour (excluding hair-occluded top temple endpoints 0 & n-1)
-        jaw_slice = slice(1, -1) if len(c0) >= 6 else slice(None)
+        # Measure true perpendicular point-to-curve Hausdorff deviation across jaw contour (excluding hair-occluded top temple endpoints)
+        jaw_slice = slice(2, -2) if len(c0) >= 12 else (slice(1, -1) if len(c0) >= 6 else slice(None))
         d_c_to_0 = _point_to_polyline_dists(cc_eval[jaw_slice], c0)
         d_0_to_c = _point_to_polyline_dists(c0[jaw_slice], cc_eval)
         sym_errs = np.concatenate([d_c_to_0, d_0_to_c])
@@ -505,7 +520,7 @@ class FaceExaggerationGuard:
         """
         import math
 
-        def _extract_profile(bgr: np.ndarray) -> Optional[Dict[str, float]]:
+        def _extract_profile(bgr: np.ndarray, target_iod: Optional[float] = None) -> Optional[Dict[str, float]]:
             pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
             m = self.vision.landmarks(pil)
             if not m or not m.get("contour") or not m.get("leftEye") or not m.get("rightEye"):
@@ -638,18 +653,23 @@ class FaceExaggerationGuard:
 
             upper_arch = 0.5 * (_upper_lid_arch(le) + _upper_lid_arch(re))
 
-            # Brow darkness & thickness (illumination-normalized per-side Weber contrast so low-key chiaroscuro shadows never misflag real brows)
+            # Brow darkness & thickness (illumination-normalized + PSF-scale-matched per-side Weber contrast)
             brow_h = 0.5 * (float(leb[:, 1].max() - leb[:, 1].min()) + float(reb[:, 1].max() - reb[:, 1].min())) / iod
+            if target_iod is not None and iod > target_iod * 1.15:
+                brow_sigma = float(np.clip(0.52 * (iod / max(8.0, target_iod)), 0.8, 5.0))
+                L_brow = cv2.GaussianBlur(L_ch, (0, 0), sigmaX=brow_sigma, sigmaY=brow_sigma)
+            else:
+                L_brow = L_ch
             b_darks = []
             for bpts, e_ref in ((leb, lp), (reb, rp)):
-                sk_patch = L_ch[
+                sk_patch = L_brow[
                     max(0, int(e_ref[1] + 0.15 * iod)) : min(h, int(e_ref[1] + 0.45 * iod)),
                     max(0, int(e_ref[0] - 0.15 * iod)) : min(w, int(e_ref[0] + 0.15 * iod)),
                 ]
                 loc_skin_L = float(np.median(sk_patch)) if sk_patch.size >= 9 else 175.0
                 bx1, bx2 = max(0, int(bpts[:, 0].min())), min(w, int(bpts[:, 0].max()))
                 by1, by2 = max(0, int(bpts[:, 1].min() - 0.04 * iod)), min(h, int(bpts[:, 1].max() + 0.04 * iod))
-                patch = L_ch[by1:by2, bx1:bx2]
+                patch = L_brow[by1:by2, bx1:bx2]
                 if patch.size >= 12:
                     raw_drop = max(0.0, loc_skin_L - float(np.percentile(patch, 35)))
                     weber_norm_drop = raw_drop * float(np.clip(185.0 / max(75.0, loc_skin_L), 0.72, 2.25))
@@ -664,6 +684,7 @@ class FaceExaggerationGuard:
                 nose_turn_p = float(np.mean(ns_intr_x) / iod)
 
             return {
+                "iodPx": round(iod, 2),
                 "noseTurnIod": round(nose_turn_p, 4),
                 "leftJawBulgeIod": round(l_bulge, 4),
                 "rightJawBulgeIod": round(r_bulge, 4),
@@ -678,8 +699,13 @@ class FaceExaggerationGuard:
                 "browDarknessL": round(brow_dark, 2),
             }
 
-        p0 = _extract_profile(ref_gen0_bgr)
-        pc = _extract_profile(cand_bgr)
+        p0_raw = _extract_profile(ref_gen0_bgr)
+        pc_raw = _extract_profile(cand_bgr)
+        if not p0_raw or not pc_raw:
+            return {"valid": False, "passed": False, "issues": ["턱→귀·눈매 프로파일 랜드마크 검출 실패"]}
+        common_iod = min(float(p0_raw["iodPx"]), float(pc_raw["iodPx"]))
+        p0 = _extract_profile(ref_gen0_bgr, target_iod=common_iod) if float(p0_raw["iodPx"]) > common_iod * 1.15 else p0_raw
+        pc = _extract_profile(cand_bgr, target_iod=common_iod) if float(pc_raw["iodPx"]) > common_iod * 1.15 else pc_raw
         if not p0 or not pc:
             return {"valid": False, "passed": False, "issues": ["턱→귀·눈매 프로파일 랜드마크 검출 실패"]}
 

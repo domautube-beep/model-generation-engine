@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "model-generation-engine"
-version = "1.0.7"
+version = "1.0.8"
 description = "릴프로필 (프로필 / 모델생성) 정본 v1.0.0: Zero-Hardcoding 1-Pass Full-Person 3D Synthesis, Mandatory 1-Hop 8-Dir Bank, Context-Adaptive 5-Lens x 5-Lighting Matrix, De-Airbrushed Raw Pore Restoration, and 4K Optical Mastering"
 readme = "README.md"
 requires-python = ">=3.10"

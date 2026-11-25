@@ -108,6 +108,7 @@ class OcularAnatomyAnalyzer:
         gray_img: np.ndarray,
         eye_pts: np.ndarray,
         is_left: bool,
+        target_psf_ew: Optional[float] = None,
     ) -> Tuple[float, float, float, float]:
         """Measure (iris_to_eye_width, sclera_visible_ratio, crease_gap_ratio, crease_prominence) in pixel space."""
         h_img, w_img = gray_img.shape[:2]
@@ -133,10 +134,20 @@ class OcularAnatomyAnalyzer:
         rh = max(16, int(round(patch.shape[0] * scale)))
         norm_p = cv2.resize(patch, (rw, rh), interpolation=cv2.INTER_CUBIC).astype(np.float32)
 
+        # Sensor-aperture PSF matching for iris/sclera area comparison when Gen-0 is low-res (e.g. 18px eye vs 140px 4K eye)
+        if target_psf_ew is not None and float(ew) > float(target_psf_ew) * 1.15:
+            psf_scale = max(4.0, float(target_psf_ew)) / float(ew)
+            pw_lo = max(8, int(round(patch.shape[1] * psf_scale)))
+            ph_lo = max(6, int(round(patch.shape[0] * psf_scale)))
+            patch_lo = cv2.resize(patch, (pw_lo, ph_lo), interpolation=cv2.INTER_AREA)
+            norm_psf = cv2.resize(patch_lo, (rw, rh), interpolation=cv2.INTER_CUBIC).astype(np.float32)
+        else:
+            norm_psf = norm_p
+
         pts_local = (eye_pts - np.array([cx1, cy1], dtype=np.float32)) * scale
         mask = np.zeros((rh, rw), dtype=np.uint8)
         cv2.fillPoly(mask, [np.round(pts_local).astype(np.int32)], 255)
-        eye_px = norm_p[mask > 0]
+        eye_px = norm_psf[mask > 0]
         if eye_px.size < 20:
             return 0.42, 0.48, 0.25, 0.20
 
@@ -154,18 +165,21 @@ class OcularAnatomyAnalyzer:
         n_ew = max(1, ex2 - ex1)
         n_eh = max(1, ey2 - ey1)
 
-        # Horizontal iris width: contiguous central dark run across columns inside the eye aperture
+        # Horizontal iris width: contiguous central dark run inside anatomical iris zone [12%..88%],
+        # excluding dark inner/outer eyelash commissures so 4K corner lashes never bridge into iris width.
+        c_start = ex1 + int(round(0.12 * n_ew))
+        c_end = max(c_start + 1, ex2 - int(round(0.12 * n_ew)))
         dark_cols = []
-        for col in range(ex1, ex2):
+        for col in range(c_start, c_end):
             col_m = mask[ey1:ey2, col] > 0
             if np.any(col_m):
-                col_vals = norm_p[ey1:ey2, col][col_m]
+                col_vals = norm_psf[ey1:ey2, col][col_m]
                 # Use 35th percentile so bright catchlights inside the pupil don't break iris detection
                 if float(np.percentile(col_vals, 35)) < iris_thr:
                     dark_cols.append(col)
         if dark_cols:
-            # Measure longest contiguous dark band (tolerating studio catchlight reflection inside pupil up to ~11% eye width)
-            max_catchlight_gap = max(4, int(round(0.11 * n_ew)))
+            # Tolerate small catchlight reflection inside pupil (~4.5% eye width = 5px) without bridging across sclera
+            max_catchlight_gap = max(3, int(round(0.045 * n_ew)))
             best_run = 1
             cur_run = 1
             for k in range(1, len(dark_cols)):
@@ -211,7 +225,12 @@ class OcularAnatomyAnalyzer:
 
         return iris_w_ratio, sclera_ratio, crease_gap, prominence
 
-    def analyze(self, bgr_img: np.ndarray, marks: Optional[Dict[str, object]] = None) -> Optional[OcularAnatomyProfile]:
+    def analyze(
+        self,
+        bgr_img: np.ndarray,
+        marks: Optional[Dict[str, object]] = None,
+        target_psf_ew: Optional[float] = None,
+    ) -> Optional[OcularAnatomyProfile]:
         """Extract the full 7-metric OcularAnatomyProfile from any face/portrait BGR image."""
         if marks is None:
             pil = Image.fromarray(cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB))
@@ -265,8 +284,8 @@ class OcularAnatomyAnalyzer:
         gr = _geom(re_r, reb_r, False)
 
         gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
-        l_iris, l_scl, l_cg, l_cp = self._measure_single_eye_pixels(gray, le, True)
-        r_iris, r_scl, r_cg, r_cp = self._measure_single_eye_pixels(gray, re, False)
+        l_iris, l_scl, l_cg, l_cp = self._measure_single_eye_pixels(gray, le, True, target_psf_ew=target_psf_ew)
+        r_iris, r_scl, r_cg, r_cp = self._measure_single_eye_pixels(gray, re, False, target_psf_ew=target_psf_ew)
 
         return OcularAnatomyProfile(
             avg_ear=round(0.5 * (gl["ear"] + gr["ear"]), 4),
@@ -327,8 +346,21 @@ class OcularAnatomyAnalyzer:
         cand_marks: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
         """Compare ocular anatomy & pupil-aligned eyelid/iris edge NCC between Gen-0 and candidate."""
-        r_prof = self.analyze(ref_bgr, marks=ref_marks)
-        c_prof = self.analyze(cand_bgr, marks=cand_marks)
+        if ref_marks is None:
+            ref_marks = self.vision.landmarks(Image.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)))
+        if cand_marks is None:
+            cand_marks = self.vision.landmarks(Image.fromarray(cv2.cvtColor(cand_bgr, cv2.COLOR_BGR2RGB)))
+
+        common_ew: Optional[float] = None
+        if ref_marks and cand_marks and ref_marks.get("leftEye") and cand_marks.get("leftEye"):
+            r_le = np.array(ref_marks["leftEye"], dtype=np.float32)
+            c_le = np.array(cand_marks["leftEye"], dtype=np.float32)
+            r_ew = max(4.0, float(r_le[:, 0].max() - r_le[:, 0].min()))
+            c_ew = max(4.0, float(c_le[:, 0].max() - c_le[:, 0].min()))
+            common_ew = min(r_ew, c_ew)
+
+        r_prof = self.analyze(ref_bgr, marks=ref_marks, target_psf_ew=common_ew)
+        c_prof = self.analyze(cand_bgr, marks=cand_marks, target_psf_ew=common_ew)
         if r_prof is None or c_prof is None:
             return {"valid": False, "passed": False, "ocularDriftScore": 99.0, "eyelidEdgeNcc": 0.0, "issues": ["눈매 랜드마크 검출 실패"]}
 
