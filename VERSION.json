@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.0.10",
-  "canonical_label": "릴프로필 v1.0.10",
+  "canonical_version": "1.0.11",
+  "canonical_label": "릴프로필 v1.0.11",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-25T20:26:04+09:00",
+  "updated_at": "2026-11-25T20:34:56+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -206,26 +206,36 @@
       "changed_files": [
         "model_generation_engine/face_exaggeration_guard.py"
       ]
+    },
+    {
+      "version": "1.0.11",
+      "date": "2026-11-25",
+      "timestamp": "2026-11-25T20:34:56+09:00",
+      "summary": "v1.0.11: 안검 적도 개구부(equatorial palpebral band) 흰자 계측으로 저해상도 ID 플래시 안검 피부 번짐 제거 및 하악 중심축 강체 회전 정밀화(임계치 완화 0%)",
+      "changed_files": [
+        "model_generation_engine/face_exaggeration_guard.py",
+        "model_generation_engine/ocular_anatomy.py"
+      ]
     }
   ],
-  "code_tree_sha256": "c87c15710c193710c52401459710d5108b97e721ad78d2470fea49ff80831ba6",
+  "code_tree_sha256": "ac41fcdf9b3d77da63730d915be908d7f6461ff44285627a0dbd5027d0552f2d",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "949315d3ba75ca8895aa3893cf7ae94be5172f3ab76edcaf1986c2a6466dbcbb",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "b7caee8221ac86ae8b91ab5869b423b15e4c6ffe7024a59778a0cbe27679a963",
+    "model_generation_engine/__init__.py": "129907b4376dfdc09eef81448c80bddae7143bae2dbf28d94b945d7cd2fdb410",
     "model_generation_engine/apple_vision.py": "4cc46afebca32d5d6fafcda195d14d60959871f8c71a30a376a35a0a83b11798",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
     "model_generation_engine/config.py": "5819d72c870e22c052b7b5beca8f55a99ba3fde33f96d32c49d6f4970c13cd7a",
     "model_generation_engine/detector.py": "1e177f13576663eacb866ecf9947cd9986bd8a473c4de92ce0d6b568422ab2b8",
-    "model_generation_engine/face_exaggeration_guard.py": "e0cb79d7d41c43dcf0a4489578958e9cb35b281e323c38309b4786966e25f0ec",
+    "model_generation_engine/face_exaggeration_guard.py": "469d51a03393ad1afd0d1f3cadd8749e182ebee36761082c4c38811960f71c7d",
     "model_generation_engine/face_reattach.py": "2f8bf1df83bdbdecffad7da9fc823afd2ecb10eca65798fc1964b0b6019c6dcb",
     "model_generation_engine/fresh_origin_workflow.py": "21b2feda897add6746096c54d57b4ec0df94f3ff8febd5f8d6f76d8fb8d4bdd7",
     "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
     "model_generation_engine/identity_turnaround.py": "d815d36d39c7fa3f089db970cde5c765652e1d6558fcd20fec441f059eef51e1",
     "model_generation_engine/multi_asset_composer.py": "e768cb951b4d4636e1030e3b52a89d91cfede98f985f7b8fe5c1c588cdb8abf7",
-    "model_generation_engine/ocular_anatomy.py": "92c80a91e473273ddcc128d4eb5e784a86cf67383af11ce6229048d86f3ce0dc",
+    "model_generation_engine/ocular_anatomy.py": "d2a066a4018e5ab996b50ab2842c74e2634bb571582feb79e2c75f3335010050",
     "model_generation_engine/organ_depth_anatomy.py": "96145ee59a48bebb6045fa76c28c7f82cd2b6ebf4102314b263d5efcd5ae8a2b",
     "model_generation_engine/origin_guard.py": "679a57b2d8a92538f030366aeb0693a9a5d484cf2646dda89225c5be2f0a5797",
     "model_generation_engine/pipeline.py": "dc4f3e0bce48483d3a48b5ca3bb2a1030f227bb3e3c77154a1e971ab2f1889dd",

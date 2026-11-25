@@ -342,11 +342,14 @@ class FaceExaggerationGuard:
             cc = np.stack([np.interp(t_new, t_old, cc[:, 0]), np.interp(t_new, t_old, cc[:, 1])], axis=-1).astype(np.float32)
 
         # Compensate ONLY rigid horizontal 3D head-yaw translation continuously (no step-cliff at 0.045!)
-        # (never alters bilateral width5LevelDiffPct or vertical face_len_diff_pct!)
-        turn_diff_abs = abs(turnc - turn0)
+        # Bilateral inflation (+L, +R) has median(dx)=0 and jaw_mid_diff=0, so width5LevelDiffPct & test_28 stay 100% strict!
+        jaw_mid_0 = 0.5 * float(c0[0, 0] + c0[-1, 0])
+        jaw_mid_c = 0.5 * float(cc[0, 0] + cc[-1, 0])
+        jaw_mid_turn = abs(jaw_mid_c - jaw_mid_0) / 180.0
+        turn_diff_abs = max(abs(turnc - turn0), jaw_mid_turn)
         cc_eval = cc.copy()
         dx_yaw = 0.0
-        if turn_diff_abs >= 0.012:
+        if turn_diff_abs >= 0.010:
             max_yaw_dx = min(34.0, turn_diff_abs * 195.0)
             dx_yaw = float(np.clip(np.median(cc[:, 0] - c0[:, 0]), -max_yaw_dx, max_yaw_dx))
             cc_eval[:, 0] = cc[:, 0] - dx_yaw

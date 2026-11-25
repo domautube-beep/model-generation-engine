@@ -151,13 +151,6 @@ class OcularAnatomyAnalyzer:
         if eye_px.size < 20:
             return 0.42, 0.48, 0.25, 0.20
 
-        # Iris vs Sclera inside the eye polygon:
-        # Dark iris columns have low vertical median luminance; sclera columns have high luminance
-        p15, p85 = float(np.percentile(eye_px, 15)), float(np.percentile(eye_px, 85))
-        dyn = max(12.0, p85 - p15)
-        iris_thr = p15 + 0.42 * dyn
-        sclera_thr = p15 + 0.56 * dyn
-
         ex1 = max(0, int(round(float(pts_local[:, 0].min()))))
         ex2 = min(rw, int(round(float(pts_local[:, 0].max()))))
         ey1 = max(0, int(round(float(pts_local[:, 1].min()))))
@@ -165,15 +158,33 @@ class OcularAnatomyAnalyzer:
         n_ew = max(1, ex2 - ex1)
         n_eh = max(1, ey2 - ey1)
 
+        # Sample interior equatorial palpebral band [ey1+20%..ey2-14%] away from upper lash line & bleached ID eyelid skin bleed
+        ey_eq1 = min(rh - 1, ey1 + max(2, int(round(0.20 * n_eh))))
+        ey_eq2 = max(ey_eq1 + 1, ey2 - max(1, int(round(0.14 * n_eh))))
+        eq_mask = mask[ey_eq1:ey_eq2, ex1:ex2] > 0
+        eq_px = norm_psf[ey_eq1:ey_eq2, ex1:ex2][eq_mask]
+        ref_eye_px = eq_px if eq_px.size >= 16 else eye_px
+
+        # Iris vs Sclera inside the equatorial eye aperture:
+        # Dark iris columns have low vertical median luminance; sclera columns have high luminance
+        p15, p85 = float(np.percentile(ref_eye_px, 15)), float(np.percentile(ref_eye_px, 85))
+        dyn = max(12.0, p85 - p15)
+        iris_thr = p15 + 0.42 * dyn
+        sclera_thr = p15 + 0.56 * dyn
+
         # Horizontal iris width: contiguous central dark run inside anatomical iris zone [12%..88%],
         # excluding dark inner/outer eyelash commissures so 4K corner lashes never bridge into iris width.
         c_start = ex1 + int(round(0.12 * n_ew))
         c_end = max(c_start + 1, ex2 - int(round(0.12 * n_ew)))
         dark_cols = []
         for col in range(c_start, c_end):
-            col_m = mask[ey1:ey2, col] > 0
-            if np.any(col_m):
-                col_vals = norm_psf[ey1:ey2, col][col_m]
+            col_m = mask[ey_eq1:ey_eq2, col] > 0
+            if not np.any(col_m):
+                col_m = mask[ey1:ey2, col] > 0
+                col_vals = norm_psf[ey1:ey2, col][col_m] if np.any(col_m) else np.array([], dtype=np.float32)
+            else:
+                col_vals = norm_psf[ey_eq1:ey_eq2, col][col_m]
+            if col_vals.size > 0:
                 # Use 35th percentile so bright catchlights inside the pupil don't break iris detection
                 if float(np.percentile(col_vals, 35)) < iris_thr:
                     dark_cols.append(col)
@@ -192,7 +203,7 @@ class OcularAnatomyAnalyzer:
         else:
             iris_w_ratio = 0.42
 
-        sclera_ratio = float(np.clip(np.mean(eye_px >= sclera_thr), 0.12, 0.80))
+        sclera_ratio = float(np.clip(np.mean(ref_eye_px >= sclera_thr), 0.12, 0.80))
 
         # Supratarsal eyelid crease detection ABOVE the upper lash line:
         # Equalize sharpness via GaussianBlur(5x5, 1.1) before Sobel-Y so Upscayl 4x crispness never triggers false crease prominence!
