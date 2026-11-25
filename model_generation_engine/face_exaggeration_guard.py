@@ -341,12 +341,13 @@ class FaceExaggerationGuard:
             t_new = np.linspace(0.0, 1.0, len(c0))
             cc = np.stack([np.interp(t_new, t_old, cc[:, 0]), np.interp(t_new, t_old, cc[:, 1])], axis=-1).astype(np.float32)
 
-        # Compensate ONLY rigid horizontal 3D head-yaw translation between discrete 22.5-deg 8-dir bank steps
+        # Compensate ONLY rigid horizontal 3D head-yaw translation continuously (no step-cliff at 0.045!)
         # (never alters bilateral width5LevelDiffPct or vertical face_len_diff_pct!)
         turn_diff_abs = abs(turnc - turn0)
         cc_eval = cc.copy()
-        if turn_diff_abs >= 0.045:
-            max_yaw_dx = min(34.0, turn_diff_abs * 185.0)
+        dx_yaw = 0.0
+        if turn_diff_abs >= 0.012:
+            max_yaw_dx = min(34.0, turn_diff_abs * 195.0)
             dx_yaw = float(np.clip(np.median(cc[:, 0] - c0[:, 0]), -max_yaw_dx, max_yaw_dx))
             cc_eval[:, 0] = cc[:, 0] - dx_yaw
 
@@ -425,8 +426,10 @@ class FaceExaggerationGuard:
             lip_w_diff_pct = round(100.0 * (lwc - lw0) / lw0, 1)
             lm0 = np.zeros((800, 800), dtype=np.uint8)
             lmc = np.zeros((800, 800), dtype=np.uint8)
+            # Align lip centroids so lip_iou measures pure Cupid's-bow/lip-outline shape fidelity rather than rigid 3D yaw/pitch translation
+            lipsc_aligned = lipsc - np.mean(lipsc, axis=0, keepdims=True) + np.mean(lips0, axis=0, keepdims=True)
             cv2.fillPoly(lm0, [np.round(lips0).astype(np.int32)], 255)
-            cv2.fillPoly(lmc, [np.round(lipsc).astype(np.int32)], 255)
+            cv2.fillPoly(lmc, [np.round(lipsc_aligned).astype(np.int32)], 255)
             lip_iou = round(float(np.sum((lm0 > 0) & (lmc > 0))) / max(1.0, float(np.sum((lm0 > 0) | (lmc > 0)))), 4)
 
         # Face Length (pupil mid y=360 to chin tip)

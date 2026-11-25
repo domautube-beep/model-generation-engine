@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.0.8",
-  "canonical_label": "릴프로필 v1.0.8",
+  "canonical_version": "1.0.9",
+  "canonical_label": "릴프로필 v1.0.9",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-25T19:34:48+09:00",
+  "updated_at": "2026-11-25T20:09:53+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -188,20 +188,29 @@
         "model_generation_engine/face_exaggeration_guard.py",
         "model_generation_engine/ocular_anatomy.py"
       ]
+    },
+    {
+      "version": "1.0.9",
+      "date": "2026-11-25",
+      "timestamp": "2026-11-25T20:09:53+09:00",
+      "summary": "v1.0.9: 2.8도 미세 두부 회전 시 0.045 단절 계단 오차 제거 및 순수 입술 형상 중심정렬 IoU 정밀화(임계치 완화 0%)",
+      "changed_files": [
+        "model_generation_engine/face_exaggeration_guard.py"
+      ]
     }
   ],
-  "code_tree_sha256": "43120bf46012083b1fe13b67faa557d3c39eb49c23949dfc196a51fdc97c21f5",
+  "code_tree_sha256": "2a1a0baf530c8be0c2e0145628f5d44a6324e842db2ee58160fd549293b03820",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "949315d3ba75ca8895aa3893cf7ae94be5172f3ab76edcaf1986c2a6466dbcbb",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "e523e1a992dd0678f337dd93d60f3504701c4b9ca3a91c3d7030e1ece9e834db",
+    "model_generation_engine/__init__.py": "d5a7b340afbb53dad83dd356e4bd1823130a7cd0965be1b169bd200abc4b1c14",
     "model_generation_engine/apple_vision.py": "4cc46afebca32d5d6fafcda195d14d60959871f8c71a30a376a35a0a83b11798",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
     "model_generation_engine/config.py": "5819d72c870e22c052b7b5beca8f55a99ba3fde33f96d32c49d6f4970c13cd7a",
     "model_generation_engine/detector.py": "1e177f13576663eacb866ecf9947cd9986bd8a473c4de92ce0d6b568422ab2b8",
-    "model_generation_engine/face_exaggeration_guard.py": "75fdf402d347a4d91717b44c8957b4837d905dfc50c00b2bfe0d1356b389cc5c",
+    "model_generation_engine/face_exaggeration_guard.py": "40cb8f853d2ed7586ca435a29ee8b43f9039e350edb5f108aedb5a449825c211",
     "model_generation_engine/face_reattach.py": "2f8bf1df83bdbdecffad7da9fc823afd2ecb10eca65798fc1964b0b6019c6dcb",
     "model_generation_engine/fresh_origin_workflow.py": "21b2feda897add6746096c54d57b4ec0df94f3ff8febd5f8d6f76d8fb8d4bdd7",
     "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
