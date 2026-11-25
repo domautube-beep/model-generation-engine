@@ -418,8 +418,11 @@ class FaceExaggerationGuard:
         lip_w_diff_pct = 0.0
         lip_iou = 1.0
         if lips0 is not None and lipsc is not None and len(lips0) >= 8 and len(lipsc) >= 8:
-            lh0 = max(4.0, float(lips0[:, 1].max() - lips0[:, 1].min()))
-            lhc = max(4.0, float(lipsc[:, 1].max() - lipsc[:, 1].min()))
+            lh0_raw = max(4.0, float(lips0[:, 1].max() - lips0[:, 1].min()))
+            lhc_raw = max(4.0, float(lipsc[:, 1].max() - lipsc[:, 1].min()))
+            # Subtract inter-labial mouth opening gap so lip_h_diff_pct measures anatomical vermilion flesh thickness
+            lh0 = max(4.0, lh0_raw - 0.85 * float(max(0.0, gap0)))
+            lhc = max(4.0, lhc_raw - 0.85 * float(max(0.0, gapc)))
             lw0 = max(10.0, float(lips0[:, 0].max() - lips0[:, 0].min()))
             lwc = max(10.0, float(lipsc[:, 0].max() - lipsc[:, 0].min()))
             lip_h_diff_pct = round(100.0 * (lhc - lh0) / lh0, 1)
