@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.1.0",
-  "canonical_label": "릴프로필 v1.1.0",
+  "canonical_version": "1.1.3",
+  "canonical_label": "릴프로필 v1.1.3",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-26T12:29:14+09:00",
+  "updated_at": "2026-11-26T15:27:33+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -246,14 +246,44 @@
         "scripts/google_flow_ultra_cli.py",
         "scripts/run_fresh_origin_workflow.py"
       ]
+    },
+    {
+      "version": "1.1.1",
+      "date": "2026-11-26",
+      "timestamp": "2026-11-26T15:19:13+09:00",
+      "summary": "v1.1.1: Hard-block 1K image-generator escape, --headless Flow bot trigger, prompt-gaming, >50% crowded occupancy zoom cheat, iris black-crush, and sclera/skin mottling",
+      "changed_files": [
+        "hooks/enforce_1origin_1gen_hook.py",
+        "model_generation_engine/fresh_origin_workflow.py",
+        "model_generation_engine/ocular_anatomy.py",
+        "model_generation_engine/upscaler.py",
+        "scripts/google_flow_ultra_cli.py",
+        "scripts/run_fresh_origin_workflow.py"
+      ]
+    },
+    {
+      "version": "1.1.2",
+      "date": "2026-11-26",
+      "timestamp": "2026-11-26T15:25:36+09:00",
+      "summary": "v1.1.2: Hard-block 1K fallback, --headless Flow, prompt-gaming zoom/catchlight/sclera, unauthorized closeup, Gate 11 <=50% occupancy, Gate 12 sclera speckle/iris crush, Gate 13 L/ab mottle",
+      "changed_files": [
+        "hooks/enforce_1origin_1gen_hook.py"
+      ]
+    },
+    {
+      "version": "1.1.3",
+      "date": "2026-11-26",
+      "timestamp": "2026-11-26T15:27:33+09:00",
+      "summary": "v1.1.3: Red-Team verified 100% hard-block on 1K fallback, --headless, prompt-gaming, closeup cheat, Gate 11 <=50% occupancy, Gate 12 sclera speckle/iris crush, Gate 13 skin L/ab mottle",
+      "changed_files": []
     }
   ],
-  "code_tree_sha256": "ed939593f763238b026d28efe8531b32daf99054db23369625b7ea2584248ef5",
+  "code_tree_sha256": "747c72b677944d8f4659b0044cfb19e406a1d91c401021931b9e37db20e00bd2",
   "file_hashes": {
-    "hooks/enforce_1origin_1gen_hook.py": "5aed6543ede63a736d774f4cd1a18d0ff72afee0ebe759c3f24387762ae43c37",
+    "hooks/enforce_1origin_1gen_hook.py": "6d496c0d38f4e69c0268bf0a3e8e998344655d9bdd547af194bb8d4f19fbf24a",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "22161842d60cba0ec8b03986a0608204cec761db2a54392158336cd150a21239",
+    "model_generation_engine/__init__.py": "9928a1642adf8172b803efac2b17ad7975b2ff2c55ce9e8cddd64fcedf7adde4",
     "model_generation_engine/apple_vision.py": "0505b00704e795ed4ffbdad9fc93dc081613b91a34ea5550199981a4fd89ca37",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
@@ -261,11 +291,11 @@
     "model_generation_engine/detector.py": "83b9b95ff7b6f4e963657b951f3054fa679a1e036f372a9a96ea9dae897ad66c",
     "model_generation_engine/face_exaggeration_guard.py": "82113938c2f0dd82e99000fee222f437b27a2b212da9022bf3f943c55a6d98ac",
     "model_generation_engine/face_reattach.py": "2f8bf1df83bdbdecffad7da9fc823afd2ecb10eca65798fc1964b0b6019c6dcb",
-    "model_generation_engine/fresh_origin_workflow.py": "229f82674f0cde52322cb0be003b1b48e85a5ec9fd649d6963d1a5eee5a237a9",
+    "model_generation_engine/fresh_origin_workflow.py": "89436d0437fe37cd6c4352c0e075b765f39cc295a6f25e6db1bb4986d467213a",
     "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
     "model_generation_engine/identity_turnaround.py": "f42998672c1f8eb88b015ba7ab5354ce8be393fef2681422ad2e6f229ae8187f",
     "model_generation_engine/multi_asset_composer.py": "e768cb951b4d4636e1030e3b52a89d91cfede98f985f7b8fe5c1c588cdb8abf7",
-    "model_generation_engine/ocular_anatomy.py": "d2a066a4018e5ab996b50ab2842c74e2634bb571582feb79e2c75f3335010050",
+    "model_generation_engine/ocular_anatomy.py": "24c160a50f28c51ac2e5fa4a159a3ccdc2c859fec121a7f51e17ccf179c0884a",
     "model_generation_engine/organ_depth_anatomy.py": "96145ee59a48bebb6045fa76c28c7f82cd2b6ebf4102314b263d5efcd5ae8a2b",
     "model_generation_engine/origin_guard.py": "4b09c99fc4196071e007d11c2a483c71d517cd33ea3de87ecdb40b5a74f9ccb8",
     "model_generation_engine/pipeline.py": "dc4f3e0bce48483d3a48b5ca3bb2a1030f227bb3e3c77154a1e971ab2f1889dd",
@@ -279,11 +309,11 @@
     "model_generation_engine/studio_app/__init__.py": "6d9b656e770e01d447e5603922747bd253af4d08345b1a6de1255f5fe1477851",
     "model_generation_engine/studio_app/runtime.py": "051e79d038f24a1e213c17b21ed89efbbfa26c1dd2de5a998d84fed220b666a1",
     "model_generation_engine/studio_app/server.py": "dd3bbbb21bc215bcfcf650b3b8c8e05a0014a36fefbc6fbe4ab4794368a5a94e",
-    "model_generation_engine/upscaler.py": "3c5105c31fb0ef2b665471efcbdf748174eb2367f4830f9df4ae49b55aa2bcc8",
+    "model_generation_engine/upscaler.py": "daf27fd5b3abcb71bad79f86aa89813eb9933329db8e14069b21ca68cca20878",
     "model_generation_engine/version_guard.py": "1e19428daefc8716bd8f7a6218f6e0c0754ef64627c93682f7beebeb2073ab77",
     "model_generation_engine/workflow.py": "22f1fffd424d41517a3384fbf8636f4d587b34a3aef52ecb578e0ee3fa392007",
-    "scripts/google_flow_ultra_cli.py": "e01bc1150aad517f4e452e7eb2f3d130ec9591c38f1795aa4f70b480240fd25e",
-    "scripts/run_fresh_origin_workflow.py": "e732355e51055b2c100ecff2bf847a1bda0f97878e5dd635ea418fbf3e071e08",
+    "scripts/google_flow_ultra_cli.py": "560ff296236d57c8e0d5c3ebd7e6be53cac2061817cc7b7e64257f0e9c30686e",
+    "scripts/run_fresh_origin_workflow.py": "3d09b3df7f2cb969b153545105de6d3d11a01a8f67b8fe482b7eab4acf768281",
     "scripts/run_headless_mesh_workflow.py": "dcaac8e6ae1211eae8ce455dce031a27719d5242f29a86af9aa7feefcd5dfae4",
     "scripts/version_ctl.py": "7b50eb48a3be956a3775e25bb2ee1ff3d058d1376d5305697fddd82b37fdf359"
   }

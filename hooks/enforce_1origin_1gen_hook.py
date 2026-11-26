@@ -164,6 +164,32 @@ FORBIDDEN_FACIAL_EXAGGERATION_PATTERNS = [
     (re.compile(r"(?<!no\s)(?<!zero\s)(?<!without\s)(?<!never\s)(?:soft,\s+full,\s+gently\s+rounded|soft\s+rounded\s+chin|full\s+rounded\s+cheeks?)\b", re.IGNORECASE), "턱선·볼 둥글림/부풀림 유도 표현 금지 (원본 턱 각도 1:1 중립 유지)"),
 ]
 
+# 게이트 점수 맞추기용 눈 암부/흰자 과도 대비·반사광 억지 제거·몰래 줌인 프롬프트 조작 차단 (무조건 차단!)
+FORBIDDEN_PROMPT_GAMING_PATTERNS = [
+    (
+        re.compile(r"\b(?:zero|no|without)\s+(?:(?:bright|harsh|pinpoint|artificial)\s+){0,3}(?:catchlights?|glare\s+dots?)\b", re.IGNORECASE),
+        "반사광(catchlight) 억지 제거 금지 — 홍채 내부 결이 죽어 시커먼 먹물 눈동자가 발생합니다",
+    ),
+    (
+        re.compile(r"\b(?:pure[-\s]+porcelain[-\s]+white|porcelain[-\s]+white\s+sclera|uniformly\s+bright\s+pure[-\s]+white\s+sclera)\b", re.IGNORECASE),
+        "흰자 과도 백색 강요 금지 — 홍채·흰자 경계 링잉 및 점박이 얼룩이 발생합니다",
+    ),
+    (
+        re.compile(
+            r"(?:\b(?:head|face)\s+width\s+(?:is\s+)?~?\s*(?:2[1-9]|[3-9]\d)%|"
+            r"\bshoulders?\s+(?:span\s+)?~?\s*(?:6[5-9]|[7-9]\d)%|"
+            r"\boccupying\s+~?\s*(?:5[6-9]|[6-9]\d)%\s+of\s+(?:the\s+)?(?:frame|canvas))",
+            re.IGNORECASE,
+        ),
+        "눈 게이트 통과용 몰래 줌인·화면 꽉 채우기 프롬프트 조작 금지 — 인물 50% 이하 배치 철칙을 지키세요",
+    ),
+]
+
+LIVE_UUID_CONV_RE = re.compile(
+    r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|live-real-uuid-[\w-]+)$"
+)
+EXPLICIT_CLOSEUP_USER_RE = re.compile(r"(?:클로즈업|얼굴\s*확대|바스트\s*샷|얼굴만\s*크게|close[-\s]?up)", re.IGNORECASE)
+
 
 def _sha256(p: Path) -> str:
     h = hashlib.sha256()
@@ -259,6 +285,10 @@ def _get_or_update_turn_entry(payload: dict) -> tuple[str, dict, dict]:
 
 def _is_unit_test_conv(conv_id: str) -> bool:
     return conv_id == "default" or conv_id.startswith("unit-test-")
+
+
+def _is_live_uuid_conv(conv_id: str) -> bool:
+    return bool(LIVE_UUID_CONV_RE.match(conv_id or ""))
 
 
 def _is_safe_origin(path_str: str) -> bool:
@@ -389,8 +419,8 @@ def _read_image_dims_fast(p: Path) -> tuple[int, int] | None:
     return None
 
 
-def _verify_receipt_json(receipt_path: Path) -> tuple[bool, str | None]:
-    """Verify a finalized 4K workflow receipt passed all 10 gates, true 4K resolution, min sharpness >= 17.5, and SHA-256."""
+def _verify_receipt_json(receipt_path: Path, conv_id: str = "") -> tuple[bool, str | None]:
+    """Verify a finalized 4K workflow receipt passed all gates, true 4K resolution, occupancy <=50%, zero mottle, and SHA-256."""
     if not receipt_path.is_file():
         return False, f"영수증 미생성 ({receipt_path.name})"
     rcp = _load_json(receipt_path)
@@ -398,6 +428,10 @@ def _verify_receipt_json(receipt_path: Path) -> tuple[bool, str | None]:
         return False, f"영수증 JSON 파싱 실패 ({receipt_path.name})"
     if rcp.get("passed_10gates") is not True or rcp.get("stage") != "FINALIZED_10GATES_PASSED":
         return False, f"10대 품질 게이트 불합격 ({receipt_path.name}: {rcp.get('audit_message', 'FAILED')})"
+    if rcp.get("subject_occupancy_passed") is False:
+        return False, f"인물 화면 점유율 과다(50% 이하 배치 위반: {rcp.get('subject_occupancy_pct')}%)"
+    if rcp.get("skin_mottle_passed") is False:
+        return False, f"피부 명암-색차 얼룩 불합격 ({receipt_path.name})"
     res = rcp.get("resolution") or [0, 0]
     if len(res) < 2 or max(int(res[0]), int(res[1])) < 3840 or min(int(res[0]), int(res[1])) < 2160:
         return False, f"4K 해상도 미달 ({receipt_path.name}: {res})"
@@ -409,6 +443,12 @@ def _verify_receipt_json(receipt_path: Path) -> tuple[bool, str | None]:
     if len(raw_cv) == 2 and (max(int(raw_cv[0]), int(raw_cv[1])) < 3840 or min(int(raw_cv[0]), int(raw_cv[1])) < 2160):
         if any(bad_m in up_mod for bad_m in ("optical_fullframe", "optical_lanczos", "hybrid_opt_face")):
             return False, f"저해상도({raw_cv}) 원본의 단순 Lanczos 리사이즈 가짜 4K 차단 ({receipt_path.name})"
+        if _is_live_uuid_conv(conv_id):
+            return (
+                False,
+                f"[1K→4K 뻥튀기 우회 영구 봉쇄] 원시 생성 해상도({raw_cv})가 네이티브 4K(>=3840x2160) 미달입니다. "
+                "1K 손실 JPEG를 Upscayl로 4배 불린 얼룩 결과물은 납품할 수 없으며, 반드시 Google Flow 네이티브 4K만 허용됩니다!",
+            )
     hero_p_str = str((rcp.get("deliverables") or {}).get("hero_4k") or "")
     if not hero_p_str or not Path(hero_p_str).is_file():
         return False, f"최종 4K 결과물 파일 미존재 ({receipt_path.name})"
@@ -670,7 +710,7 @@ def main() -> int:
                                 continue
                         except OSError:
                             continue
-                        ok_r, err_r = _verify_receipt_json(rcp_p)
+                        ok_r, err_r = _verify_receipt_json(rcp_p, conv_id=conv_id)
                         if ok_r:
                             verified_any_receipt = True
                         elif err_r:
@@ -693,7 +733,7 @@ def main() -> int:
                             continue
                         stem_h = re.sub(r"_4k\.(?:jpg|jpeg|png|webp)$", "", hero_cand.name, flags=re.IGNORECASE)
                         rcp_h = hero_cand.parent / f"{stem_h}_workflow_receipt.json"
-                        ok_h, err_h = _verify_receipt_json(rcp_h)
+                        ok_h, err_h = _verify_receipt_json(rcp_h, conv_id=conv_id)
                         if not ok_h:
                             tampered_deliverable_errors.append(err_h or f"미검증 4K 파일 잔존 ({hero_cand.name})")
 
@@ -789,7 +829,7 @@ def main() -> int:
                                     t_dirs.append(str(out_d))
                                 entry["tracked_output_dirs"] = t_dirs
                                 rcp_file = out_d / f"{stem_val}_workflow_receipt.json"
-                                ok_rcp, rcp_err = _verify_receipt_json(rcp_file)
+                                ok_rcp, rcp_err = _verify_receipt_json(rcp_file, conv_id=conv_id)
                                 if ok_rcp:
                                     entry["finalized_4k_receipt"] = True
                                     entry["last_finalize_reject_reason"] = None
@@ -808,7 +848,7 @@ def main() -> int:
                                         od_j = Path(str(jb["output_dir"])).expanduser()
                                         if str(od_j) not in t_dirs:
                                             t_dirs.append(str(od_j))
-                                        ok_b, err_b = _verify_receipt_json(od_j / f"{jb['stem']}_workflow_receipt.json")
+                                        ok_b, err_b = _verify_receipt_json(od_j / f"{jb['stem']}_workflow_receipt.json", conv_id=conv_id)
                                         if ok_b:
                                             any_ok_b = True
                                         elif err_b:
@@ -922,6 +962,20 @@ def main() -> int:
                     candidates.append(m.group(1) or m.group(2) or m.group(3))
 
             elif FLOW_CLI_CMD_PATTERN.search(cmd) and "--login" not in cmd and "--download-edit-url" not in cmd:
+                if re.search(r"(?:^|\s)--headless\b", cmd) and not _is_unit_test_conv(conv_id):
+                    print(
+                        json.dumps(
+                            {
+                                "decision": "deny",
+                                "reason": (
+                                    "[Google Flow 헤드리스 봇탐지 유발 원천 차단] `google_flow_ultra_cli.py` 실행 시 `--headless` 옵션은 금지됩니다! "
+                                    "기본 유창 모드(headed)로 실행해야 `FLOW_UNUSUAL_ACTIVITY_TOAST` 없이 네이티브 4K 생성이 가능합니다."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
                 is_image_gen_call = True
                 prompt_to_audit = cmd
                 out_v = _extract_cli_flag(cmd, ("--output",))
@@ -996,6 +1050,36 @@ def main() -> int:
                         )
                     )
                     return 0
+                # Block unauthorized `--framing-mode closeup` bypass when user did NOT ask for close-up!
+                req_close = False
+                fm_arg = _extract_cli_flag(cmd, ("--framing-mode",))
+                if fm_arg and fm_arg.strip().lower() == "closeup":
+                    req_close = True
+                elif "prepare-batch" in cmd:
+                    sp_chk = _extract_cli_flag(cmd, ("--spec-json",))
+                    if sp_chk and Path(sp_chk).expanduser().is_file():
+                        sp_o = _load_json(Path(sp_chk).expanduser())
+                        if isinstance(sp_o, dict):
+                            if str(sp_o.get("framing_mode") or "").lower() == "closeup":
+                                req_close = True
+                            for c_it in sp_o.get("cuts") or []:
+                                if isinstance(c_it, dict) and str(c_it.get("framing_mode") or "").lower() == "closeup":
+                                    req_close = True
+                user_txt_chk = f"{payload.get('lastUserInput') or ''} {entry.get('last_input_preview') or ''}"
+                if req_close and not _is_unit_test_conv(conv_id) and not EXPLICIT_CLOSEUP_USER_RE.search(user_txt_chk):
+                    print(
+                        json.dumps(
+                            {
+                                "decision": "deny",
+                                "reason": (
+                                    "[무단 클로즈업 줌인 우회 차단] 사용자가 클로즈업을 명시 요청하지 않았는데 `framing_mode=closeup`으로 "
+                                    "전체 사진 50% 이하 인물 배치 게이트를 우회할 수 없습니다!"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
 
             stale_err = _check_stale_postprocess_command(cmd, payload, turn_started_epoch)
             if stale_err:
@@ -1004,6 +1088,18 @@ def main() -> int:
 
         if is_image_gen_call and prompt_to_audit:
             low_p = prompt_to_audit.lower()
+            for pg_pat, pg_reason in FORBIDDEN_PROMPT_GAMING_PATTERNS:
+                if pg_pat.search(low_p):
+                    print(
+                        json.dumps(
+                            {
+                                "decision": "deny",
+                                "reason": f"[게이트 통과용 프롬프트 왜곡·줌인 조작 차단 훅] {pg_reason}",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 0
             for ex_pat, ex_reason in FORBIDDEN_FACIAL_EXAGGERATION_PATTERNS:
                 for m in ex_pat.finditer(low_p):
                     prefix = low_p[max(0, m.start() - 80) : m.start()]
@@ -1030,8 +1126,31 @@ def main() -> int:
                     print(json.dumps({"decision": "deny", "reason": err}, ensure_ascii=False))
                     return 0
 
-        # Enforce Stage 1 `prepare`, Mandatory Verified 8-Direction Bank, AND Max-2 Face Refs on Google Flow!
+        # Enforce Stage 1 `prepare`, Mandatory Verified 8-Direction Bank, Native-4K Flow Lock, AND Max-2 Face Refs!
         if is_image_gen_call and not is_turn_target:
+            # Hard-block 1K JPEG `image-generator` / `generate_image` fallback in live portrait sessions!
+            is_sub4k_builtin_gen = ("generate_image" in t_name) or (
+                t_name == "invoke_subagent"
+                and "image" in str(args.get("TypeName") or args.get("typeName") or "").lower()
+            )
+            if is_sub4k_builtin_gen and _is_live_uuid_conv(conv_id) and (
+                any(_is_safe_origin(c) for c in candidates) or _is_portrait_session(payload, entry)
+            ):
+                print(
+                    json.dumps(
+                        {
+                            "decision": "deny",
+                            "reason": (
+                                "[1K 저해상도 생성기 도피·우회 영구 봉쇄] 실제 인물 화보 생성(Step 2)에서 `896×1200` 1K 손실 JPEG 생성기"
+                                "(`image-generator` / `generate_image`)로 도망가 4배 GAN 업스케일(얼룩·먹물 눈동자 유발)로 우회하는 행위는 "
+                                "영구 차단되었습니다! 반드시 `scripts/google_flow_ultra_cli.py` (`Nano Banana Pro` `3584×4800` 무손실 네이티브 4K PNG, "
+                                "기본 유창 모드)만 사용하세요. 로그인/봇 확인창이 뜨면 우회하지 말고 즉시 멈춰 사용자에게 보고하세요."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
             has_any_portrait_ref = bool(candidates) and any(
                 not NON_FACE_CLEAN_PLATE_PATTERN.search(c) for c in candidates
             )

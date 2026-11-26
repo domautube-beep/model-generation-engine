@@ -96,6 +96,7 @@ def _run_rank_and_finalize_single(
                 locked_real_shot_path=locked_p,
                 turnaround_sheet_path=ts_path,
                 pure_gen0_portrait_path=pure_gen0,
+                framing_mode=str(manifest.get("framing_mode") or "balanced_50_50"),
             )
             rcp["selected_candidate_path"] = str(cand_p)
             if rank_res is not None:
@@ -271,6 +272,7 @@ def main() -> int:
             locked_real_shot_path=locked_p,
             turnaround_sheet_path=ts_path,
             pure_gen0_portrait_path=pure_gen0,
+            framing_mode=str(manifest.get("framing_mode") or "balanced_50_50"),
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0

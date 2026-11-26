@@ -676,9 +676,11 @@ def main() -> int:
     parser.add_argument("--download-edit-url", type=str, default="", help="Directly download a specific generated tile URL at --tier (e.g. 4K winner)")
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
-    parser.add_argument("--headed", action="store_true", help="Show browser window during generation")
+    parser.add_argument("--headed", action="store_true", default=True, help="Visible desktop Chrome window (default=True to prevent headless bot toast)")
+    parser.add_argument("--headless", action="store_true", help="Force headless browser (discouraged; triggers FLOW_UNUSUAL_ACTIVITY_TOAST)")
     parser.add_argument("--timeout", type=int, default=240, help="Generation wait timeout in seconds")
     args = parser.parse_args()
+    use_headed = not bool(args.headless)
 
     try:
         from patchright.sync_api import sync_playwright
@@ -713,7 +715,7 @@ def main() -> int:
             print("ERROR: Provide --output with --download-edit-url.", file=sys.stderr)
             return 2
         with sync_playwright() as pw:
-            ctx = _open_context(pw, args.profile_dir, headed=args.headed, downloads_dir=downloads_dir)
+            ctx = _open_context(pw, args.profile_dir, headed=use_headed, downloads_dir=downloads_dir)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto(args.download_edit_url, wait_until="domcontentloaded", timeout=60000)
@@ -810,7 +812,7 @@ def main() -> int:
         _save_subject_project_url(primary_gen0, pinned_project_url)
 
     with sync_playwright() as pw:
-        ctx = _open_context(pw, args.profile_dir, headed=args.headed, downloads_dir=downloads_dir)
+        ctx = _open_context(pw, args.profile_dir, headed=use_headed, downloads_dir=downloads_dir)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             last_configured_mode: Optional[Tuple[str, str, int]] = None

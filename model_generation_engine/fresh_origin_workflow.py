@@ -1173,6 +1173,7 @@ class FreshOriginEditorialWorkflow:
         locked_real_shot_path: Optional[Path] = None,
         turnaround_sheet_path: Optional[Path] = None,
         pure_gen0_portrait_path: Optional[Path] = None,
+        framing_mode: str = "balanced_50_50",
     ) -> Dict[str, object]:
         """Stage 5: Tone-Locked True 4K Super-Resolution (`v1.0.6` default: True 4K + 0.0% lighting/color/likeness shift) + Mandatory 10-Gate Lock."""
         if not strict_10gate:
@@ -1218,10 +1219,23 @@ class FreshOriginEditorialWorkflow:
                 f"and CANNOT use '{upscale_mode}' (which leaves facial organs at 1K Lanczos). Use 'tonelocked_upscayl_4k'!"
             )
 
-        # Measure HONEST pre-upscale face resolution BEFORE 4K scaling
+        # Measure HONEST pre-upscale face resolution & subject occupancy BEFORE 4K scaling
         raw_face_det = self.pipeline.detector.detect(raw_bgr)
         raw_fw, raw_fh = round(float(raw_face_det.bbox[2]), 1), round(float(raw_face_det.bbox[3]), 1)
         raw_iod_px = round(float(raw_face_det.inter_ocular_distance), 1)
+
+        from PIL import Image as _PILOcc
+        eff_framing = str(framing_mode or "balanced_50_50").strip().lower()
+        occ_sc = min(1.0, 960.0 / float(max(1, r_sh, r_sw)))
+        occ_sm = (
+            cv2.resize(raw_bgr, (max(8, int(round(r_sw * occ_sc))), max(8, int(round(r_sh * occ_sc)))), interpolation=cv2.INTER_AREA)
+            if occ_sc < 0.999
+            else raw_bgr
+        )
+        pm_pil = self.pipeline.apple_vision.person_mask(_PILOcc.fromarray(cv2.cvtColor(occ_sm, cv2.COLOR_BGR2RGB)))
+        subject_occupancy_pct = round(100.0 * float(np.mean(np.array(pm_pil) >= 128)), 2) if pm_pil is not None else 0.0
+        max_allowed_occ_pct = 82.0 if eff_framing == "closeup" else 38.8
+        subject_occupancy_passed = bool(subject_occupancy_pct <= max_allowed_occ_pct)
 
         acuity_meta: Dict[str, object] = {"applied": False}
         tonelock_sr_meta: Dict[str, object] = {"applied": False}
@@ -1255,6 +1269,10 @@ class FreshOriginEditorialWorkflow:
             sil_pre = self.exaggeration_guard.measure_pupil_aligned_silhouette(pre_ref_bgr, raw_macro_bgr, output_overlay_path=None)
 
             pre_reasons: List[str] = []
+            if not subject_occupancy_passed:
+                pre_reasons.append(
+                    f"인물 화면 점유율 과다 사전 컷오프 ({subject_occupancy_pct:.1f}% > 최대 {max_allowed_occ_pct:.1f}% — 전체 사진 50% 이하 배치 위반 / 몰래 줌인 차단)"
+                )
             if not anat_ok_pre:
                 pre_reasons.append(anat_msg_pre)
             if sface_pre_pure < 0.55:
@@ -1509,8 +1527,33 @@ class FreshOriginEditorialWorkflow:
         ex_cmp = self.exaggeration_guard.audit(ref_bgr, macro_bgr, ref_marks=ref_marks_4k, cand_marks=macro_marks_4k)
         od_cmp = self.organ_depth.compare(pure_gen0_bgr, macro_bgr)
 
+        # Gate 13: Native-4K Luminance-to-Chroma layer-mismatch skin blotchiness check
+        skin_mottle_passed = True
+        skin_l_to_ab_ratio = 0.0
+        if min(uw, uh) >= 2160:
+            fh_patch = up_bgr[
+                max(0, int(fy + 0.08 * fh)) : min(uh, int(fy + 0.24 * fh)),
+                max(0, int(fx + 0.25 * fw)) : min(uw, int(fx + 0.75 * fw)),
+            ]
+            if fh_patch.size >= 400:
+                lab_fh = cv2.cvtColor(fh_patch, cv2.COLOR_BGR2LAB).astype(np.float32)
+                l_hf_v = float(np.std(lab_fh[:, :, 0] - cv2.GaussianBlur(lab_fh[:, :, 0], (0, 0), 2.2)))
+                ab_hf_v = float(
+                    np.std(
+                        np.hypot(
+                            lab_fh[:, :, 1] - cv2.GaussianBlur(lab_fh[:, :, 1], (0, 0), 2.2),
+                            lab_fh[:, :, 2] - cv2.GaussianBlur(lab_fh[:, :, 2], (0, 0), 2.2),
+                        )
+                    )
+                ) + 1e-4
+                skin_l_to_ab_ratio = round(l_hf_v / ab_hf_v, 2)
+                if l_hf_v > 6.2 and skin_l_to_ab_ratio > 15.0:
+                    skin_mottle_passed = False
+
         all_passed = bool(
             report.passed
+            and subject_occupancy_passed
+            and skin_mottle_passed
             and bool(oc_cmp.get("valid", False))
             and bool(oc_cmp.get("passed", False))
             and bool(sil_cmp.get("valid", False))
@@ -1520,12 +1563,31 @@ class FreshOriginEditorialWorkflow:
             and float(report.face_laplacian_variance) >= float(cfg_4k.min_face_laplacian_var)
             and sface_pure_gen0 >= 0.58
         )
-        fail_msg = report.message
+        fail_bits: List[str] = []
+        if not report.passed and report.message:
+            fail_bits.append(report.message)
+        if not subject_occupancy_passed:
+            fail_bits.append(
+                f"인물 화면 점유율 과다 ({subject_occupancy_pct:.1f}% > 최대 {max_allowed_occ_pct:.1f}% — 전체 사진 50% 이하 배치 위반 / 몰래 줌인 차단)"
+            )
+        if not skin_mottle_passed:
+            fail_bits.append(
+                f"피부 얼룩덜룩(명암-색차 레이어 불일치 반점: L/ab={skin_l_to_ab_ratio:.1f} > 15.0) 발생"
+            )
+        if not oc_cmp.get("passed", False):
+            oc_err = "; ".join(str(x) for x in oc_cmp.get("issues", []))
+            if oc_err and oc_err not in "; ".join(fail_bits):
+                fail_bits.append(f"눈매·흰자 게이트 미달: {oc_err}")
         if not sil_cmp.get("passed", False):
             sil_err = "; ".join(str(x) for x in sil_cmp.get("issues", []))
-            fail_msg = f"{fail_msg}; {sil_err}" if not report.passed else f"1:1 외곽선 게이트 미달: {sil_err}"
+            fail_bits.append(f"1:1 외곽선 게이트 미달: {sil_err}")
+        if not ex_cmp.get("passed", False):
+            ex_err = "; ".join(str(x) for x in ex_cmp.get("issues", []))
+            if ex_err:
+                fail_bits.append(f"얼굴 과장 게이트 미달: {ex_err}")
         if sface_pure_gen0 < 0.58:
-            fail_msg = f"{fail_msg}; 순수 Gen-0 직접 SFace 미달 ({sface_pure_gen0:.3f} < 0.580)"
+            fail_bits.append(f"순수 Gen-0 직접 SFace 미달 ({sface_pure_gen0:.3f} < 0.580)")
+        fail_msg = "; ".join(fail_bits) if fail_bits else report.message
 
         hero_4k_sha256: Optional[str] = None
         if all_passed:
@@ -1596,6 +1658,11 @@ class FreshOriginEditorialWorkflow:
             "raw_pre_upscale_canvas": [int(raw_bgr.shape[1]), int(raw_bgr.shape[0])],
             "raw_pre_upscale_face_px": [raw_fw, raw_fh],
             "raw_pre_upscale_iod_px": raw_iod_px,
+            "framing_mode": eff_framing,
+            "subject_occupancy_pct": subject_occupancy_pct,
+            "subject_occupancy_passed": subject_occupancy_passed,
+            "skin_l_to_ab_ratio": skin_l_to_ab_ratio,
+            "skin_mottle_passed": skin_mottle_passed,
             "raw_resolution_warning": (
                 f"원시 생성 얼굴 폭 {raw_fw:.0f}px (<260px): 400% 확대 시 Upscayl 보간 한계 존재"
                 if raw_fw < 260.0

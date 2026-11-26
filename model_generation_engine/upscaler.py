@@ -269,16 +269,24 @@ class SuperResolutionEngine:
                 "lap_var_after": lap_n,
             }
 
+        # De-block 4:2:0 JPEG chroma quantization noise on sub-4K inputs BEFORE 4x SR so ESRGAN never amplifies JPEG blocks
+        sr_in_bgr = src_bgr
+        if max(sh, sw) < 2400:
+            in_lab = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2LAB)
+            in_lab[:, :, 1] = cv2.GaussianBlur(in_lab[:, :, 1], (0, 0), 1.15)
+            in_lab[:, :, 2] = cv2.GaussianBlur(in_lab[:, :, 2], (0, 0), 1.15)
+            sr_in_bgr = cv2.cvtColor(in_lab, cv2.COLOR_LAB2BGR)
+
         if self.upscayl_bin is not None and self.upscayl_bin.exists():
             chosen_model = model_name if (self.models_dir / f"{model_name}.bin").is_file() else UPSCAYL_PHOTO_MODEL
-            up_bgr, used_model = self.upscale_with_upscayl(src_bgr, style=chosen_model, scale=4, target_min_height=0)
+            up_bgr, used_model = self.upscale_with_upscayl(sr_in_bgr, style=chosen_model, scale=4, target_min_height=0)
         elif self.esrgan_bin is not None and self.esrgan_bin.exists():
             import tempfile
 
             with tempfile.TemporaryDirectory(prefix="tonelock_esr_") as td:
                 in_p = Path(td) / "in.png"
                 out_p = Path(td) / "out.png"
-                cv2.imwrite(str(in_p), src_bgr)
+                cv2.imwrite(str(in_p), sr_in_bgr)
                 subprocess.run(
                     [
                         str(self.esrgan_bin),
@@ -360,20 +368,41 @@ class SuperResolutionEngine:
             cy_q = int(round((fy1k + 0.85 * fh1k) * sy_f * qy_f))
             rx_q = max(6, int(round(1.35 * fw1k * sx_f * qx_f)))
             ry_q = max(8, int(round(1.95 * fh1k * sy_f * qy_f)))
-            cv2.ellipse(subj_floor_q, (cx_q, cy_q), (rx_q, ry_q), 0.0, 0, 360, 0.88, -1)
+            cv2.ellipse(subj_floor_q, (cx_q, cy_q), (rx_q, ry_q), 0.0, 0, 360, 0.56, -1)
             k_sf_q = max(9, int(round(fw1k * sx_f * qx_f * 0.25)) | 1)
             subj_floor_q = cv2.GaussianBlur(subj_floor_q, (k_sf_q, k_sf_q), max(2.0, fw1k * sx_f * qx_f * 0.08))
             subj_floor = cv2.resize(subj_floor_q, (uw, uh), interpolation=cv2.INTER_LINEAR)
-            bokeh_gate = np.maximum(bokeh_gate, subj_floor)
+            # Suppress GAN speckle hallucination on flat low-gradient skin & eye sclera while keeping crisp lash/hair/iris edges
+            flat_suppress_h = np.clip((opt_dev_h - 0.55) / 2.15, 0.28, 1.0)
+            flat_suppress = cv2.resize(flat_suppress_h, (uw, uh), interpolation=cv2.INTER_LINEAR)
+            bokeh_gate = np.maximum(bokeh_gate, subj_floor * flat_suppress)
         except Exception:
             pass
 
         up_L_tonelocked = np.clip(up_L + delta_lf, 0.0, 255.0)
         out_L_u8 = np.clip(np.rint(bokeh_gate * up_L_tonelocked + (1.0 - bokeh_gate) * opt_L), 0.0, 255.0).astype(np.uint8)
-        out_lab_u8 = np.empty_like(opt_lab_u8)
+
+        # Single-grid coherent 4K chromaticity lock (NEVER paste 1K 4:2:0 JPEG blocky opt_lab[:, :, 1:3] onto 4K sharp L!):
+        opt_a_q = cv2.resize(opt_lab_u8[:, :, 1].astype(np.float32), (qw, qh), interpolation=cv2.INTER_AREA)
+        opt_b_q = cv2.resize(opt_lab_u8[:, :, 2].astype(np.float32), (qw, qh), interpolation=cv2.INTER_AREA)
+        up_a_f = up_lab_u8[:, :, 1].astype(np.float32)
+        up_b_f = up_lab_u8[:, :, 2].astype(np.float32)
+        up_a_q = cv2.resize(up_a_f, (qw, qh), interpolation=cv2.INTER_AREA)
+        up_b_q = cv2.resize(up_b_f, (qw, qh), interpolation=cv2.INTER_AREA)
+        da_lf = cv2.resize(
+            np.clip(cv2.GaussianBlur(opt_a_q, (0, 0), sig_q) - cv2.GaussianBlur(up_a_q, (0, 0), sig_q), -6.0, 6.0),
+            (uw, uh),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        db_lf = cv2.resize(
+            np.clip(cv2.GaussianBlur(opt_b_q, (0, 0), sig_q) - cv2.GaussianBlur(up_b_q, (0, 0), sig_q), -6.0, 6.0),
+            (uw, uh),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        out_lab_u8 = np.empty_like(up_lab_u8)
         out_lab_u8[:, :, 0] = out_L_u8
-        out_lab_u8[:, :, 1] = opt_lab_u8[:, :, 1]
-        out_lab_u8[:, :, 2] = opt_lab_u8[:, :, 2]
+        out_lab_u8[:, :, 1] = np.clip(np.rint(up_a_f + da_lf), 1.0, 254.0).astype(np.uint8)
+        out_lab_u8[:, :, 2] = np.clip(np.rint(up_b_f + db_lf), 1.0, 254.0).astype(np.uint8)
         out_bgr = cv2.cvtColor(out_lab_u8, cv2.COLOR_LAB2BGR)
 
         chk_sub = cv2.cvtColor(out_bgr[::4, ::4], cv2.COLOR_BGR2LAB).astype(np.float32)

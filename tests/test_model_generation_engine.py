@@ -2804,6 +2804,205 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             self.assertGreaterEqual(float(rf_rcp["face_laplacian_variance"]), 17.5)
             self.assertTrue((td_p / "rf_out" / "cut1_winner_4k.jpg").is_file())
 
+    def test_44_v111_redteam_1k_crowd_mottle_promptgaming_hardlock(self) -> None:
+        """Red-Team v1.1.1: Verify 100% hard block on 1K fallback, --headless, prompt-gaming, closeup cheat, >50% occupancy, sclera speckle, and L/ab mottle."""
+        import json
+        import subprocess
+        import tempfile
+        import cv2
+        import numpy as np
+        from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        live_uuid = "live-real-uuid-v111-redteam"
+        pipe = ModelGenerationPipeline()
+        wf = FreshOriginEditorialWorkflow(pipe)
+        raw_ref = cv2.imread(str(self.ref_face))
+
+        def _rt_hook(ev: str, pl: dict) -> dict:
+            pl = dict(pl)
+            pl.setdefault("conversationId", live_uuid)
+            pl.setdefault("workspacePaths", ["/Users/doma/.gemini/antigravity/scratch/릴프로필"])
+            pl.setdefault("lastUserInput", "배경에 50%이하로 등장하게 이 사진의 톤앤무드에 맞춰서 생성해줘")
+            p = subprocess.run(
+                ["python3", str(hook_py), "--event", ev],
+                input=json.dumps(pl),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(p.stdout.strip())
+
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            orig_d = td_p / ".user_uploaded"
+            bank_d = td_p / "s99_8dir_bank"
+            orig_d.mkdir(parents=True, exist_ok=True)
+            bank_d.mkdir(parents=True, exist_ok=True)
+            g0 = orig_d / "media_gen0.jpg"
+            sh = bank_d / "s99_master_8angle_turnaround_sheet.jpg"
+            single_8dir = bank_d / "s99_8dir_04_left_22.jpg"
+            cv2.imwrite(str(g0), raw_ref)
+            cv2.imwrite(str(sh), np.clip(raw_ref.astype(np.int16) + 5, 0, 255).astype(np.uint8))
+            cv2.imwrite(str(single_8dir), np.clip(raw_ref.astype(np.int16) + 9, 0, 255).astype(np.uint8))
+
+            _rt_hook("pre_invocation", {})
+            # Simulate Stage 1 prepare ran
+            wdir_m = td_p / "s1"
+            wdir_m.mkdir(parents=True, exist_ok=True)
+            (wdir_m / "workflow_manifest.json").write_text(
+                json.dumps({"turnaround_master_sheet_path": str(sh)}), encoding="utf-8"
+            )
+            _rt_hook(
+                "post_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py prepare --work-dir '{wdir_m}' --turnaround-sheet '{sh}'"},
+                    }
+                },
+            )
+
+            # Vector A: 1K `image-generator` fallback in live UUID portrait session -> MUST DENY!
+            ra = _rt_hook(
+                "pre_tool",
+                {
+                    "toolCall": {
+                        "name": "invoke_subagent",
+                        "args": {"TypeName": "image-generator", "Role": "Moody Portrait", "Prompt": f"Use '{g0}'"},
+                    }
+                },
+            )
+            self.assertEqual(ra["decision"], "deny")
+            self.assertIn("1K 저해상도 생성기", ra["reason"])
+
+            # Vector B: `google_flow_ultra_cli.py --headless` -> MUST DENY!
+            rb = _rt_hook(
+                "pre_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/google_flow_ultra_cli.py --headless --images '{g0}' --prompt 'clean studio' --output '{td_p}/o.png'"},
+                    }
+                },
+            )
+            self.assertEqual(rb["decision"], "deny")
+            self.assertIn("헤드리스", rb["reason"])
+
+            # Vector C: Prompt-gaming (`ZERO catchlight`, `pure porcelain-white sclera`, `head width ~22%`) -> ALL 3 MUST DENY!
+            for bad_phrase in (
+                "ZERO bright pinpoint catchlight glare inside dark pupil",
+                "wide uniformly bright pure porcelain-white sclera",
+                "scale framing so head width is ~22% of canvas width and shoulders span ~68%",
+            ):
+                rc = _rt_hook(
+                    "pre_tool",
+                    {
+                        "toolCall": {
+                            "name": "run_command",
+                            "args": {"CommandLine": f"python3 scripts/google_flow_ultra_cli.py --images '{g0}' --prompt '{bad_phrase}' --output '{td_p}/o.png'"},
+                        }
+                    },
+                )
+                self.assertEqual(rc["decision"], "deny", f"Failed to block prompt-gaming phrase: {bad_phrase}")
+                self.assertIn("프롬프트", rc["reason"])
+
+            # Vector D: Unauthorized `--framing-mode closeup` when user asked for <=50% -> MUST DENY!
+            rd = _rt_hook(
+                "pre_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py prepare --gen0 '{g0}' --turnaround-sheet '{sh}' --work-dir '{td_p}/c' --framing-mode closeup --scene s --outfit o"},
+                    }
+                },
+            )
+            self.assertEqual(rd["decision"], "deny")
+            self.assertIn("클로즈업", rd["reason"])
+
+            # Vector E: 1K->4K upscaled receipt in live UUID session -> Stop/PostTool verification MUST REJECT!
+            fake_hero = td_p / "sub4k_4k.jpg"
+            cv2.imwrite(str(fake_hero), cv2.resize(raw_ref, (3584, 4800)))
+            import hashlib
+            f_sha = hashlib.sha256(fake_hero.read_bytes()).hexdigest()
+            (td_p / "sub4k_workflow_receipt.json").write_text(
+                json.dumps(
+                    {
+                        "passed_10gates": True,
+                        "stage": "FINALIZED_10GATES_PASSED",
+                        "resolution": [3584, 4800],
+                        "raw_pre_upscale_canvas": [896, 1200],
+                        "upscayl_model": "tonelocked_ultramix-balanced-4x",
+                        "face_laplacian_variance": 42.0,
+                        "subject_occupancy_passed": True,
+                        "skin_mottle_passed": True,
+                        "hero_4k_sha256": f_sha,
+                        "deliverables": {"hero_4k": str(fake_hero)},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            c_stage = td_p / "c_stage"
+            c_stage.mkdir(parents=True, exist_ok=True)
+            (c_stage / "workflow_manifest.json").write_text(
+                json.dumps({"turnaround_master_sheet_path": str(sh)}), encoding="utf-8"
+            )
+            _rt_hook(
+                "post_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py prepare --gen0 '{g0}' --turnaround-sheet '{sh}' --work-dir '{c_stage}'"},
+                    }
+                },
+            )
+            r_valid_flow = _rt_hook(
+                "pre_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/google_flow_ultra_cli.py --images '{g0}' '{single_8dir}' --prompt 'calm 50:50 seated studio' --output '{td_p}/o.png'"},
+                    }
+                },
+            )
+            self.assertEqual(r_valid_flow["decision"], "allow", r_valid_flow.get("reason"))
+            _rt_hook(
+                "post_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py finalize --output-dir '{td_p}' --stem sub4k"},
+                    }
+                },
+            )
+            _rt_hook("post_tool", {"toolCall": {"name": "read_file", "args": {"Path": str(td_p / "sub4k_4k_macro.jpg")}}})
+            re_stop = _rt_hook("stop", {"fullyIdle": True, "terminationReason": "NO_TOOL_CALL"})
+            self.assertEqual(re_stop.get("decision"), "continue")
+            self.assertIn("1K→4K 뻥튀기 우회 영구 봉쇄", re_stop.get("reason", ""))
+
+            # Vector F: Engine Gate 11 (>38.8% crowded person occupancy) & Gate 12 (speckled sclera) MUST HARD-REJECT!
+            crowded_4k = cv2.resize(raw_ref, (3584, 4800), interpolation=cv2.INTER_LANCZOS4)
+            crowded_p = td_p / "crowded_zoom_4k.jpg"
+            cv2.imwrite(str(crowded_p), crowded_4k, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+            with self.assertRaises(RuntimeError) as ctx_occ:
+                wf.finalize_native_winner_4k(
+                    gen0_portrait_path=g0,
+                    winner_candidate_path=crowded_p,
+                    output_dir=td_p / "occ_out",
+                    output_stem="crowded_fail",
+                    sync_to_vault=False,
+                    framing_mode="balanced_50_50",
+                )
+            self.assertIn("인물 화면 점유율 과다", str(ctx_occ.exception))
+            self.assertFalse((td_p / "occ_out" / "crowded_fail_4k.jpg").exists())
+
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st_d = json.loads(st_p.read_text(encoding="utf-8"))
+            st_d.pop(live_uuid, None)
+            st_p.write_text(json.dumps(st_d, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,9 @@ class OcularAnatomyProfile:
     crease_prominence: float  # Relative Sobel-Y ridge strength of supratarsal crease (0.0..1.0+)
     left_iris_to_eye_width: float = 0.42
     right_iris_to_eye_width: float = 0.42
+    iris_core_luma_p25: float = 28.0
+    sclera_speckle_p85: float = 4.5
+    raw_eye_width_px: float = 48.0
 
     def crease_category(self) -> str:
         """Classify eyelid crease strictly from measured supratarsal ridge height (`avg_crease_gap_ratio`) & prominence."""
@@ -109,8 +112,8 @@ class OcularAnatomyAnalyzer:
         eye_pts: np.ndarray,
         is_left: bool,
         target_psf_ew: Optional[float] = None,
-    ) -> Tuple[float, float, float, float]:
-        """Measure (iris_to_eye_width, sclera_visible_ratio, crease_gap_ratio, crease_prominence) in pixel space."""
+    ) -> Tuple[float, float, float, float, float, float, float]:
+        """Measure (iris_w, sclera_ratio, crease_gap, crease_prom, iris_luma_p25, sclera_speckle_p85, raw_ew)."""
         h_img, w_img = gray_img.shape[:2]
         x_min = max(0, int(math.floor(float(eye_pts[:, 0].min()))))
         x_max = min(w_img - 1, int(math.ceil(float(eye_pts[:, 0].max()))))
@@ -127,7 +130,7 @@ class OcularAnatomyAnalyzer:
         cy1, cy2 = max(0, y_min - pad_top), min(h_img, y_max + pad_bot)
         patch = gray_img[cy1:cy2, cx1:cx2]
         if patch.size < 36:
-            return 0.42, 0.48, 0.25, 0.20
+            return 0.42, 0.48, 0.25, 0.20, 28.0, 4.5, float(ew)
 
         scale = 120.0 / float(ew)
         rw = max(16, int(round(patch.shape[1] * scale)))
@@ -149,7 +152,7 @@ class OcularAnatomyAnalyzer:
         cv2.fillPoly(mask, [np.round(pts_local).astype(np.int32)], 255)
         eye_px = norm_psf[mask > 0]
         if eye_px.size < 20:
-            return 0.42, 0.48, 0.25, 0.20
+            return 0.42, 0.48, 0.25, 0.20, 28.0, 4.5, float(ew)
 
         ex1 = max(0, int(round(float(pts_local[:, 0].min()))))
         ex2 = min(rw, int(round(float(pts_local[:, 0].max()))))
@@ -205,6 +208,20 @@ class OcularAnatomyAnalyzer:
 
         sclera_ratio = float(np.clip(np.mean(ref_eye_px >= sclera_thr), 0.12, 0.80))
 
+        # Measure unblurred native eye-patch iris black-crush & sclera speckle/mottling (`norm_p` at width=120px -> scale 160x80 eq)
+        eq_raw_patch = norm_p[ey_eq1:ey_eq2, ex1:ex2]
+        raw_vals = eq_raw_patch[eq_mask] if np.any(eq_mask) else norm_p[mask > 0]
+        rp15, rp85 = float(np.percentile(raw_vals, 15)), float(np.percentile(raw_vals, 85))
+        rdyn = max(12.0, rp85 - rp15)
+        iris_pix = raw_vals[raw_vals < (rp15 + 0.35 * rdyn)]
+        iris_luma_p25 = float(np.percentile(iris_pix, 25)) if iris_pix.size >= 6 else float(rp15)
+        scl_mask_2d = eq_mask & (eq_raw_patch >= (rp15 + 0.56 * rdyn))
+        if int(np.sum(scl_mask_2d)) >= 14:
+            hf_eye = np.abs(norm_p - cv2.GaussianBlur(norm_p, (0, 0), 1.35))[ey_eq1:ey_eq2, ex1:ex2]
+            sclera_speckle_p85 = float(np.percentile(hf_eye[scl_mask_2d], 85))
+        else:
+            sclera_speckle_p85 = 4.5
+
         # Supratarsal eyelid crease detection ABOVE the upper lash line:
         # Equalize sharpness via GaussianBlur(5x5, 1.1) before Sobel-Y so Upscayl 4x crispness never triggers false crease prominence!
         norm_eq = cv2.GaussianBlur(norm_p, (5, 5), 1.1)
@@ -212,7 +229,7 @@ class OcularAnatomyAnalyzer:
         cx_l = ex1 + int(round(0.20 * n_ew))
         cx_r = ex1 + int(round(0.80 * n_ew))
         if cx_r <= cx_l + 4:
-            return iris_w_ratio, sclera_ratio, 0.25, 0.20
+            return iris_w_ratio, sclera_ratio, 0.25, 0.20, iris_luma_p25, sclera_speckle_p85, float(ew)
 
         # Lash-line reference edge strength around `ey1`
         lash_band_top = max(0, ey1 - max(2, int(round(0.14 * n_eh))))
@@ -234,7 +251,7 @@ class OcularAnatomyAnalyzer:
         else:
             crease_gap, prominence = 0.25, 0.15
 
-        return iris_w_ratio, sclera_ratio, crease_gap, prominence
+        return iris_w_ratio, sclera_ratio, crease_gap, prominence, iris_luma_p25, sclera_speckle_p85, float(ew)
 
     def analyze(
         self,
@@ -295,8 +312,8 @@ class OcularAnatomyAnalyzer:
         gr = _geom(re_r, reb_r, False)
 
         gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
-        l_iris, l_scl, l_cg, l_cp = self._measure_single_eye_pixels(gray, le, True, target_psf_ew=target_psf_ew)
-        r_iris, r_scl, r_cg, r_cp = self._measure_single_eye_pixels(gray, re, False, target_psf_ew=target_psf_ew)
+        l_iris, l_scl, l_cg, l_cp, l_il, l_sp, l_ew = self._measure_single_eye_pixels(gray, le, True, target_psf_ew=target_psf_ew)
+        r_iris, r_scl, r_cg, r_cp, r_il, r_sp, r_ew = self._measure_single_eye_pixels(gray, re, False, target_psf_ew=target_psf_ew)
 
         return OcularAnatomyProfile(
             avg_ear=round(0.5 * (gl["ear"] + gr["ear"]), 4),
@@ -311,6 +328,9 @@ class OcularAnatomyAnalyzer:
             crease_prominence=round(0.5 * (l_cp + r_cp), 4),
             left_iris_to_eye_width=round(l_iris, 4),
             right_iris_to_eye_width=round(r_iris, 4),
+            iris_core_luma_p25=round(min(l_il, r_il), 2),
+            sclera_speckle_p85=round(max(l_sp, r_sp), 2),
+            raw_eye_width_px=round(0.5 * (l_ew + r_ew), 1),
         )
 
     def extract_aligned_eye_strip(
@@ -416,6 +436,16 @@ class OcularAnatomyAnalyzer:
             issues.append(f"쌍꺼풀 라인 과장(두꺼운 아치 선 생성, gap {crease_gap_diff:+.2f}, prom {crease_prom_diff:+.2f})")
         if r_prof.crease_category() == "tight_inline_or_monolid" and c_prof.crease_category() == "prominent_outline_double":
             issues.append("원본 속쌍/얇은 인라인 눈매가 두꺼운 겉쌍 아치로 변형됨")
+        # Gate 12a: Sclera speckle / GAN-JPEG blotchiness hard gate on 4K eyes (`raw_eye_width_px >= 50px`)
+        if c_prof.raw_eye_width_px >= 50.0 and c_prof.sclera_speckle_p85 > 10.6 and c_prof.sclera_speckle_p85 > (r_prof.sclera_speckle_p85 + 2.5):
+            issues.append(
+                f"흰자 내부 점박이·얼룩 노이즈 과다 (speckle={c_prof.sclera_speckle_p85:.2f} > 허용 10.6)"
+            )
+        # Gate 12b: Iris black-crush (먹물 눈동자 암부 뭉개짐) hard gate
+        if r_prof.iris_core_luma_p25 >= 18.0 and c_prof.iris_core_luma_p25 < 8.5 and c_prof.iris_core_luma_p25 < (0.45 * r_prof.iris_core_luma_p25):
+            issues.append(
+                f"눈동자 암부 뭉개짐(먹물 홍채 현상: L={c_prof.iris_core_luma_p25:.1f} vs 원본 {r_prof.iris_core_luma_p25:.1f})"
+            )
 
         # Weighted ocular drift score (lower is better; integrates sclera, crease prominence & NCC)
         drift_score = (
@@ -440,6 +470,8 @@ class OcularAnatomyAnalyzer:
                 "scleraDiffPct": round(sclera_diff_pct, 1),
                 "creasePromDiff": round(crease_prom_diff, 3),
                 "browGapDiffPct": round(brow_gap_diff_pct, 1),
+                "candScleraSpeckleP85": c_prof.sclera_speckle_p85,
+                "candIrisLumaP25": c_prof.iris_core_luma_p25,
             },
             "refProfile": r_prof,
             "candProfile": c_prof,
