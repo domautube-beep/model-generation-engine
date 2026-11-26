@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.1.5",
-  "canonical_label": "릴프로필 v1.1.5",
+  "canonical_version": "1.1.6",
+  "canonical_label": "릴프로필 v1.1.6",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-26T17:11:30+09:00",
+  "updated_at": "2026-11-26T17:38:34+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -294,14 +294,23 @@
       "changed_files": [
         "model_generation_engine/fresh_origin_workflow.py"
       ]
+    },
+    {
+      "version": "1.1.6",
+      "date": "2026-11-26",
+      "timestamp": "2026-11-26T17:38:34+09:00",
+      "summary": "v1.1.6: Allow honest user stop-and-report (zero bypass, zero unverified 4K) when Google Flow triggers FLOW_UNUSUAL_ACTIVITY_TOAST or sign-in gate",
+      "changed_files": [
+        "hooks/enforce_1origin_1gen_hook.py"
+      ]
     }
   ],
-  "code_tree_sha256": "714a1490d3f3d44fdee45471b2cac6e181deb4c908a4113d712b9b3b5bdb09ca",
+  "code_tree_sha256": "1dba97749b84c5174352642108a9f59c649c0190c167a6ebddabe437c00d5dd4",
   "file_hashes": {
-    "hooks/enforce_1origin_1gen_hook.py": "6d496c0d38f4e69c0268bf0a3e8e998344655d9bdd547af194bb8d4f19fbf24a",
+    "hooks/enforce_1origin_1gen_hook.py": "1a65e939fc9d0e76dbf65cbfd17c351d4b1ccfa2feb00330a32abaa27df2653a",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "6ca0ae067e8ca250d03a7bbde536be7cad4ffe73035ee5e17143911e9cb20e5f",
+    "model_generation_engine/__init__.py": "f8e4f3a017b0b2c77f65ccf921588265e9740904038e31de05872d5bfd670921",
     "model_generation_engine/apple_vision.py": "0505b00704e795ed4ffbdad9fc93dc081613b91a34ea5550199981a4fd89ca37",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",

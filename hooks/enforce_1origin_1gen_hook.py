@@ -749,6 +749,30 @@ def main() -> int:
                 if entry.get("last_finalize_reject_reason") and not verified_any_receipt:
                     receipt_failures.append(str(entry["last_finalize_reject_reason"]))
 
+                # Allow clean honest stop (NEVER bypass!) when Google Flow returned an anti-bot/sign-in gate AND zero unverified 4K files exist
+                if not tampered_deliverable_errors and not entry.get("finalized_4k_receipt") and art_dir_s:
+                    tasks_dir = Path(art_dir_s) / ".system_generated" / "tasks"
+                    if tasks_dir.is_dir():
+                        recent_logs = sorted(
+                            (lp for lp in tasks_dir.glob("task-*.log") if lp.stat().st_mtime >= (turn_started_epoch - 2.0)),
+                            key=lambda lp: lp.stat().st_mtime,
+                            reverse=True,
+                        )
+                        for lp_item in recent_logs[:8]:
+                            try:
+                                log_txt = lp_item.read_text(encoding="utf-8", errors="ignore")[-4096:]
+                            except OSError:
+                                continue
+                            if (
+                                '"status": "blocked"' in log_txt
+                                and any(
+                                    gk in log_txt
+                                    for gk in ("FLOW_UNUSUAL_ACTIVITY_TOAST", "GOOGLE_SIGNIN_REQUIRED", "BOT_OR_VERIFICATION_GATE")
+                                )
+                            ):
+                                print(json.dumps({}))
+                                return 0
+
                 if not entry.get("finalized_4k_receipt"):
                     extra_err = f" [최근 사유: {'; '.join(dict.fromkeys(receipt_failures))}]" if receipt_failures else ""
                     missing.append(
