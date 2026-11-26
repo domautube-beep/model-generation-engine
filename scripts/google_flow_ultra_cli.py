@@ -207,16 +207,19 @@ def _configure_image_mode(page, model_name: str, aspect: str, count: int) -> Lis
     )
     chip = page.locator(chip_sel).last
     chip.wait_for(state="visible", timeout=35000)
+    chip_bb = chip.bounding_box() or {"y": 760.0}
+    popover_max_y = max(320.0, float(chip_bb["y"]) - 12.0)
     chip.click(timeout=6000, force=True)
-    time.sleep(0.8)
+    time.sleep(0.85)
 
-    # Select Image tab + Aspect Ratio tab + Count tab (supports both 'x2'/'x4' and '2'/'4' Flow UI chips)
+    # Select Image tab + Aspect Ratio tab + Count tab strictly INSIDE the open popover (y < popover_max_y) so we never re-click the trigger chip!
     count_sels = (
-        f"[role=tab]:has-text('x{count}'), button:has-text('x{count}'), "
-        f"[role=tab]:text-is('{count}'), [role=radio]:has-text('x{count}'), [role=radio]:text-is('{count}')"
+        f"[role=tab]:has-text('x{count}'), [role=radio]:has-text('x{count}'), "
+        f"button:text-is('x{count}'), button:has-text('x{count}'), "
+        f"[role=tab]:text-is('{count}'), [role=radio]:text-is('{count}')"
     )
     for label, sel_q, desc in (
-        ("이미지", "[role=tab]:has-text('이미지'), button:has-text('이미지')", "mode"),
+        ("이미지", "[role=tab]:has-text('이미지'), [role=tab]:has-text('Image'), [role=radio]:has-text('이미지')", "mode"),
         (aspect, f"[role=tab]:has-text('{aspect}'), button:has-text('{aspect}'), [role=radio]:has-text('{aspect}')", "aspect"),
         (f"x{count}", count_sels, "count"),
     ):
@@ -228,7 +231,7 @@ def _configure_image_mode(page, model_name: str, aspect: str, count: int) -> Lis
                 if not el.is_visible():
                     continue
                 bb = el.bounding_box()
-                if not bb or bb["y"] < 120:
+                if not bb or bb["y"] < 80 or bb["y"] > popover_max_y:
                     continue
                 if el.get_attribute("aria-selected") != "true" and el.get_attribute("aria-checked") != "true":
                     el.click(timeout=4000, force=True)
@@ -237,7 +240,7 @@ def _configure_image_mode(page, model_name: str, aspect: str, count: int) -> Lis
                 clicked_this = True
                 break
             if not clicked_this and desc == "count" and count > 1:
-                notes.append(f"count_fallback=x1_ui_not_found")
+                notes.append("count_fallback=x1_ui_not_found")
         except Exception as exc:
             notes.append(f"{desc}_warn={exc}")
 

@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.2.0",
-  "canonical_label": "릴프로필 v1.2.0",
+  "canonical_version": "1.2.1",
+  "canonical_label": "릴프로필 v1.2.1",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-26T19:20:19+09:00",
+  "updated_at": "2026-11-26T20:32:15+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -323,14 +323,23 @@
         "scripts/google_flow_ultra_cli.py",
         "scripts/run_fresh_origin_workflow.py"
       ]
+    },
+    {
+      "version": "1.2.1",
+      "date": "2026-11-26",
+      "timestamp": "2026-11-26T20:32:15+09:00",
+      "summary": "v1.2.1: Prevent Flow settings popover re-toggle before aspect and x4 count selection",
+      "changed_files": [
+        "scripts/google_flow_ultra_cli.py"
+      ]
     }
   ],
-  "code_tree_sha256": "01b0ba54aacbfc93ecb02c0464966223db569243e089208eafa58624e95cf14e",
+  "code_tree_sha256": "c7985f60bdd1ccaaae23004cee71f269f479936d9ba5dcd308246b1ce6500a8d",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "bd20279bfc73708cd2946e7f1906e9ee1dd681720fc3cc0be92f9d79dc15e049",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "009408d530fa62791821adb2d73d78c69ddb3809f4681d650d8be0260bb8ccfb",
+    "model_generation_engine/__init__.py": "f2fb4b224e8c59d076767df592dd5bef965cd23260f1de1b1a12aa6e9df704e9",
     "model_generation_engine/apple_vision.py": "a81945710d0a1bc9f685cbce7efd314dd52d90975fc9d3e892dbb95db4552001",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
@@ -359,7 +368,7 @@
     "model_generation_engine/upscaler.py": "daf27fd5b3abcb71bad79f86aa89813eb9933329db8e14069b21ca68cca20878",
     "model_generation_engine/version_guard.py": "1e19428daefc8716bd8f7a6218f6e0c0754ef64627c93682f7beebeb2073ab77",
     "model_generation_engine/workflow.py": "22f1fffd424d41517a3384fbf8636f4d587b34a3aef52ecb578e0ee3fa392007",
-    "scripts/google_flow_ultra_cli.py": "15ea64ae8bfb24e968bb297f913a7235116b247b48de87ef2c8a6fb15998bed3",
+    "scripts/google_flow_ultra_cli.py": "680524fc743abc3ba0c2eaef1dccce0d3eef0d886c8992172d34b02e9888aedc",
     "scripts/run_fresh_origin_workflow.py": "d04f973adff2c1a457f419c94b4c9451cc7eb7052f05a38619da505be15a7a18",
     "scripts/run_headless_mesh_workflow.py": "dcaac8e6ae1211eae8ce455dce031a27719d5242f29a86af9aa7feefcd5dfae4",
     "scripts/version_ctl.py": "7b50eb48a3be956a3775e25bb2ee1ff3d058d1376d5305697fddd82b37fdf359"
