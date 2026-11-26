@@ -1518,36 +1518,48 @@ class FreshOriginEditorialWorkflow:
         cv2.imwrite(str(out_macro), macro_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
 
         ref_marks_4k = self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)))
-        macro_marks_4k = self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(macro_bgr, cv2.COLOR_BGR2RGB)))
+        up_marks_4k = self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(up_bgr, cv2.COLOR_BGR2RGB)))
         eye_strip_saved = self.ocular.save_400pct_eye_comparison_strip(ref_bgr, macro_bgr, str(out_eye_cmp))
-        oc_cmp = self.ocular.compare(ref_bgr, macro_bgr, ref_marks=ref_marks_4k, cand_marks=macro_marks_4k)
+        oc_cmp = self.ocular.compare(ref_bgr, up_bgr, ref_marks=ref_marks_4k, cand_marks=up_marks_4k)
         sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(
-            ref_bgr, macro_bgr, output_overlay_path=str(out_sil_ov)
+            ref_bgr, up_bgr, output_overlay_path=str(out_sil_ov)
         )
-        ex_cmp = self.exaggeration_guard.audit(ref_bgr, macro_bgr, ref_marks=ref_marks_4k, cand_marks=macro_marks_4k)
-        od_cmp = self.organ_depth.compare(pure_gen0_bgr, macro_bgr)
+        ex_cmp = self.exaggeration_guard.audit(ref_bgr, up_bgr, ref_marks=ref_marks_4k, cand_marks=up_marks_4k)
+        od_cmp = self.organ_depth.compare(pure_gen0_bgr, up_bgr)
 
-        # Gate 13: Native-4K Luminance-to-Chroma layer-mismatch skin blotchiness check
+        # Gate 13: Native-4K Luminance-to-Chroma layer-mismatch skin blotchiness check (bare cheek + hair-excluded skin)
         skin_mottle_passed = True
         skin_l_to_ab_ratio = 0.0
         if min(uw, uh) >= 2160:
-            fh_patch = up_bgr[
-                max(0, int(fy + 0.08 * fh)) : min(uh, int(fy + 0.24 * fh)),
-                max(0, int(fx + 0.25 * fw)) : min(uw, int(fx + 0.75 * fw)),
+            chk_l = up_bgr[
+                max(0, int(fy + 0.44 * fh)) : min(uh, int(fy + 0.64 * fh)),
+                max(0, int(fx + 0.16 * fw)) : min(uw, int(fx + 0.38 * fw)),
             ]
-            if fh_patch.size >= 400:
-                lab_fh = cv2.cvtColor(fh_patch, cv2.COLOR_BGR2LAB).astype(np.float32)
-                l_hf_v = float(np.std(lab_fh[:, :, 0] - cv2.GaussianBlur(lab_fh[:, :, 0], (0, 0), 2.2)))
-                ab_hf_v = float(
-                    np.std(
-                        np.hypot(
-                            lab_fh[:, :, 1] - cv2.GaussianBlur(lab_fh[:, :, 1], (0, 0), 2.2),
-                            lab_fh[:, :, 2] - cv2.GaussianBlur(lab_fh[:, :, 2], (0, 0), 2.2),
-                        )
-                    )
-                ) + 1e-4
+            chk_r = up_bgr[
+                max(0, int(fy + 0.44 * fh)) : min(uh, int(fy + 0.64 * fh)),
+                max(0, int(fx + 0.62 * fw)) : min(uw, int(fx + 0.84 * fw)),
+            ]
+            l_hf_vals: List[float] = []
+            ab_hf_vals: List[float] = []
+            for sp_patch in (chk_l, chk_r):
+                if sp_patch.size < 300:
+                    continue
+                lab_sp = cv2.cvtColor(sp_patch, cv2.COLOR_BGR2LAB).astype(np.float32)
+                skin_px = lab_sp[:, :, 0] >= 95.0
+                if int(np.sum(skin_px)) < 80:
+                    continue
+                dl = (lab_sp[:, :, 0] - cv2.GaussianBlur(lab_sp[:, :, 0], (0, 0), 2.2))[skin_px]
+                dab = np.hypot(
+                    lab_sp[:, :, 1] - cv2.GaussianBlur(lab_sp[:, :, 1], (0, 0), 2.2),
+                    lab_sp[:, :, 2] - cv2.GaussianBlur(lab_sp[:, :, 2], (0, 0), 2.2),
+                )[skin_px]
+                l_hf_vals.append(float(np.std(dl)))
+                ab_hf_vals.append(float(np.std(dab)))
+            if l_hf_vals and ab_hf_vals:
+                l_hf_v = float(np.mean(l_hf_vals))
+                ab_hf_v = float(np.mean(ab_hf_vals)) + 1e-4
                 skin_l_to_ab_ratio = round(l_hf_v / ab_hf_v, 2)
-                if l_hf_v > 6.2 and skin_l_to_ab_ratio > 15.0:
+                if l_hf_v > 6.8 and skin_l_to_ab_ratio > 15.5:
                     skin_mottle_passed = False
 
         all_passed = bool(

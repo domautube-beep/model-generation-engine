@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.1.4",
-  "canonical_label": "릴프로필 v1.1.4",
+  "canonical_version": "1.1.5",
+  "canonical_label": "릴프로필 v1.1.5",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-26T16:45:02+09:00",
+  "updated_at": "2026-11-26T17:11:30+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -285,14 +285,23 @@
       "changed_files": [
         "model_generation_engine/ocular_anatomy.py"
       ]
+    },
+    {
+      "version": "1.1.5",
+      "date": "2026-11-26",
+      "timestamp": "2026-11-26T17:11:30+09:00",
+      "summary": "v1.1.5: Unify rank/finalize full-canvas Vision landmark coordinates and measure bare mid-cheek skin (excluding dark forehead bangs) in Gate 13",
+      "changed_files": [
+        "model_generation_engine/fresh_origin_workflow.py"
+      ]
     }
   ],
-  "code_tree_sha256": "35a4958bf67891e9570b2a923e6375dede6d50b5c4cad34150cbd6b9de232448",
+  "code_tree_sha256": "714a1490d3f3d44fdee45471b2cac6e181deb4c908a4113d712b9b3b5bdb09ca",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "6d496c0d38f4e69c0268bf0a3e8e998344655d9bdd547af194bb8d4f19fbf24a",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "81383fe89b715a3d2a3863ab81f853bef3d92d2d2bf36346753c557311c2dd45",
+    "model_generation_engine/__init__.py": "6ca0ae067e8ca250d03a7bbde536be7cad4ffe73035ee5e17143911e9cb20e5f",
     "model_generation_engine/apple_vision.py": "0505b00704e795ed4ffbdad9fc93dc081613b91a34ea5550199981a4fd89ca37",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
@@ -300,7 +309,7 @@
     "model_generation_engine/detector.py": "83b9b95ff7b6f4e963657b951f3054fa679a1e036f372a9a96ea9dae897ad66c",
     "model_generation_engine/face_exaggeration_guard.py": "82113938c2f0dd82e99000fee222f437b27a2b212da9022bf3f943c55a6d98ac",
     "model_generation_engine/face_reattach.py": "2f8bf1df83bdbdecffad7da9fc823afd2ecb10eca65798fc1964b0b6019c6dcb",
-    "model_generation_engine/fresh_origin_workflow.py": "89436d0437fe37cd6c4352c0e075b765f39cc295a6f25e6db1bb4986d467213a",
+    "model_generation_engine/fresh_origin_workflow.py": "059af4c46a77a78718e24a04775150d9b47cb4d8eb7169fbec24530a342c040b",
     "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
     "model_generation_engine/identity_turnaround.py": "f42998672c1f8eb88b015ba7ab5354ce8be393fef2681422ad2e6f229ae8187f",
     "model_generation_engine/multi_asset_composer.py": "e768cb951b4d4636e1030e3b52a89d91cfede98f985f7b8fe5c1c588cdb8abf7",
