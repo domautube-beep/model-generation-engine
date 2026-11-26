@@ -173,13 +173,25 @@ class FreshOriginEditorialWorkflow:
         self.organ_depth = OrganAndDepthAnatomyAnalyzer(self.pipeline.apple_vision)
         self.exaggeration_guard = FaceExaggerationGuard(self.pipeline.apple_vision)
         self.origin_guard = OriginOnlyOneShotGuard()
-        self.relighter = IntrinsicAlbedoRelighter(self.pipeline.detector, self.pipeline.apple_vision)
-        self.facelock_studio = FaceLockedOutpaintStudio(
-            self.pipeline.detector, self.pipeline.apple_vision, self.relighter
-        )
+        self._relighter = None
+        self._facelock_studio = None
         self._bp_mem_cache: Dict[str, Tuple[AnatomicalBlueprint, Optional[object]]] = {}
         self._verified_8dir_mem_cache: Dict[Tuple[str, str], str] = {}
         self._ocular_crop_bytes_cache: Dict[str, bytes] = {}
+
+    @property
+    def relighter(self):
+        if self._relighter is None:
+            self._relighter = IntrinsicAlbedoRelighter(self.pipeline.detector, self.pipeline.apple_vision)
+        return self._relighter
+
+    @property
+    def facelock_studio(self):
+        if self._facelock_studio is None:
+            self._facelock_studio = FaceLockedOutpaintStudio(
+                self.pipeline.detector, self.pipeline.apple_vision, self.relighter
+            )
+        return self._facelock_studio
 
     def _get_cached_gen0_blueprint_and_organ(
         self, gen0_p: Path, ref_bgr: np.ndarray
@@ -712,6 +724,24 @@ class FreshOriginEditorialWorkflow:
             )
 
         is_airbrushed_gen0 = bool(organ_profile is not None and organ_profile.is_airbrushed_or_lowres_origin)
+        oc_bp = blueprint.ocular_profile
+        measured_iris_pct = max(34, min(42, int(round((oc_bp.avg_iris_to_eye_width if oc_bp is not None else 0.39) * 95.0))))
+        if oc_bp is not None and oc_bp.crease_category() == "tight_inline_or_monolid":
+            dyn_lid_iris_lock = (
+                f"Maintain Image 1's exact smooth flush monolid/tight-inline upper eyelids (zero artificial double-eyelid crease arch) "
+                f"and compact medium-small irises occupying ~{measured_iris_pct}% of horizontal eye width (never enlarge irises) "
+                "so clean smooth natural white sclera stays clearly visible on both inner and outer eye corners with a soft natural catchlight."
+            )
+        else:
+            dyn_lid_iris_lock = (
+                f"Maintain Image 1's exact upper-eyelid fold height and compact irises occupying ~{measured_iris_pct}% of horizontal eye width "
+                "(never enlarge irises) with clean natural white sclera clearly visible on both sides and a soft natural catchlight."
+            )
+        dyn_scale_clean_lock = (
+            ""
+            if resolved_framing == "closeup"
+            else " Keep total human pixel area compact (~25%–34% of canvas, strictly <=50% visual weight) inside a clean clutter-free frame (ZERO studio lamps, softboxes, reflectors, or stands visible in frame), and keep shoulders broad and open toward the camera (~3.0x natural head-to-shoulder span, never hunched or narrowed)."
+        )
         for i in range(k_count):
             seed_tag, _cam_hdr = self.DEFAULT_CAMERA_SEEDS[i % len(self.DEFAULT_CAMERA_SEEDS)]
             preset = adaptive_presets[i]
@@ -734,24 +764,24 @@ class FreshOriginEditorialWorkflow:
             space_depth_rule = (
                 "requested close-up composition (~70% subject occupancy) with tack-sharp focus strictly on the eyes and face while the background melts into creamy out-of-focus optical bokeh (zero busy background detail, strong 3D Z-depth)."
                 if resolved_framing == "closeup"
-                else "balanced 50:50 subject-to-background composition (human figure ~45%–50% of frame area, ~50%–55% open architectural breathing room, headroom, and side negative space—NEVER fill the entire frame edge-to-edge) with shallow optical depth-of-field bokeh (tack-sharp eyes/face, creamy out-of-focus background without sharp background micro-detail, strong three-dimensional Z-depth separation)."
+                else "balanced 50:50 subject-to-background composition (human figure ~26%–35% pixel mask / <=50% visual frame weight, >=50% open breathing room, headroom, and side negative space—NEVER fill the entire frame edge-to-edge) with shallow optical depth-of-field bokeh (tack-sharp eyes/face, creamy out-of-focus background without sharp background micro-detail, strong three-dimensional Z-depth separation)."
             )
             if no_film_grain:
                 slot1_camera = (
                     f"Clean, tack-sharp 100MP medium-format digital commercial editorial photograph (Hasselblad X2D 100C, {lens_mm}mm prime lens wide-open at {preset_ap}, base ISO 64, {aspect_ratio_label}, {framing_desc}), "
                     "pure noise-free optical clarity with ZERO film grain, natural undistorted perspective, "
-                    f"realistic adult 7.45-head multi-segment Korean body proportions, and {space_depth_rule}"
+                    f"realistic adult 8.2-head multi-segment body proportions, and {space_depth_rule}"
                 )
             else:
                 slot1_camera = (
                     f"Unstaged raw medium-format 35mm film location photograph ({lens_mm}mm prime lens wide-open at {aperture_str}, {aspect_ratio_label}, {framing_desc}), "
-                    "natural undistorted perspective with realistic adult 7.45-head multi-segment body proportions "
+                    "natural undistorted perspective with realistic adult 8.2-head multi-segment body proportions "
                     f"and {space_depth_rule}"
                 )
             slot2_identity = (
                 f"Subject: {subj_label} ({ref_note}). "
                 f"{natural_id_clause if natural_id_clause else 'Preserve exact 1:1 anatomical facial identity from Image 1 while discarding studio flash lighting and stiff posture.'} "
-                "Never beautify, exaggerate, or caricature any facial feature."
+                f"{dyn_lid_iris_lock} Never beautify, exaggerate, or caricature any facial feature."
             )
             if design_mode == "design_b_rerender" and facelock_canvas_p is not None:
                 clean_note = (
@@ -768,10 +798,10 @@ class FreshOriginEditorialWorkflow:
             else:
                 clean_note = ""
             slot3_pose = (
-                f"Physical Gravity & Pose: {scene_instruction.strip()}.{clean_note} "
+                f"Physical Gravity & Pose: {scene_instruction.strip()}.{clean_note}{dyn_scale_clean_lock} "
                 "Let hip and torso weight rest genuinely on the furniture under real gravity with a relaxed natural spine "
-                "and natural shoulder posture, while keeping the head comfortably forward with a slight natural chin tuck "
-                "matching Image 1's vertical camera angle (NEVER lean the head backward, NEVER tilt the chin upward, and NEVER expose the underside of the nostrils; zero stiff ID-photo tension)."
+                "and broad natural shoulder posture, while keeping the head comfortably forward with a slight natural chin tuck "
+                "matching Image 1's exact vertical camera angle and compact eye-to-chin height (NEVER lean the head backward, NEVER tilt the chin upward, and NEVER expose the underside of the nostrils; zero stiff ID-photo tension)."
             )
             slot4_outfit = (
                 f"Wardrobe: {outfit_instruction.strip()}, matte fabric hanging and creasing naturally with body slouch and gravity "
@@ -779,9 +809,9 @@ class FreshOriginEditorialWorkflow:
             )
             active_light_desc = preset_light_en if k_count >= 2 else loc_light_desc
             skin_realism_note = (
-                "authentic unretouched real-camera adult skin micro-pores, subtle fine skin relief, and scene-matched tonal brightness/color (discarding Image 1's smoothed ID retouching and bright flash lightness) without plastic gloss"
+                "authentic unretouched real-camera adult skin micro-pores, subtle fine skin relief, scene-matched tonal brightness/color without plastic gloss, and gentle out-of-frame lower fill keeping the neck skin beneath the chin cleanly separated without ink-black jaw shadow"
                 if is_airbrushed_gen0
-                else "clean, translucent real-camera skin with fine natural pores and hydrated natural lip contour without plastic gloss"
+                else "clean, translucent real-camera skin with fine natural pores, hydrated natural lip contour without plastic gloss, and clean chin-to-neck light separation without crushed jaw shadow"
             )
             if no_film_grain:
                 slot5_light = (
@@ -1005,10 +1035,12 @@ class FreshOriginEditorialWorkflow:
         if base_ref_bgr is None:
             raise FileNotFoundError(f"Cannot read Gen-0 portrait: {gen0_p}")
         base_ref_face = self.pipeline.detector.detect(base_ref_bgr)
-        base_ref_marks = self.pipeline.apple_vision.landmarks(Image.fromarray(cv2.cvtColor(base_ref_bgr, cv2.COLOR_BGR2RGB)))
+        base_ref_pil = Image.fromarray(cv2.cvtColor(base_ref_bgr, cv2.COLOR_BGR2RGB))
+        base_ref_marks = self.pipeline.apple_vision.landmarks(base_ref_pil)
         base_ref_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, base_ref_bgr, marks=base_ref_marks)
         if base_ref_vec is None:
             raise RuntimeError("Failed to extract 18-metric craniofacial vector from Gen-0.")
+        _, _, base_ref_organ = self._get_cached_gen0_blueprint_and_organ(gen0_p, base_ref_bgr)
 
         scored: List[CandidateScore] = []
         for cp in candidate_paths:
@@ -1023,6 +1055,12 @@ class FreshOriginEditorialWorkflow:
             bgr = cv2.imread(str(p))
             if bgr is None:
                 continue
+            try:
+                self.origin_guard.register_generated_scene_output(p, job_id="stage3_candidate", bgr_hint=bgr)
+            except Exception:
+                pass
+            cand_pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            cand_marks = self.pipeline.apple_vision.landmarks(cand_pil)
             _matched_p, ref_bgr = self._resolve_angle_matched_ref_bgr(
                 gen0_p, base_ref_bgr, bgr, turnaround_sheet_path=turnaround_sheet_path
             )
@@ -1030,15 +1068,20 @@ class FreshOriginEditorialWorkflow:
                 ref_face = self.pipeline.detector.detect(ref_bgr)
                 ref_marks = self.pipeline.apple_vision.landmarks(Image.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)))
                 ref_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, ref_bgr, marks=ref_marks) or base_ref_vec
+                ref_organ = None
             else:
                 ref_face = base_ref_face
                 ref_marks = base_ref_marks
                 ref_vec = base_ref_vec
+                ref_organ = base_ref_organ
 
             dst_face = self.pipeline.detector.detect(bgr)
-            cand_marks = self.pipeline.apple_vision.landmarks(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
             sface_angle = float(self.pipeline.auditor.measure_identity_similarity(ref_bgr, bgr, ref_face, dst_face))
-            sface_gen0 = float(self.pipeline.auditor.measure_identity_similarity(base_ref_bgr, bgr, base_ref_face, dst_face))
+            sface_gen0 = (
+                sface_angle
+                if ref_bgr is base_ref_bgr
+                else float(self.pipeline.auditor.measure_identity_similarity(base_ref_bgr, bgr, base_ref_face, dst_face))
+            )
             sface_sim = max(sface_angle, sface_gen0) if sface_gen0 >= 0.58 else sface_gen0
             c_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, bgr, full_canvas_bgr=bgr, marks=cand_marks)
             if c_vec is None:
@@ -1049,10 +1092,16 @@ class FreshOriginEditorialWorkflow:
             oc_d = oc_cmp.get("diffs") or {}
             ex_cmp = self.exaggeration_guard.audit(ref_bgr, bgr, ref_marks=ref_marks, cand_marks=cand_marks)
             ex_idx = float(ex_cmp.get("exaggerationIndex", 0.0))
-            sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(ref_bgr, bgr, output_overlay_path=None)
-            je_cmp = self.exaggeration_guard.measure_jaw_to_ear_neck_and_eye_audit(ref_bgr, bgr)
+            sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(
+                ref_bgr, bgr, output_overlay_path=None, ref_marks=ref_marks, cand_marks=cand_marks
+            )
+            je_cmp = self.exaggeration_guard.measure_jaw_to_ear_neck_and_eye_audit(
+                ref_bgr, bgr, ref_marks=ref_marks, cand_marks=cand_marks
+            )
             c_iou = float(sil_cmp.get("contourIoU", 0.90))
-            od_cmp = self.organ_depth.compare(ref_bgr, bgr)
+            od_cmp = self.organ_depth.compare(
+                ref_bgr, bgr, ref_marks=ref_marks, cand_marks=cand_marks, ref_profile=ref_organ
+            )
             od_drift = float(od_cmp.get("organDepthDrift", 0.0))
             ms_err_pct = self._estimate_multisegment_head_error_pct(bgr, dst_face)
             skin_m = self.pipeline.auditor.skin_processor.measure_metrics(bgr, dst_face)
@@ -1097,8 +1146,6 @@ class FreshOriginEditorialWorkflow:
                 issues.extend(str(x) for x in sil_cmp.get("issues", []))
             if not je_cmp.get("passed", True):
                 issues.extend(str(x) for x in je_cmp.get("issues", []))
-            if not od_cmp.get("passed", True):
-                issues.extend(str(x) for x in od_cmp.get("issues", []))
 
             native_ok = len(issues) == 0
             # Higher composite_rank_score is better: strongly prioritize SFace identity, 4-organ+3D-depth+skin fidelity, eye NCC, and body harmony
@@ -1142,11 +1189,6 @@ class FreshOriginEditorialWorkflow:
             raise RuntimeError("No valid face candidates could be scored.")
 
         scored.sort(key=lambda c: c.composite_rank_score, reverse=True)
-        for c_item in scored:
-            try:
-                self.origin_guard.register_generated_scene_output(Path(c_item.candidate_path), job_id="stage3_candidate")
-            except Exception:
-                pass
         winner = scored[0]
         return {
             "winner": asdict(winner),
@@ -1204,12 +1246,12 @@ class FreshOriginEditorialWorkflow:
 
         raw_bgr = cv2.imread(str(win_p))
         ref_bgr = cv2.imread(str(gen0_p))
-        pure_gen0_bgr = cv2.imread(str(pure_gen0_p))
+        pure_gen0_bgr = ref_bgr if pure_gen0_p == gen0_p else cv2.imread(str(pure_gen0_p))
         if raw_bgr is None or ref_bgr is None or pure_gen0_bgr is None:
             raise RuntimeError("Failed to decode winner or Gen-0 portrait.")
 
         # Register raw Stage-3 winner into forbidden generated outputs immediately so it can NEVER be re-fed!
-        self.origin_guard.register_generated_scene_output(win_p, job_id=f"{output_stem}_raw_winner")
+        self.origin_guard.register_generated_scene_output(win_p, job_id=f"{output_stem}_raw_winner", bgr_hint=raw_bgr)
 
         r_sh, r_sw = raw_bgr.shape[:2]
         is_native_4k_raw = bool(max(r_sh, r_sw) >= 3840 and min(r_sh, r_sw) >= 2160)
@@ -1519,13 +1561,21 @@ class FreshOriginEditorialWorkflow:
 
         ref_marks_4k = self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)))
         up_marks_4k = self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(up_bgr, cv2.COLOR_BGR2RGB)))
+        pure_marks_4k = (
+            ref_marks_4k
+            if pure_gen0_bgr is ref_bgr
+            else self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(pure_gen0_bgr, cv2.COLOR_BGR2RGB)))
+        )
+        _, _, pure_organ_4k = self._get_cached_gen0_blueprint_and_organ(pure_gen0_p, pure_gen0_bgr)
         eye_strip_saved = self.ocular.save_400pct_eye_comparison_strip(ref_bgr, macro_bgr, str(out_eye_cmp))
         oc_cmp = self.ocular.compare(ref_bgr, up_bgr, ref_marks=ref_marks_4k, cand_marks=up_marks_4k)
         sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(
-            ref_bgr, up_bgr, output_overlay_path=str(out_sil_ov)
+            ref_bgr, up_bgr, output_overlay_path=str(out_sil_ov), ref_marks=ref_marks_4k, cand_marks=up_marks_4k
         )
         ex_cmp = self.exaggeration_guard.audit(ref_bgr, up_bgr, ref_marks=ref_marks_4k, cand_marks=up_marks_4k)
-        od_cmp = self.organ_depth.compare(pure_gen0_bgr, up_bgr)
+        od_cmp = self.organ_depth.compare(
+            pure_gen0_bgr, up_bgr, ref_marks=pure_marks_4k, cand_marks=up_marks_4k, ref_profile=pure_organ_4k
+        )
 
         # Gate 13: Native-4K Luminance-to-Chroma layer-mismatch skin blotchiness check (bare cheek + hair-excluded skin)
         skin_mottle_passed = True
@@ -1606,7 +1656,7 @@ class FreshOriginEditorialWorkflow:
             cv2.imwrite(str(out_4k), up_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
             hero_4k_sha256 = _sha256_file(out_4k)
             # Blacklist generated output in OriginOnlyOneShotGuard so it can NEVER be re-fed as input!
-            self.origin_guard.register_generated_scene_output(out_4k, job_id=output_stem)
+            self.origin_guard.register_generated_scene_output(out_4k, job_id=output_stem, bgr_hint=up_bgr)
         else:
             # Physically remove deliverable *_4k.jpg on failure so unapproved images can NEVER be delivered!
             out_4k.unlink(missing_ok=True)

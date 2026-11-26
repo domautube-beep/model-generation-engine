@@ -55,13 +55,13 @@ FORBIDDEN_GEN_INPUT_PATTERNS = [
 SAFE_ORIGIN_PATTERNS = [
     re.compile(r"[/\\]\.user_uploaded[/\\]", re.IGNORECASE),
     re.compile(r"[/\\]originals[/\\]", re.IGNORECASE),
-    re.compile(r"[/\\]loc\d+.*_clean\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
+    re.compile(r"[/\\](?:loc\d+.*_clean|clean_location_no_person_plate|focal_clean_location_.*)\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
     re.compile(r"[/\\]gen0_optical_ocular_detail_anchor\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
     re.compile(r"[/\\]stage2a_mesh_precomposite.*\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE),
 ]
 
 NON_FACE_CLEAN_PLATE_PATTERN = re.compile(
-    r"[/\\](?:loc\d+.*_clean|stage2a_mesh_precomposite.*)\.(?:jpg|jpeg|png|webp)$",
+    r"[/\\](?:loc\d+.*_clean|clean_location_no_person_plate|focal_clean_location_.*|stage2a_mesh_precomposite.*)\.(?:jpg|jpeg|png|webp)$",
     re.IGNORECASE,
 )
 

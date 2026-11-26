@@ -266,13 +266,18 @@ class FaceExaggerationGuard:
         output_overlay_path: Optional[str] = None,
         max_point_err_px: float = 11.5,
         min_contour_iou: float = 0.92,
+        ref_marks: Optional[Dict[str, object]] = None,
+        cand_marks: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
         """Align Gen-0 and Candidate strictly by `(leftPupil, rightPupil)` at IOD=180px & audit exact 17-pt outer silhouette."""
         import math
 
-        def _align(bgr: np.ndarray, size: int = 800):
-            pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-            m = self.vision.landmarks(pil)
+        def _align(bgr: np.ndarray, m_pre: Optional[Dict[str, object]] = None, size: int = 800):
+            if m_pre is not None:
+                m = m_pre
+            else:
+                pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                m = self.vision.landmarks(pil)
             if not m or not m.get("contour") or not m.get("leftEye") or not m.get("rightEye"):
                 return None, None, None, None, 0.0, 0.0
             le = np.array(m["leftEye"], dtype=np.float32)
@@ -324,8 +329,8 @@ class FaceExaggerationGuard:
                 dome_mask[bg_diff > 24.0] = 255
             return warped, c_xf, lips_xf, dome_mask, inner_gap_px, nose_turn
 
-        w0, c0, lips0, dome0, gap0, turn0 = _align(ref_gen0_bgr)
-        wc, cc, lipsc, domec, gapc, turnc = _align(cand_bgr)
+        w0, c0, lips0, dome0, gap0, turn0 = _align(ref_gen0_bgr, m_pre=ref_marks)
+        wc, cc, lipsc, domec, gapc, turnc = _align(cand_bgr, m_pre=cand_marks)
         if w0 is None or wc is None or c0 is None or cc is None:
             return {
                 "valid": False,
@@ -526,6 +531,8 @@ class FaceExaggerationGuard:
         self,
         ref_gen0_bgr: np.ndarray,
         cand_bgr: np.ndarray,
+        ref_marks: Optional[Dict[str, object]] = None,
+        cand_marks: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
         """Dedicated micro-geometry & optical shading audit for:
         1) Jaw-to-Ear diagonal line (chin->gonion slope, gonion->ear slope, outward sagitta bulge '턱 뚱뚱해 보임'),
@@ -535,19 +542,45 @@ class FaceExaggerationGuard:
         """
         import math
 
-        def _extract_profile(bgr: np.ndarray, target_iod: Optional[float] = None) -> Optional[Dict[str, float]]:
-            pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-            m = self.vision.landmarks(pil)
+        def _get_marks_and_iod(bgr: np.ndarray, m_pre: Optional[Dict[str, object]]):
+            m = m_pre if m_pre is not None else self.vision.landmarks(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
             if not m or not m.get("contour") or not m.get("leftEye") or not m.get("rightEye"):
-                return None
-            c = np.array(m["contour"], dtype=np.float32)
+                return None, 0.0
             le = np.array(m["leftEye"], dtype=np.float32)
             re = np.array(m["rightEye"], dtype=np.float32)
-            leb = np.array(m.get("leftEyebrow") or le, dtype=np.float32)
-            reb = np.array(m.get("rightEyebrow") or re, dtype=np.float32)
             lp = np.mean(np.array(m.get("leftPupil") or le, dtype=np.float32), axis=0)
             rp = np.mean(np.array(m.get("rightPupil") or re, dtype=np.float32), axis=0)
-            iod = max(1.0, float(np.linalg.norm(rp - lp)))
+            return m, max(1.0, float(np.linalg.norm(rp - lp)))
+
+        def _extract_profile(
+            bgr: np.ndarray, m: Dict[str, object], target_iod: Optional[float] = None
+        ) -> Optional[Dict[str, float]]:
+            h_full, w_full = bgr.shape[:2]
+            c_full = np.array(m["contour"], dtype=np.float32)
+            le_full = np.array(m["leftEye"], dtype=np.float32)
+            re_full = np.array(m["rightEye"], dtype=np.float32)
+            leb_full = np.array(m.get("leftEyebrow") or le_full, dtype=np.float32)
+            reb_full = np.array(m.get("rightEyebrow") or re_full, dtype=np.float32)
+            lp_full = np.mean(np.array(m.get("leftPupil") or le_full, dtype=np.float32), axis=0)
+            rp_full = np.mean(np.array(m.get("rightPupil") or re_full, dtype=np.float32), axis=0)
+            iod = max(1.0, float(np.linalg.norm(rp_full - lp_full)))
+
+            # Slice tight head+neck ROI BEFORE float32 LAB + GaussianBlur (~60x faster on 4K/5K canvases, 100% identical!)
+            face_w_est = max(iod, float(c_full[:, 0].max() - c_full[:, 0].min()))
+            jx0 = max(0, int(c_full[:, 0].min() - 0.35 * face_w_est))
+            jx1 = min(w_full, int(c_full[:, 0].max() + 0.35 * face_w_est))
+            jy0 = max(0, int(min(float(leb_full[:, 1].min()), float(reb_full[:, 1].min())) - 0.35 * iod))
+            jy1 = min(h_full, int(float(c_full[:, 1].max()) + 0.55 * iod))
+            sub_bgr = bgr[jy0:jy1, jx0:jx1]
+            off_xy = np.array([jx0, jy0], dtype=np.float32)
+
+            c = c_full - off_xy
+            le = le_full - off_xy
+            re = re_full - off_xy
+            leb = leb_full - off_xy
+            reb = reb_full - off_xy
+            lp = lp_full - off_xy
+            rp = rp_full - off_xy
             n = len(c)
             face_center = np.array([0.5 * float(lp[0] + rp[0]), 0.5 * float(lp[1] + rp[1])], dtype=np.float32)
 
@@ -587,7 +620,7 @@ class FaceExaggerationGuard:
             r_gon_ear_deg = math.degrees(math.atan2(abs(float(r_gon_i[1] - r_ear_i[1])), max(1.0, abs(float(r_ear_i[0] - r_gon_i[0])))))
 
             # 2) Submandibular jaw-neck shadow contrast (CIE L* inside jaw vs outside neck along near jaw arc)
-            lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+            lab = cv2.cvtColor(sub_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
             L_ch = lab[:, :, 0]
             h, w = L_ch.shape
             off = max(4, int(round(0.08 * iod)))
@@ -693,7 +726,7 @@ class FaceExaggerationGuard:
 
             nose_turn_p = 0.0
             if m.get("nose") and len(m["nose"]) >= 2:
-                ns_pts = np.array(m["nose"], dtype=np.float32)
+                ns_pts = np.array(m["nose"], dtype=np.float32) - off_xy
                 ns_rel = ns_pts - face_center[None, :]
                 ns_intr_x = ns_rel[:, 0] * cr_a - ns_rel[:, 1] * sr_a
                 nose_turn_p = float(np.mean(ns_intr_x) / iod)
@@ -714,13 +747,13 @@ class FaceExaggerationGuard:
                 "browDarknessL": round(brow_dark, 2),
             }
 
-        p0_raw = _extract_profile(ref_gen0_bgr)
-        pc_raw = _extract_profile(cand_bgr)
-        if not p0_raw or not pc_raw:
+        m0, iod0 = _get_marks_and_iod(ref_gen0_bgr, ref_marks)
+        mc, iodc = _get_marks_and_iod(cand_bgr, cand_marks)
+        if not m0 or not mc:
             return {"valid": False, "passed": False, "issues": ["턱→귀·눈매 프로파일 랜드마크 검출 실패"]}
-        common_iod = min(float(p0_raw["iodPx"]), float(pc_raw["iodPx"]))
-        p0 = _extract_profile(ref_gen0_bgr, target_iod=common_iod) if float(p0_raw["iodPx"]) > common_iod * 1.15 else p0_raw
-        pc = _extract_profile(cand_bgr, target_iod=common_iod) if float(pc_raw["iodPx"]) > common_iod * 1.15 else pc_raw
+        common_iod = min(iod0, iodc)
+        p0 = _extract_profile(ref_gen0_bgr, m0, target_iod=common_iod)
+        pc = _extract_profile(cand_bgr, mc, target_iod=common_iod)
         if not p0 or not pc:
             return {"valid": False, "passed": False, "issues": ["턱→귀·눈매 프로파일 랜드마크 검출 실패"]}
 

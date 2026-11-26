@@ -103,7 +103,7 @@ class MatteSkinProcessor:
         return cv2.GaussianBlur(organ_mask, (ksize, ksize), max(1.5, 0.04 * eye_d))
 
     def build_dynamic_skin_mask(
-        self, bgr_img: np.ndarray, det: FaceDetectionResult
+        self, bgr_img: np.ndarray, det: FaceDetectionResult, lab_f32: np.ndarray | None = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build a 3D-yaw-adaptive and skin-tone-adaptive feather mask excluding eyes, eyewear, lips, and hair."""
         h, w = bgr_img.shape[:2]
@@ -178,13 +178,20 @@ class MatteSkinProcessor:
             -1,
         )
 
-        lab = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab = lab_f32 if lab_f32 is not None else cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB).astype(np.float32)
         skin_profile = self.detector.sample_adaptive_skin_profile(bgr_img, det)
         skin_gate = skin_profile.build_chrominance_gate(lab)
 
         raw_mask = face_oval * (1.0 - eye_excl) * skin_gate
         ksize = max(5, int(round(0.12 * eye_d)) | 1)
-        feathered = cv2.GaussianBlur(raw_mask, (ksize, ksize), max(1.5, 0.03 * eye_d))
+        if ksize > 25 and min(h, w) > 256:
+            sm_w, sm_h = max(32, w // 4), max(32, h // 4)
+            sm_raw = cv2.resize(raw_mask, (sm_w, sm_h), interpolation=cv2.INTER_AREA)
+            sm_k = max(5, (ksize // 4) | 1)
+            sm_blur = cv2.GaussianBlur(sm_raw, (sm_k, sm_k), max(1.0, 0.0075 * eye_d))
+            feathered = cv2.resize(sm_blur, (w, h), interpolation=cv2.INTER_LINEAR)
+        else:
+            feathered = cv2.GaussianBlur(raw_mask, (ksize, ksize), max(1.5, 0.03 * eye_d))
         core = feathered > 0.5
         return feathered, core
 
@@ -275,8 +282,33 @@ class MatteSkinProcessor:
         """Measure plastic specular glare ratio and natural skin micro-texture std on a portrait."""
         if det is None:
             det = self.detector.detect(bgr_img)
-        _, core = self.build_dynamic_skin_mask(bgr_img, det)
+        h_in, w_in = bgr_img.shape[:2]
+        fx, fy, fw, fh = det.bbox
+        # Auto-crop large canvases tightly around face oval (1.2x face bbox; zero skin pixels exist outside face_oval!)
+        rx1 = max(0, int(fx - 0.12 * fw))
+        ry1 = max(0, int(fy - 0.12 * fh))
+        rx2 = min(w_in, int(fx + 1.12 * fw))
+        ry2 = min(h_in, int(fy + 1.12 * fh))
+        if max(h_in, w_in) > 768 and fw > 8 and fh > 8 and ((rx2 - rx1) * (ry2 - ry1)) < 0.88 * (h_in * w_in):
+            bgr_img = bgr_img[ry1:ry2, rx1:rx2]
+            det = FaceDetectionResult(
+                bbox=(fx - rx1, fy - ry1, fw, fh),
+                landmarks_5pt=det.landmarks_5pt - np.array([rx1, ry1], dtype=np.float32),
+                confidence=det.confidence,
+            )
+        # If ultra-large close-up face (>900px bbox), evaluate skin mask & micro-std at canonical 768px face height (~10x faster, scale-normalized!)
+        if max(bgr_img.shape[:2]) > 960 and det.bbox[3] > 680:
+            sc_m = 680.0 / float(det.bbox[3])
+            mw = max(64, int(round(bgr_img.shape[1] * sc_m)))
+            mh = max(64, int(round(bgr_img.shape[0] * sc_m)))
+            bgr_img = cv2.resize(bgr_img, (mw, mh), interpolation=cv2.INTER_AREA)
+            det = FaceDetectionResult(
+                bbox=tuple(float(v) * sc_m for v in det.bbox),  # type: ignore[arg-type]
+                landmarks_5pt=(det.landmarks_5pt * sc_m).astype(np.float32),
+                confidence=det.confidence,
+            )
         lab = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB).astype(np.float32)
+        _, core = self.build_dynamic_skin_mask(bgr_img, det, lab_f32=lab)
         L, A, B = lab[:, :, 0], lab[:, :, 1], lab[:, :, 2]
 
         skin_L = L[core]

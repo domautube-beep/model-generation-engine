@@ -11,14 +11,10 @@ from PIL import Image
 from .apple_vision import AppleVisionAnalyzer
 from .config import EngineConfig
 from .detector import DynamicFaceDetector
-from .face_reattach import FaceLockCompositor, HeadRedrawCompositor, RelitOpticalFaceIntegrator
 from .identity_turnaround import RealPersonTurnaroundEngine
-from .multi_asset_composer import MultiSceneBatchComposer
-from .proportion_calibrator import MicroProportionCalibrator
 from .scene_radiometry import PostGenCohesionMasterer, SingleLensRadiometricSpec
 from .skin_processor import MatteSkinProcessor
 from .upscaler import SuperResolutionEngine
-from .compositor import Seamless5KCompositor
 from .quality_gate import QualityGateAuditor, QualityReport
 
 
@@ -31,18 +27,60 @@ class ModelGenerationPipeline:
         self.detector = DynamicFaceDetector(yunet_path)
         self.skin_processor = MatteSkinProcessor(self.detector)
         self.upscaler = SuperResolutionEngine(self.config, self.detector)
-        self.compositor = Seamless5KCompositor(self.config, self.detector)
         self.auditor = QualityGateAuditor(self.config, self.detector)
         bin_dir = (self.config.vault_dir / "models" / "apple_vision_bin") if self.config.vault_dir else None
         self.apple_vision = AppleVisionAnalyzer(bin_dir=bin_dir)
-        self.facelock = FaceLockCompositor(self.apple_vision)
-        self.head_redraw = HeadRedrawCompositor(self.apple_vision)
-        self.relit_integrator = RelitOpticalFaceIntegrator(self.apple_vision)
-        self.proportion_calibrator = MicroProportionCalibrator(self.apple_vision)
         self.turnaround = RealPersonTurnaroundEngine(
             self.config, self.detector, self.apple_vision, self.upscaler
         )
-        self.batch_composer = MultiSceneBatchComposer(self.turnaround)
+        self._compositor = None
+        self._facelock = None
+        self._head_redraw = None
+        self._relit_integrator = None
+        self._proportion_calibrator = None
+        self._batch_composer = None
+
+    @property
+    def compositor(self):
+        if self._compositor is None:
+            from .compositor import Seamless5KCompositor
+            self._compositor = Seamless5KCompositor(self.config, self.detector)
+        return self._compositor
+
+    @property
+    def facelock(self):
+        if self._facelock is None:
+            from .face_reattach import FaceLockCompositor
+            self._facelock = FaceLockCompositor(self.apple_vision)
+        return self._facelock
+
+    @property
+    def head_redraw(self):
+        if self._head_redraw is None:
+            from .face_reattach import HeadRedrawCompositor
+            self._head_redraw = HeadRedrawCompositor(self.apple_vision)
+        return self._head_redraw
+
+    @property
+    def relit_integrator(self):
+        if self._relit_integrator is None:
+            from .face_reattach import RelitOpticalFaceIntegrator
+            self._relit_integrator = RelitOpticalFaceIntegrator(self.apple_vision)
+        return self._relit_integrator
+
+    @property
+    def proportion_calibrator(self):
+        if self._proportion_calibrator is None:
+            from .proportion_calibrator import MicroProportionCalibrator
+            self._proportion_calibrator = MicroProportionCalibrator(self.apple_vision)
+        return self._proportion_calibrator
+
+    @property
+    def batch_composer(self):
+        if self._batch_composer is None:
+            from .multi_asset_composer import MultiSceneBatchComposer
+            self._batch_composer = MultiSceneBatchComposer(self.turnaround)
+        return self._batch_composer
 
     def refine_matte_skin_texture(self, bgr_img: np.ndarray, seed: int = 42) -> np.ndarray:
         """Eliminate plastic/oily facial specular gloss and preserve scale-adaptive natural skin micro-texture."""

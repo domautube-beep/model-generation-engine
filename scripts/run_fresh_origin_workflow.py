@@ -63,17 +63,20 @@ def _run_rank_and_finalize_single(
     )
     min_ep = float(manifest.get("created_at", 0.0))
 
-    if len(candidate_paths) > 1:
+    existing_cands = [Path(p) for p in candidate_paths if Path(p).is_file()]
+    active_cands = existing_cands if existing_cands else [Path(p) for p in candidate_paths]
+
+    if len(active_cands) > 1:
         rank_res = wf.score_and_select_native_winner(
             gen0_portrait_path=ref_for_angle,
-            candidate_paths=candidate_paths,
+            candidate_paths=active_cands,
             min_created_epoch=min_ep,
             turnaround_sheet_path=ts_path,
         )
         ordered_cands = [Path(c["candidate_path"]) for c in rank_res["all_candidates"]]
     else:
         rank_res = None
-        ordered_cands = [Path(candidate_paths[0])]
+        ordered_cands = [Path(active_cands[0])]
 
     last_err: Exception | None = None
     for cand_p in ordered_cands:
@@ -180,9 +183,11 @@ def main() -> int:
 
     p_pbatch = sub.add_parser(
         "prepare-batch",
-        help="Prepare N scene/outfit manifests for a subject in 1 warm Python process (<0.5s total)",
+        help="Prepare N scene/outfit manifests for 1..M subjects in 1 warm Python process (<0.2s total) and optionally emit Flow & Finalize batch specs",
     )
     p_pbatch.add_argument("--spec-json", required=True, type=Path, help="JSON spec containing gen0, turnaround_sheet, and cuts[]")
+    p_pbatch.add_argument("--emit-flow-batch", type=Path, default=None, help="Auto-write ready-to-run Google Flow x4 Native-4K batch JSON")
+    p_pbatch.add_argument("--emit-finalize-batch", type=Path, default=None, help="Auto-write ready-to-run finalize-batch JSON")
 
     p_fbatch = sub.add_parser(
         "finalize-batch",
@@ -301,6 +306,8 @@ def main() -> int:
         if not cuts:
             raise ValueError("prepare-batch spec-json has no 'cuts' entries.")
         manifests_out = []
+        flow_jobs_out = []
+        fin_jobs_out = []
         for idx, cut in enumerate(cuts, start=1):
             gen0_c = Path(cut.get("gen0") or defaults["gen0"])
             ts_c = Path(cut.get("turnaround_sheet") or defaults["turnaround_sheet"])
@@ -309,6 +316,7 @@ def main() -> int:
             cl_ov = Path(cut["clean_location_override"]) if cut.get("clean_location_override") else None
             extra_c = [Path(x) for x in (cut.get("extra_assets") or defaults.get("extra_assets") or [])]
             real_c = [Path(x) for x in (cut.get("real_originals") or defaults.get("real_originals") or [])]
+            asp_c = str(cut.get("aspect") or defaults.get("aspect") or "3:4")
             mf = wf.prepare_origin_bundle(
                 gen0_portrait_path=gen0_c,
                 work_dir=wdir_c,
@@ -320,7 +328,7 @@ def main() -> int:
                 extra_raw_asset_paths=extra_c,
                 real_original_paths=real_c,
                 design_mode=str(cut.get("design_mode") or defaults.get("design_mode") or "zero_touch_4k"),
-                aspect_ratio_label=str(cut.get("aspect") or defaults.get("aspect") or "3:4"),
+                aspect_ratio_label=asp_c,
                 best_of_k=int(cut.get("best_of") or defaults.get("best_of") or 5),
                 match_gen0_yaw=bool(cut.get("match_gen0_yaw", defaults.get("match_gen0_yaw", True))),
                 attach_ocular_detail_anchor=bool(cut.get("attach_ocular_detail_anchor", defaults.get("attach_ocular_detail_anchor", True))),
@@ -338,7 +346,77 @@ def main() -> int:
                     "prompt_count": len(mf["prompts"]),
                 }
             )
-        print(json.dumps({"status": "ok", "count": len(manifests_out), "manifests": manifests_out}, ensure_ascii=False, indent=2))
+            stem_c = str(cut.get("stem") or f"cut{idx:02d}")
+            raw_out_c = Path(cut.get("raw_output") or (wdir_c / f"{stem_c}_raw.png"))
+            flow_cnt = int(cut.get("flow_count") or defaults.get("flow_count") or 4)
+            flow_refs: list[str] = []
+            for cand_ref in (
+                [mf.get("gen0_portrait_path"), mf.get("matched_8dir_portrait_path")]
+                + [r.get("path") for r in mf.get("ordered_reference_images", [])]
+            ):
+                if not cand_ref:
+                    continue
+                cand_ref_s = str(cand_ref)
+                if "master_8angle_turnaround_sheet" in Path(cand_ref_s).name.lower():
+                    continue
+                if cand_ref_s not in flow_refs and Path(cand_ref_s).is_file():
+                    flow_refs.append(cand_ref_s)
+            flow_prompt = str(cut.get("flow_prompt_override") or mf["prompts"][0]["prompt"])
+            flow_jobs_out.append(
+                {
+                    "tag": stem_c,
+                    "images": flow_refs,
+                    "prompt": flow_prompt,
+                    "output": str(raw_out_c),
+                    "model": str(cut.get("flow_model") or defaults.get("flow_model") or "Nano Banana Pro"),
+                    "aspect": asp_c,
+                    "tier": "4K",
+                    "count": flow_cnt,
+                    "manifest": mf["manifest_path"],
+                    "max_4k_downloads": int(cut.get("max_4k_downloads") or defaults.get("max_4k_downloads") or 2),
+                }
+            )
+            fin_out_dir = str(cut.get("output_dir") or defaults.get("output_dir") or (wdir_c.parent / "final_4k"))
+            cand_list = (
+                [str(raw_out_c.with_name(f"{raw_out_c.stem}_c{ci}{raw_out_c.suffix}")) for ci in range(1, flow_cnt + 1)]
+                if flow_cnt > 1
+                else [str(raw_out_c)]
+            )
+            fin_jobs_out.append(
+                {
+                    "manifest": mf["manifest_path"],
+                    "candidates": cand_list,
+                    "output_dir": fin_out_dir,
+                    "stem": stem_c,
+                }
+            )
+
+        if args.emit_flow_batch is not None:
+            args.emit_flow_batch.parent.mkdir(parents=True, exist_ok=True)
+            args.emit_flow_batch.write_text(json.dumps(flow_jobs_out, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.emit_finalize_batch is not None:
+            args.emit_finalize_batch.parent.mkdir(parents=True, exist_ok=True)
+            fin_spec_obj = {
+                "upscale_mode": "tonelocked_upscayl_4k",
+                "cohesion_mode": "off",
+                "sync_to_vault": bool(defaults.get("sync_to_vault", True)),
+                "no_film_grain": bool(defaults.get("no_film_grain", True)),
+                "jobs": fin_jobs_out,
+            }
+            args.emit_finalize_batch.write_text(json.dumps(fin_spec_obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "count": len(manifests_out),
+                    "manifests": manifests_out,
+                    "emitted_flow_batch": str(args.emit_flow_batch) if args.emit_flow_batch else None,
+                    "emitted_finalize_batch": str(args.emit_finalize_batch) if args.emit_finalize_batch else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     if args.cmd == "finalize-batch":

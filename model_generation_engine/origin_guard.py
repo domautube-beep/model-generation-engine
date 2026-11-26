@@ -76,10 +76,17 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def compute_visual_16x16_sig(path: Path) -> Optional[list[int]]:
+def compute_visual_16x16_sig(path: Path, bgr_hint: Optional[object] = None) -> Optional[list[int]]:
     """Compute a compression/re-upload-invariant 16x16 grayscale signature to block re-encoded generated images."""
     try:
         import cv2
+        import numpy as np
+
+        if isinstance(bgr_hint, np.ndarray) and bgr_hint.size > 0:
+            sub = bgr_hint[::4, ::4] if min(bgr_hint.shape[:2]) >= 128 else bgr_hint
+            gray = cv2.cvtColor(sub, cv2.COLOR_BGR2GRAY) if sub.ndim == 3 else sub
+            small = cv2.resize(gray, (16, 16), interpolation=cv2.INTER_AREA)
+            return [int(v) for v in small.ravel()]
 
         bgr = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if bgr is None or bgr.size == 0:
@@ -238,13 +245,15 @@ class OriginOnlyOneShotGuard:
             self._save(data)
         return front_hash
 
-    def register_generated_scene_output(self, output_path: Path, job_id: str = "") -> Optional[str]:
+    def register_generated_scene_output(
+        self, output_path: Path, job_id: str = "", bgr_hint: Optional[object] = None
+    ) -> Optional[str]:
         """Permanently blacklist a generated scene output SHA-256 + 16x16 visual signature (`depth=terminal`) so it can NEVER be re-fed."""
         p = Path(output_path).resolve()
         if not p.is_file():
             return None
         digest = sha256_file(p)
-        sig16 = compute_visual_16x16_sig(p)
+        sig16 = compute_visual_16x16_sig(p, bgr_hint=bgr_hint)
         with self._lock:
             data = self._load()
             app_o = dict(data.get("approved_origins_sha256") or {})  # type: ignore[arg-type]

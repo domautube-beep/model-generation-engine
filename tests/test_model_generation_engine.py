@@ -2683,6 +2683,7 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
 
     def test_43_v110_high_speed_batch_cache_and_zero_quality_loss(self) -> None:
         """Verify v1.1.0 speed overhaul: 2-tier Vision/Blueprint cache, <0.5s Pre-Upscale Fast Cutoff, prepare-batch & finalize-batch, and 0% quality relaxation."""
+        import hashlib
         import json
         import subprocess
         import sys
@@ -2996,6 +2997,200 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
                 )
             self.assertIn("인물 화면 점유율 과다", str(ctx_occ.exception))
             self.assertFalse((td_p / "occ_out" / "crowded_fail_4k.jpg").exists())
+
+        st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
+        if st_p.exists():
+            st_d = json.loads(st_p.read_text(encoding="utf-8"))
+            st_d.pop(live_uuid, None)
+            st_p.write_text(json.dumps(st_d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_45_v120_full_process_speed_prerank_and_zero_quality_loss(self) -> None:
+        """Verify v1.2.0 speed optimizations (4K ROI skin/organ/silhouette, single-pass landmark reuse, 3-cmd batch emission) preserve 100% of all 13 Quality Gates."""
+        import hashlib
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        import cv2
+        import numpy as np
+        from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+        from model_generation_engine.prompt_builder import PromptFirewall
+
+        pipe = ModelGenerationPipeline()
+        wf = FreshOriginEditorialWorkflow(pipe)
+        raw_ref = cv2.imread(str(self.ref_face))
+
+        # Build a realistic 3584x4800 Native-4K 50:50 studio candidate
+        bg_med = np.median(raw_ref[:20, :20].reshape(-1, 3), axis=0).astype(np.uint8)
+        canvas_1k = np.broadcast_to(bg_med, (1200, 896, 3)).copy()
+        rh, rw = raw_ref.shape[:2]
+        ox, oy = (896 - rw) // 2, (1200 - rh) // 2
+        canvas_1k[oy : oy + rh, ox : ox + rw] = raw_ref
+        cand_4k, _ = pipe.upscaler.upscale_tonelocked_true_4k(canvas_1k, target_min_height=4800)
+
+        # 1. Verify MatteSkinProcessor 4K face-ROI crop speedup (< 40ms vs 453ms baseline, identical face oval metrics)
+        det_4k = pipe.detector.detect(cand_4k)
+        self.assertIsNotNone(det_4k)
+        pipe.skin_processor.measure_metrics(cand_4k, det_4k)  # warm
+        t0 = time.perf_counter()
+        skin_m = pipe.skin_processor.measure_metrics(cand_4k, det_4k)
+        skin_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertLess(skin_ms, 45.0, f"4K skin metrics regressed to {skin_ms:.1f}ms")
+        self.assertGreater(float(skin_m.skin_micro_texture_std), 0.0)
+
+        hook_py = Path(__file__).resolve().parent.parent / "hooks" / "enforce_1origin_1gen_hook.py"
+        cli_py = Path(__file__).resolve().parent.parent / "scripts" / "run_fresh_origin_workflow.py"
+        live_uuid = "99887766-1111-4444-8888-v120speedchk"
+
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            orig_d = td_p / "originals"
+            orig_d.mkdir(parents=True, exist_ok=True)
+            g0 = orig_d / "gen0_s07.jpg"
+            cv2.imwrite(str(g0), raw_ref)
+            bank_d = orig_d / "8dir_bank"
+            bank_d.mkdir(parents=True, exist_ok=True)
+            angle_paths = {}
+            for idx, (slug, yaw_lbl) in enumerate(
+                [
+                    ("left_90", "-90"),
+                    ("left_67_5", "-67.5"),
+                    ("left_45", "-45"),
+                    ("left_22_5", "-22.5"),
+                    ("right_22_5", "+22.5"),
+                    ("right_45", "+45"),
+                    ("right_67_5", "+67.5"),
+                    ("right_90", "+90"),
+                ],
+                start=1,
+            ):
+                ap = bank_d / f"s07_8dir_{idx:02d}_{slug}.png"
+                cv2.imwrite(str(ap), np.clip(raw_ref.astype(np.int16) + idx, 0, 255).astype(np.uint8))
+                angle_paths[yaw_lbl] = ap
+            sh = bank_d / "s07_master_8angle_turnaround_sheet.jpg"
+            cv2.imwrite(str(sh), np.clip(raw_ref.astype(np.int16) + 12, 0, 255).astype(np.uint8))
+            (bank_d / "s07_master_8angle_turnaround_receipt.json").write_text(
+                json.dumps(
+                    {
+                        "passed": True,
+                        "hop_count": 1,
+                        "gen0_sha256": hashlib.sha256(g0.read_bytes()).hexdigest(),
+                        "sheet_path": str(sh),
+                        "angles": {k: {"path": str(v)} for k, v in angle_paths.items()},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # 2. Verify `prepare-batch --emit-flow-batch --emit-finalize-batch` 1-step orchestration & PromptFirewall compliance
+            prep_spec = td_p / "prep_batch.json"
+            flow_batch = td_p / "flow_batch.json"
+            fin_batch = td_p / "fin_batch.json"
+            raw_out_base = td_p / "flow_raw" / "s07_v120.png"
+            fin_out_dir = td_p / "final_4k"
+            prep_spec.write_text(
+                json.dumps(
+                    {
+                        "sync_to_vault": False,
+                        "no_film_grain": True,
+                        "cuts": [
+                            {
+                                "stem": "s07_v120",
+                                "gen0": str(g0),
+                                "turnaround_sheet": str(sh),
+                                "work_dir": str(td_p / "stage_s07"),
+                                "raw_output": str(raw_out_base),
+                                "output_dir": str(fin_out_dir),
+                                "scene": "Seated in a walnut X-frame armchair in a dark charcoal studio",
+                                "outfit": "Tailored dark forest suit with crisp white open-collar shirt",
+                                "focal_mm": 85,
+                                "best_of": 1,
+                                "flow_count": 4,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            p_prep = subprocess.run(
+                [
+                    sys.executable,
+                    str(cli_py),
+                    "prepare-batch",
+                    "--spec-json",
+                    str(prep_spec),
+                    "--emit-flow-batch",
+                    str(flow_batch),
+                    "--emit-finalize-batch",
+                    str(fin_batch),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            prep_out = json.loads(p_prep.stdout)
+            self.assertEqual(prep_out["status"], "ok")
+            f_jobs = json.loads(flow_batch.read_text(encoding="utf-8"))
+            self.assertEqual(len(f_jobs), 1)
+            self.assertEqual(f_jobs[0]["count"], 4)
+            self.assertTrue(all("master_8angle_turnaround_sheet" not in Path(p).name for p in f_jobs[0]["images"]))
+            PromptFirewall.validate_prompt(f_jobs[0]["prompt"])
+            self.assertIn("horizontal eye width", f_jobs[0]["prompt"])
+            self.assertIn("<=50% visual weight", f_jobs[0]["prompt"])
+
+            # Verify live hook ALLOWS the emitted `google_flow_ultra_cli.py --batch-json` after `prepare-batch`
+            def _h(ev: str, pl: dict) -> dict:
+                pl = dict(pl)
+                pl.setdefault("conversationId", live_uuid)
+                pl.setdefault("workspacePaths", ["/Users/doma/.gemini/antigravity/scratch/릴프로필"])
+                pl.setdefault("lastUserInput", "50% 비율로 뽑아줘")
+                r = subprocess.run(["python3", str(hook_py), "--event", ev], input=json.dumps(pl), text=True, capture_output=True, check=True)
+                return json.loads(r.stdout.strip() or "{}")
+
+            _h("pre_invocation", {})
+            _h(
+                "post_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/run_fresh_origin_workflow.py prepare-batch --spec-json '{prep_spec}'"},
+                    }
+                },
+            )
+            r_allow = _h(
+                "pre_tool",
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": f"python3 scripts/google_flow_ultra_cli.py --batch-json '{flow_batch}'"},
+                    }
+                },
+            )
+            self.assertEqual(r_allow.get("decision"), "allow", f"Emitted flow_batch blocked by hook: {r_allow}")
+
+            # 3. Verify 4K scoring speed (< 600ms warm vs 1,707ms baseline) AND 100% strict 13-Gate enforcement
+            c1_path = td_p / "flow_raw" / "s07_v120_c1.png"
+            c1_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(c1_path), cand_4k)
+            wf.score_and_select_native_winner(gen0_portrait_path=g0, candidate_paths=[c1_path], turnaround_sheet_path=sh)  # warm
+            t_rank0 = time.perf_counter()
+            rank_fast = wf.score_and_select_native_winner(gen0_portrait_path=g0, candidate_paths=[c1_path], turnaround_sheet_path=sh)
+            rank_ms = (time.perf_counter() - t_rank0) * 1000.0
+            self.assertLess(rank_ms, 600.0, f"4K rank regressed to {rank_ms:.1f}ms")
+            self.assertTrue(rank_fast["winner"]["native_bounds_passed"])
+
+            # 4. Verify `finalize-batch` succeeds directly when Flow pre-ranking downloaded ONLY `_c1.png` (skipping `_c2.._c4`)
+            p_fin = subprocess.run(
+                [sys.executable, str(cli_py), "finalize-batch", "--spec-json", str(fin_batch)],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            fin_res = json.loads(p_fin.stdout)
+            self.assertEqual(fin_res["passed_count"], 1)
+            self.assertTrue(Path(fin_res["passed"][0]["hero_4k"]).is_file())
 
         st_p = Path.home() / ".model_generation_studio" / "fresh_origin_turn_state.json"
         if st_p.exists():

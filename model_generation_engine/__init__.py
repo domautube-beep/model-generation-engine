@@ -171,4 +171,4 @@ __all__ = [
 ]
 __project_name__ = "릴프로필"
 __project_aliases__ = ("릴프로필", "프로필", "모델생성")
-__version__ = "1.1.6"
+__version__ = "1.2.0"

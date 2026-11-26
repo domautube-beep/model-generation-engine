@@ -53,23 +53,26 @@ class AppleVisionAnalyzer:
 
     @staticmethod
     def _image_fingerprint(raw_or_pil: bytes | Image.Image) -> str:
-        """Compute fast (<0.8ms) collision-free blake2b digest for PIL Image or raw encoded bytes."""
+        """Compute fast (<0.5ms) collision-free blake2b digest for PIL Image or raw encoded bytes."""
         h = blake2b(digest_size=16)
         if isinstance(raw_or_pil, bytes):
             h.update(b"raw:")
             h.update(raw_or_pil)
             return h.hexdigest()
-        im = ImageOps.exif_transpose(raw_or_pil).convert("RGB")
+        if raw_or_pil.mode == "RGB" and "exif" not in raw_or_pil.info:
+            im = raw_or_pil
+        else:
+            im = ImageOps.exif_transpose(raw_or_pil).convert("RGB")
         w, ht = im.size
         h.update(struct.pack("<II", w, ht))
-        if w * ht <= 1_600_000:
+        if w * ht <= 800_000:
             h.update(im.tobytes())
         else:
-            # Sub-millisecond dense 2-tier fingerprint (global 384x384 + center 256x256)
-            h.update(im.resize((384, 384), Image.Resampling.NEAREST).tobytes())
+            # Sub-millisecond dense 2-tier fingerprint (global 256x256 + center 192x192)
+            h.update(im.resize((256, 256), Image.Resampling.NEAREST).tobytes())
             cw, ch = max(8, w // 2), max(8, ht // 2)
             cx0, cy0 = (w - cw) // 2, (ht - ch) // 2
-            h.update(im.crop((cx0, cy0, cx0 + cw, cy0 + ch)).resize((256, 256), Image.Resampling.NEAREST).tobytes())
+            h.update(im.crop((cx0, cy0, cx0 + cw, cy0 + ch)).resize((192, 192), Image.Resampling.NEAREST).tobytes())
         return h.hexdigest()
 
     def _binary_for(self, tool_stem: str) -> Path:

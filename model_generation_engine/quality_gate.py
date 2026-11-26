@@ -410,7 +410,9 @@ class QualityGateAuditor:
                         failures.append("얼굴 과장 게이트 랜드마크 계측 실패 (Fail-Closed)")
 
                     # Gate 10d: Jaw-to-Ear Diagonal Line, Submandibular Shadow, Neck Width & Eye-Arch/Brow Density Audit
-                    je_rep = feg.measure_jaw_to_ear_neck_and_eye_audit(reference_face_bgr, patch)
+                    je_rep = feg.measure_jaw_to_ear_neck_and_eye_audit(
+                        reference_face_bgr, patch, ref_marks=ref_marks, cand_marks=dst_marks
+                    )
                     if je_rep.get("valid"):
                         jd = je_rep["diffs"]
                         shape_note = (

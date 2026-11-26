@@ -208,17 +208,36 @@ def _configure_image_mode(page, model_name: str, aspect: str, count: int) -> Lis
     chip = page.locator(chip_sel).last
     chip.wait_for(state="visible", timeout=35000)
     chip.click(timeout=6000, force=True)
-    time.sleep(1.2)
+    time.sleep(0.8)
 
-    # Select Image tab + Aspect Ratio tab + Count tab
-    for label, desc in (("이미지", "mode"), (aspect, "aspect"), (f"x{count}", "count")):
+    # Select Image tab + Aspect Ratio tab + Count tab (supports both 'x2'/'x4' and '2'/'4' Flow UI chips)
+    count_sels = (
+        f"[role=tab]:has-text('x{count}'), button:has-text('x{count}'), "
+        f"[role=tab]:text-is('{count}'), [role=radio]:has-text('x{count}'), [role=radio]:text-is('{count}')"
+    )
+    for label, sel_q, desc in (
+        ("이미지", "[role=tab]:has-text('이미지'), button:has-text('이미지')", "mode"),
+        (aspect, f"[role=tab]:has-text('{aspect}'), button:has-text('{aspect}'), [role=radio]:has-text('{aspect}')", "aspect"),
+        (f"x{count}", count_sels, "count"),
+    ):
         try:
-            tab = page.locator(f"[role=tab]:has-text('{label}'), button:has-text('{label}')").first
-            if tab.count() > 0:
-                if tab.get_attribute("aria-selected") != "true":
-                    tab.click(timeout=5000, force=True)
-                    time.sleep(0.8)
+            cands = page.locator(sel_q)
+            clicked_this = False
+            for ci in range(cands.count()):
+                el = cands.nth(ci)
+                if not el.is_visible():
+                    continue
+                bb = el.bounding_box()
+                if not bb or bb["y"] < 120:
+                    continue
+                if el.get_attribute("aria-selected") != "true" and el.get_attribute("aria-checked") != "true":
+                    el.click(timeout=4000, force=True)
+                    time.sleep(0.45)
                 notes.append(f"{desc}={label}")
+                clicked_this = True
+                break
+            if not clicked_this and desc == "count" and count > 1:
+                notes.append(f"count_fallback=x1_ui_not_found")
         except Exception as exc:
             notes.append(f"{desc}_warn={exc}")
 
@@ -231,18 +250,64 @@ def _configure_image_mode(page, model_name: str, aspect: str, count: int) -> Lis
                 if "nano banana" in btxt.lower() or "imagen" in btxt.lower():
                     if model_name.lower() not in btxt.lower():
                         panel_btns.nth(bi).click(timeout=5000, force=True)
-                        time.sleep(0.8)
+                        time.sleep(0.55)
                         opt = page.get_by_text(model_name, exact=False).first
                         opt.click(timeout=5000, force=True)
-                        time.sleep(0.8)
+                        time.sleep(0.55)
                     notes.append(f"model={model_name}")
                     break
     except Exception as exc:
         notes.append(f"model_warn={exc}")
 
     page.keyboard.press("Escape")
-    time.sleep(0.8)
+    time.sleep(0.45)
     return notes
+
+
+def _clear_prompt_bar_chips_fast(page) -> bool:
+    """Remove existing reference chips in-place (<0.4s) without a costly full SPA page.goto reload."""
+    if _count_prompt_bar_chips(page) == 0:
+        return True
+    rm_sel = (
+        "button[aria-label*='삭제'], button[aria-label*='제거'], button[aria-label*='Remove'], "
+        "button[aria-label*='Delete'], button:has-text('close'), button:has-text('cancel')"
+    )
+    for _ in range(4):
+        if _count_prompt_bar_chips(page) == 0:
+            return True
+        cands = page.locator(rm_sel)
+        clicked = False
+        for i in range(cands.count()):
+            try:
+                el = cands.nth(i)
+                if not el.is_visible():
+                    continue
+                bb = el.bounding_box()
+                if bb and bb["y"] >= 680 and bb["width"] <= 48 and bb["height"] <= 48:
+                    el.click(timeout=2000, force=True)
+                    clicked = True
+                    time.sleep(0.2)
+                    break
+            except Exception:
+                pass
+        if not clicked:
+            break
+    return _count_prompt_bar_chips(page) == 0
+
+
+def _has_active_generation_progress(page) -> bool:
+    """Detect whether Google Flow still has in-flight generating cards/spinners on canvas."""
+    try:
+        prog = page.locator("[role='progressbar'], text=/^\\s*\\d{1,2}%\\s*$/, text=생성 중, text=Generating")
+        for i in range(min(12, prog.count())):
+            el = prog.nth(i)
+            if el.is_visible():
+                bb = el.bounding_box()
+                if bb and 60 <= bb["y"] <= 780:
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def _count_prompt_bar_chips(page) -> int:
@@ -769,6 +834,9 @@ def main() -> int:
                     "aspect": str(jb.get("aspect", args.aspect)),
                     "tier": str(jb.get("tier", args.tier)),
                     "count": int(jb.get("count", args.count)),
+                    "project_url": str(jb.get("project_url", "")),
+                    "manifest": Path(jb["manifest"]) if jb.get("manifest") else None,
+                    "max_4k_downloads": int(jb.get("max_4k_downloads", 2)),
                 }
             )
     else:
@@ -798,40 +866,101 @@ def main() -> int:
                 "aspect": args.aspect,
                 "tier": args.tier,
                 "count": args.count,
+                "project_url": args.project_url,
+                "manifest": args.manifest,
+                "max_4k_downloads": 2,
             }
         )
 
     results: List[Dict[str, Any]] = []
-    # 1 Person = 1 Persistent Google Flow Project (NEVER spam new projects per angle or retry!)
-    primary_gen0: Optional[Path] = jobs[0]["images"][0] if (jobs and jobs[0]["images"]) else None
-    pinned_project_url: Optional[str] = (
-        _normalize_project_root_url(args.project_url)
-        or _load_subject_project_url(primary_gen0)
-    )
-    if pinned_project_url and primary_gen0 is not None:
-        _save_subject_project_url(primary_gen0, pinned_project_url)
+    warm_prerank_wf = None
+
+    def _prerank_canvas_tiles(page, fresh_srcs_list: List[str], mf_path: Optional[Path]) -> List[str]:
+        """Fetch generated canvas preview tiles in <0.3s and rank them by 13-Gate score so we download ONLY top 4K winner(s)."""
+        nonlocal warm_prerank_wf
+        if mf_path is None or not Path(mf_path).is_file() or len(fresh_srcs_list) <= 1:
+            return fresh_srcs_list
+        try:
+            import base64
+            import tempfile
+            from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+
+            if warm_prerank_wf is None:
+                warm_prerank_wf = FreshOriginEditorialWorkflow()
+            mf_obj = json.loads(Path(mf_path).read_text(encoding="utf-8"))
+            g0_p = Path(mf_obj["gen0_portrait_path"])
+            ts_raw = mf_obj.get("turnaround_master_sheet_path")
+            ts_p = Path(ts_raw["sheet_path"]) if isinstance(ts_raw, dict) and ts_raw.get("sheet_path") else (Path(ts_raw) if isinstance(ts_raw, str) else None)
+            with tempfile.TemporaryDirectory(prefix="flow_prerank_") as td:
+                td_p = Path(td)
+                src_by_tmp: Dict[str, str] = {}
+                tmp_paths: List[Path] = []
+                for idx_s, f_url in enumerate(fresh_srcs_list):
+                    b64_data = page.evaluate(
+                        """async (u) => {
+                            const r = await fetch(u);
+                            const buf = await r.arrayBuffer();
+                            const bytes = new Uint8Array(buf);
+                            let bin = '';
+                            for (let i = 0; i < bytes.length; i += 0x8000) {
+                                bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+                            }
+                            return btoa(bin);
+                        }""",
+                        f_url,
+                    )
+                    if b64_data:
+                        tp = td_p / f"tile_{idx_s}.jpg"
+                        tp.write_bytes(base64.b64decode(b64_data))
+                        src_by_tmp[str(tp.resolve())] = f_url
+                        tmp_paths.append(tp)
+                if len(tmp_paths) <= 1:
+                    return fresh_srcs_list
+                rk = warm_prerank_wf.score_and_select_native_winner(g0_p, tmp_paths, turnaround_sheet_path=ts_p)
+                ordered_urls = [
+                    src_by_tmp[str(Path(c["candidate_path"]).resolve())]
+                    for c in rk.get("all_candidates", [])
+                    if str(Path(c["candidate_path"]).resolve()) in src_by_tmp
+                ]
+                top_passed = bool((rk.get("winner") or {}).get("native_bounds_passed", False))
+                if ordered_urls:
+                    return ordered_urls[:1] if top_passed else ordered_urls
+        except Exception:
+            pass
+        return fresh_srcs_list
 
     with sync_playwright() as pw:
         ctx = _open_context(pw, args.profile_dir, headed=use_headed, downloads_dir=downloads_dir)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             last_configured_mode: Optional[Tuple[str, str, int]] = None
-            known_uploaded_names: set[str] = set()
+            known_uploaded_by_proj: Dict[str, set[str]] = {}
+            active_project_url: Optional[str] = None
             for j_idx, job in enumerate(jobs):
                 if j_idx > 0:
                     # Natural human-like pacing between batch cuts to prevent FLOW_UNUSUAL_ACTIVITY_TOAST
-                    time.sleep(1.8)
+                    time.sleep(2.0)
+
+                # Resolve 1-Person-1-Project URL dynamically PER JOB so multi-subject batches share 1 Chrome session!
+                job_gen0: Optional[Path] = job["images"][0] if job["images"] else None
+                pinned_project_url: Optional[str] = (
+                    _normalize_project_root_url(str(job.get("project_url") or args.project_url or ""))
+                    or _load_subject_project_url(job_gen0)
+                )
+                if pinned_project_url and job_gen0 is not None:
+                    _save_subject_project_url(job_gen0, pinned_project_url)
+
                 if pinned_project_url:
                     cur_norm = _normalize_project_root_url(page.url)
                     if cur_norm == pinned_project_url and "/edit/" in page.url:
                         try:
                             page.keyboard.press("Escape")
-                            time.sleep(0.9)
+                            time.sleep(0.6)
                         except Exception:
                             pass
-                    if page.url.rstrip("/") != pinned_project_url.rstrip("/"):
+                    if _normalize_project_root_url(page.url) != pinned_project_url or "/edit/" in page.url:
                         page.goto(pinned_project_url, wait_until="domcontentloaded", timeout=60000)
-                        time.sleep(2.4)
+                        time.sleep(1.8)
                         last_configured_mode = None
                     block = _check_auth_or_bot_block(page)
                     if block:
@@ -839,7 +968,7 @@ def main() -> int:
                         return 3
                 else:
                     page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=60000)
-                    time.sleep(2.8)
+                    time.sleep(2.2)
                     block = _check_auth_or_bot_block(page)
                     if block:
                         print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
@@ -850,9 +979,14 @@ def main() -> int:
                         print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
                         return 3
                     pinned_project_url = _normalize_project_root_url(page.url)
-                    if pinned_project_url and primary_gen0 is not None:
-                        _save_subject_project_url(primary_gen0, pinned_project_url)
+                    if pinned_project_url and job_gen0 is not None:
+                        _save_subject_project_url(job_gen0, pinned_project_url)
                     last_configured_mode = None
+
+                if active_project_url != pinned_project_url:
+                    active_project_url = pinned_project_url
+                    last_configured_mode = None
+                known_uploaded_names = known_uploaded_by_proj.setdefault(pinned_project_url or "default", set())
 
                 req_mode = (str(job["model"]), str(job["aspect"]), int(job["count"]))
                 if last_configured_mode != req_mode:
@@ -862,67 +996,82 @@ def main() -> int:
                     cfg_notes = ["reused_warm_mode"]
 
                 all_already_uploaded = all(Path(p).name in known_uploaded_names for p in job["images"])
-                if _count_prompt_bar_chips(page) > 0 and pinned_project_url:
-                    # Ensure clean prompt bar with zero leftover chips from prior cut
-                    page.goto(pinned_project_url, wait_until="domcontentloaded", timeout=60000)
-                    time.sleep(2.2)
-                    cfg_notes = _configure_image_mode(page, job["model"], job["aspect"], job["count"])
-                    last_configured_mode = req_mode
+                if _count_prompt_bar_chips(page) > 0:
+                    if not _clear_prompt_bar_chips_fast(page) and pinned_project_url:
+                        page.goto(pinned_project_url, wait_until="domcontentloaded", timeout=60000)
+                        time.sleep(1.8)
+                        cfg_notes = _configure_image_mode(page, job["model"], job["aspect"], job["count"])
+                        last_configured_mode = req_mode
                 uploaded_n = _upload_and_attach_images(page, job["images"])
                 for p_up in job["images"]:
                     known_uploaded_names.add(Path(p_up).name)
-                # Only need long settle wait when brand-new media tiles were uploaded to the project grid
-                time.sleep(1.0 if all_already_uploaded else 2.8)
+                time.sleep(0.7 if all_already_uploaded else 2.2)
                 before_srcs = {src for _, src, _, _ in _snapshot_result_images(page)}
 
                 box = page.locator("[role='textbox'][contenteditable='true']").first
                 box.wait_for(state="visible", timeout=20000)
                 box.click(timeout=5000)
-                time.sleep(0.4)
+                time.sleep(0.25)
                 box.fill(job["prompt"])
-                time.sleep(0.8)
+                time.sleep(0.5)
 
                 baseline_markers = _snapshot_marker_counts(page)
                 send_btn = page.locator("button:has-text('arrow_forward')").last
                 send_btn.click(timeout=8000)
 
-                # Refresh `before_srcs` during the first 6s (uploaded tiles settle quickly; real Nano Banana generation takes >= 10s)
-                time.sleep(5.0)
+                # Refresh `before_srcs` at +3.5s (uploaded tiles settle fast; Nano Banana Pro generation takes >= 10s)
+                time.sleep(3.5)
                 before_srcs |= {src for _, src, _, _ in _snapshot_result_images(page)}
 
                 target_n = max(1, int(job["count"]))
                 fresh_srcs: List[str] = []
+                first_fresh_epoch: Optional[float] = None
                 t0 = time.time()
                 while time.time() - t0 < args.timeout:
-                    time.sleep(2.5)
+                    time.sleep(1.6)
                     blk = _check_auth_or_bot_block(page, baseline=baseline_markers)
                     if blk:
                         print(json.dumps({"status": "blocked", "reason": blk, "url": page.url}, ensure_ascii=False))
                         return 3
                     cur_imgs = _snapshot_result_images(page)
                     fresh = [src for _, src, _, _ in cur_imgs if src not in before_srcs]
+                    if fresh and first_fresh_epoch is None:
+                        first_fresh_epoch = time.time()
                     if len(fresh) >= target_n:
                         fresh_srcs = fresh[:target_n]
-                        time.sleep(3.0)
+                        time.sleep(1.4)
                         break
-                    elif fresh and (time.time() - t0) > 65.0:
+                    if fresh and not _has_active_generation_progress(page) and (time.time() - first_fresh_epoch) >= 3.2:
+                        # No remaining active generation spinners — exit immediately instead of wasting 65s!
                         fresh_srcs = fresh
-                        time.sleep(2.5)
+                        time.sleep(0.8)
+                        break
+                    if fresh and (time.time() - t0) > 42.0:
+                        fresh_srcs = fresh
+                        time.sleep(1.0)
                         break
                 if not fresh_srcs:
                     raise TimeoutError(f"Timed out after {args.timeout}s waiting for job {job['tag']}.")
 
                 if target_n > 1:
-                    # Harvest ALL newly generated candidates (`_c1.._cN`) with each candidate's exact `/edit/` URL!
+                    # Pre-rank canvas preview tiles in <0.5s when `manifest` is supplied, and download ONLY top Native-4K winner(s)!
+                    ranked_srcs = _prerank_canvas_tiles(page, fresh_srcs, job.get("manifest"))
+                    max_dl = max(1, int(job.get("max_4k_downloads", 2)))
+                    ranked_srcs = ranked_srcs[:max_dl]
                     proj_root = _normalize_project_root_url(page.url) or pinned_project_url or page.url
                     cand_records: List[Dict[str, Any]] = []
                     seen_edit_urls = set()
-                    for c_idx, fsrc in enumerate(fresh_srcs, start=1):
+                    for c_idx, fsrc in enumerate(ranked_srcs, start=1):
                         if c_idx > 1:
-                            page.goto(proj_root, wait_until="domcontentloaded", timeout=60000)
-                            time.sleep(3.0)
+                            try:
+                                page.keyboard.press("Escape")
+                                time.sleep(0.7)
+                            except Exception:
+                                pass
+                            if "/edit/" in page.url:
+                                page.goto(proj_root, wait_until="domcontentloaded", timeout=60000)
+                                time.sleep(1.8)
                         c_out = job["output"].with_name(f"{job['output'].stem}_c{c_idx}{job['output'].suffix}")
-                        # Click the exact tile matching `fsrc` (or `c_idx`-th fresh tile)
                         cur_tiles = _snapshot_result_images(page)
                         fresh_tiles = [(idx, s, w, h) for idx, s, w, h in cur_tiles if s not in before_srcs]
                         target_tile = None
@@ -939,30 +1088,40 @@ def main() -> int:
                         if not tbox:
                             continue
                         page.mouse.click(tbox["x"] + tbox["width"] * 0.5, tbox["y"] + tbox["height"] * 0.5)
-                        time.sleep(2.2)
+                        time.sleep(1.6)
                         edit_url = page.url
                         if edit_url in seen_edit_urls:
                             continue
                         seen_edit_urls.add(edit_url)
-                        dl_btn = _first_visible(page, "button:has-text('download'), button[aria-label*='다운로드'], button[aria-label*='Download']")
-                        if dl_btn is None:
-                            continue
-                        dl_btn.click(timeout=6000, force=True)
-                        time.sleep(0.9)
+
                         pref = job["tier"].strip().upper()
                         tier_sel = (
-                            "[role='menuitem']:has-text('4K'), button:has-text('4K')"
+                            "[role='menuitem']:has-text('4K'), button:has-text('4K'), [role='option']:has-text('4K')"
                             if pref == "4K"
                             else "[role='menuitem']:has-text('2K'), button:has-text('2K')"
                             if pref == "2K"
                             else "[role='menuitem']:has-text('1K'), [role='menuitem']:has-text('원본')"
                         )
-                        opt = page.locator(tier_sel).first
-                        if opt.count() == 0 or not opt.is_visible():
-                            opt = page.locator("[role='menuitem']:has-text('1K'), [role='menuitem']:has-text('2K'), [role='menuitem']:has-text('원본')").first
-                        with page.expect_download(timeout=args.timeout * 1000) as dli:
-                            opt.click(timeout=8000, force=True)
-                        dl = dli.value
+                        dl = None
+                        for _dl_attempt in range(2):
+                            dl_btn = _first_visible(page, "button:has-text('download'), button[aria-label*='다운로드'], button[aria-label*='Download']")
+                            if dl_btn is None:
+                                time.sleep(0.8)
+                                continue
+                            dl_btn.click(timeout=5000, force=True)
+                            time.sleep(0.8)
+                            opt = page.locator(tier_sel).first
+                            if opt.count() == 0 or not opt.is_visible():
+                                opt = page.locator("[role='menuitem']:has-text('4K'), [role='menuitem']:has-text('2K'), [role='menuitem']:has-text('원본')").first
+                            try:
+                                with page.expect_download(timeout=60000) as dli:
+                                    opt.click(timeout=6000, force=True)
+                                dl = dli.value
+                                break
+                            except Exception:
+                                dl = None
+                        if dl is None:
+                            continue
                         tmp = downloads_dir / (dl.suggested_filename or f"cand_{c_idx}_{int(time.time())}.png")
                         dl.save_as(str(tmp))
                         c_out.parent.mkdir(parents=True, exist_ok=True)
@@ -982,7 +1141,9 @@ def main() -> int:
                                 "edit_url": edit_url,
                             }
                         )
-                        print(f"[Flow x{target_n}] Harvested c{c_idx}/{target_n} -> {c_out.name} ({w_px}x{h_px})", file=sys.stderr, flush=True)
+                        print(f"[Flow x{target_n}] Harvested c{c_idx}/{len(ranked_srcs)} -> {c_out.name} ({w_px}x{h_px})", file=sys.stderr, flush=True)
+                    if not cand_records:
+                        raise RuntimeError(f"Failed to download any 4K candidate for {job['tag']}.")
                     rec = {
                         "status": "ok",
                         "tag": job["tag"],
