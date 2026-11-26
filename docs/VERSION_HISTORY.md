@@ -18,6 +18,8 @@
   - **Step 4~6**: 초소형(`18.9KB`)·증명사진 보정 원본 자동 감지(`skin_norm_laplacian < 24.0`) 기반 **디에어브러싱 실사 모공 복원(`생-031`/`생-032`)** + 무그레인 순수 광학 `Lanczos-4` 4K 마스터링 + 400% 눈매·윤곽 육안 검수 디폴트화
   - `version_guard.py` + `scripts/version_ctl.py` + `hooks/pre-commit-version-check.py` 자동 버전체크 체계 탑재
 <!-- POST_V1_UPGRADES -->
+- **`v1.1.0`** (`2026-11-26`): v1.1.0: 품질·10대게이트·보안 100% 유지 초고속 파이프라인 (로컬 NVMe SSD 모델 스테이징, AppleVision/ONNX/블루프린트 2계층 영구캐시, 0.25s 사전게이트 고속 컷오프, OriginGuard 벡터화, prepare-batch/rank-and-finalize/finalize-batch 단일프로세스 배치 CLI, Google Flow 중복업로드 제거)
+
 - **`v1.0.12`** (`2026-11-25`): v1.0.12: 전신·반신 샷 innerLips 랜드마크 수렴 시 개구 범위[lh0_closed..lh0_raw] 정밀 보정(임계치 완화 0%)
 
 - **`v1.0.11`** (`2026-11-25`): v1.0.11: 안검 적도 개구부(equatorial palpebral band) 흰자 계측으로 저해상도 ID 플래시 안검 피부 번짐 제거 및 하악 중심축 강체 회전 정밀화(임계치 완화 0%)

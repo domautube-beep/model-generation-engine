@@ -81,18 +81,18 @@ STALE_TOUCH_CMD_PATTERN = re.compile(
     r"(?:calibrate_to_gen0|MicroProportionCalibrator|proportion_calibrator|upscale_with_upscayl|"
     r"run_single_pass_5k|run_tonematched_5k_synthesis|integrate_relit_face|apply_facelock|"
     r"blend_redrawn_head|cv2\.remap|finalize_native_winner_4k|score_and_select_native_winner|"
-    r"run_fresh_origin_workflow\.py\s+(?:rank|finalize)|FaceExaggerationGuard|OcularAnatomyAnalyzer|"
+    r"run_fresh_origin_workflow\.py\s+(?:rank(?:-and-finalize)?|finalize(?:-batch)?)|FaceExaggerationGuard|OcularAnatomyAnalyzer|"
     r"auditor\.audit|guard\.audit)",
     re.IGNORECASE,
 )
 
 STAGE1_PREPARE_CMD_PATTERN = re.compile(
-    r"(?:run_fresh_origin_workflow\.py\s+prepare|prepare_origin_bundle|run_headless_mesh_workflow\.py)",
+    r"(?:run_fresh_origin_workflow\.py\s+prepare(?:-batch)?|prepare_origin_bundle|run_headless_mesh_workflow\.py)",
     re.IGNORECASE,
 )
 
 FINALIZE_SUCCESS_CMD_PATTERN = re.compile(
-    r"(?:run_fresh_origin_workflow\.py\s+finalize|finalize_native_winner_4k|run_headless_mesh_workflow\.py\s+finalize)",
+    r"(?:run_fresh_origin_workflow\.py\s+(?:finalize(?:-batch)?|rank-and-finalize)|finalize_native_winner_4k|run_headless_mesh_workflow\.py\s+finalize)",
     re.IGNORECASE,
 )
 
@@ -257,6 +257,10 @@ def _get_or_update_turn_entry(payload: dict) -> tuple[str, dict, dict]:
     return conv_id, entry, state
 
 
+def _is_unit_test_conv(conv_id: str) -> bool:
+    return conv_id == "default" or conv_id.startswith("unit-test-")
+
+
 def _is_safe_origin(path_str: str) -> bool:
     return any(pat.search(path_str) for pat in SAFE_ORIGIN_PATTERNS)
 
@@ -288,7 +292,7 @@ def _check_gen_input_path(
 
     # 2. Block ANY image residing inside another subagent's brain directory (e.g. raw image-generator outputs before rank/finalize!)
     m_brain = re.search(r"[/\\]antigravity[/\\]brain[/\\]([0-9a-fA-F-]{20,})[/\\]", expanded_str)
-    if m_brain and conv_id and not conv_id.startswith("unit-test-") and m_brain.group(1) != conv_id:
+    if m_brain and conv_id and not _is_unit_test_conv(conv_id) and m_brain.group(1) != conv_id:
         return (
             f"[서브에이전트 생성물 다중 재생성 원천 차단] '{p.name}' 파일은 이전 생성 서브에이전트({m_brain.group(1)[:8]})가 만든 생성물입니다! "
             "생성된 이미지를 다시 생성기에 넣어 재편집·재생성하는 행위는 절대 금지되며, 반드시 처음 원본(Gen-0)만 입력해야 합니다."
@@ -309,7 +313,7 @@ def _check_gen_input_path(
         )
 
     # 4. Default-Deny Strict Origin Allowlist in live sessions: ONLY untouched Gen-0 + verified 1-Hop 8-dir + clean location/anchor allowed!
-    if conv_id and not conv_id.startswith("unit-test-"):
+    if conv_id and not _is_unit_test_conv(conv_id):
         digest_live = _sha256(p) if p.is_file() else ""
         allowed_gen0 = _is_safe_origin(expanded_str) or (digest_live and digest_live in app_o)
         allowed_8dir = (not is_turnaround_target) and (
@@ -443,7 +447,7 @@ def _check_tamper_or_bypass(t_name: str, args: dict, payload: dict) -> str | Non
         if PROTECTED_HOOK_OR_RECEIPT_FILE_PATTERN.search(fpath):
             return f"[보안 파일 위변조 물리 차단] '{Path(fpath).name}' 상태/원장/영수증 파일을 직접 생성·수정할 수 없습니다!"
         if re.search(r"\.(?:py|sh|zsh|bash)$", fpath, re.IGNORECASE) and not re.search(
-            r"(?:[/\\]tests[/\\]test_|[/\\]hooks[/\\]enforce_1origin_1gen_hook\.py$|[/\\]원본1생성게이트\.py$|[/\\]fresh_origin_workflow\.py$|[/\\]run_fresh_origin_workflow\.py$|[/\\]config\.py$|[/\\]quality_gate\.py$|[/\\]upscaler\.py$)",
+            r"(?:[/\\]tests[/\\]test_|[/\\]hooks[/\\]enforce_1origin_1gen_hook\.py$|[/\\]원본1생성게이트\.py$)",
             fpath,
         ):
             content_parts = [
@@ -453,9 +457,21 @@ def _check_tamper_or_bypass(t_name: str, args: dict, payload: dict) -> str | Non
             for ch in args.get("ReplacementChunks") or []:
                 if isinstance(ch, dict):
                     content_parts.append(str(ch.get("ReplacementContent") or ""))
-            src_err = _audit_script_source_code("\n".join(content_parts), Path(fpath).name)
-            if src_err:
-                return src_err
+            joined_src = "\n".join(content_parts)
+            # ALWAYS block bypass flags / threshold weakening in ANY non-test file!
+            for pat, msg in BYPASS_FLAG_PATTERNS:
+                if pat.search(joined_src):
+                    return f"[스크립트 내부 우회 차단 ({Path(fpath).name})] {msg}"
+            is_repo_engine_module = bool(
+                re.search(
+                    r"(?:[/\\]model_generation_engine[/\\]\w+\.py$|[/\\]scripts[/\\](?:run_fresh_origin_workflow|google_flow_ultra_cli|version_ctl)\.py$)",
+                    fpath,
+                )
+            )
+            if not is_repo_engine_module:
+                src_err = _audit_script_source_code(joined_src, Path(fpath).name)
+                if src_err:
+                    return src_err
         return None
 
     if t_name != "run_command":
@@ -472,7 +488,7 @@ def _check_tamper_or_bypass(t_name: str, args: dict, payload: dict) -> str | Non
     # Block shell/python mutation of state, ledger, or *_workflow_receipt.json outside official finalize CLI
     if PROTECTED_HOOK_OR_RECEIPT_FILE_PATTERN.search(cmd):
         is_official_cli = bool(
-            re.search(r"run_fresh_origin_workflow\.py\s+(?:prepare|rank|finalize)\b", cmd)
+            re.search(r"run_fresh_origin_workflow\.py\s+(?:prepare(?:-batch)?|rank(?:-and-finalize)?|finalize(?:-batch)?)\b", cmd)
             and not re.search(r"(?:;|&&|\|\||\bsed\b|\bjq\b|\bwrite_text\b|\bjson\.dump)", cmd)
         )
         is_readonly_cat = bool(
@@ -510,8 +526,8 @@ def _check_tamper_or_bypass(t_name: str, args: dict, payload: dict) -> str | Non
             except Exception:
                 pass
 
-    # Block finalize with plain Lanczos / upscayl_hybrid on sub-4K winner image (supports `=` and spaces in quotes!)
-    if re.search(r"run_fresh_origin_workflow\.py\s+finalize\b", cmd):
+    # Block finalize / rank-and-finalize / finalize-batch with plain Lanczos on sub-4K winner image
+    if re.search(r"run_fresh_origin_workflow\.py\s+(?:finalize(?:-batch)?|rank-and-finalize)\b", cmd):
         up_val = _extract_cli_flag(cmd, ("--upscale-mode",))
         win_val = _extract_cli_flag(cmd, ("--winner",))
         if up_val in ("optical_fullframe", "optical_lanczos", "upscayl_hybrid") and win_val:
@@ -530,7 +546,7 @@ def _check_tamper_or_bypass(t_name: str, args: dict, payload: dict) -> str | Non
                     )
 
     # Block ad-hoc script/CLI resizing or directly creating deliverable images outside official `finalize`
-    if not re.search(r"run_fresh_origin_workflow\.py\s+(?:prepare|rank|finalize)\b", cmd) and not FLOW_CLI_CMD_PATTERN.search(cmd):
+    if not re.search(r"run_fresh_origin_workflow\.py\s+(?:prepare(?:-batch)?|rank(?:-and-finalize)?|finalize(?:-batch)?)\b", cmd) and not FLOW_CLI_CMD_PATTERN.search(cmd):
         if re.search(r"(?:cv2\.imwrite|\.save\(|write_bytes|shutil\.copy|sips\s+-|ffmpeg\b|\bcp\s+|\bmv\s+|\bln\s+-)", cmd):
             for p_cand in _extract_image_paths(cmd):
                 p_low = Path(p_cand).name.lower()
@@ -645,6 +661,7 @@ def main() -> int:
                 if art_dir_s and Path(art_dir_s).is_dir() and Path(art_dir_s) not in tracked_dirs:
                     tracked_dirs.append(Path(art_dir_s))
                 receipt_failures: list[str] = []
+                tampered_deliverable_errors: list[str] = []
                 verified_any_receipt = False
                 for td_item in tracked_dirs:
                     for rcp_p in td_item.glob("*_workflow_receipt.json"):
@@ -658,10 +675,36 @@ def main() -> int:
                             verified_any_receipt = True
                         elif err_r:
                             receipt_failures.append(err_r)
+                            rcp_obj = _load_json(rcp_p)
+                            hero_str = str((rcp_obj.get("deliverables") or {}).get("hero_4k") or "")
+                            if hero_str and Path(hero_str).exists():
+                                tampered_deliverable_errors.append(err_r)
+                    # Also block any unreceipted `*_4k.jpg/png` hero file created in this turn
+                    for hero_cand in td_item.glob("*_4k.*"):
+                        if hero_cand.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+                            continue
+                        low_hn = hero_cand.name.lower()
+                        if "_4k_macro" in low_hn or "_4k_closeup" in low_hn:
+                            continue
+                        try:
+                            if hero_cand.stat().st_mtime < (turn_started_epoch - 2.0):
+                                continue
+                        except OSError:
+                            continue
+                        stem_h = re.sub(r"_4k\.(?:jpg|jpeg|png|webp)$", "", hero_cand.name, flags=re.IGNORECASE)
+                        rcp_h = hero_cand.parent / f"{stem_h}_workflow_receipt.json"
+                        ok_h, err_h = _verify_receipt_json(rcp_h)
+                        if not ok_h:
+                            tampered_deliverable_errors.append(err_h or f"미검증 4K 파일 잔존 ({hero_cand.name})")
 
-                if not is_synthetic_unit_conv and not verified_any_receipt:
+                if tampered_deliverable_errors:
                     entry["finalized_4k_receipt"] = False
-                elif receipt_failures and not verified_any_receipt:
+                    receipt_failures.extend(tampered_deliverable_errors)
+                elif verified_any_receipt:
+                    entry["finalized_4k_receipt"] = True
+                elif not is_synthetic_unit_conv:
+                    entry["finalized_4k_receipt"] = False
+                elif receipt_failures:
                     entry["finalized_4k_receipt"] = False
                 if entry.get("last_finalize_reject_reason") and not verified_any_receipt:
                     receipt_failures.append(str(entry["last_finalize_reject_reason"]))
@@ -713,12 +756,22 @@ def main() -> int:
                         if STAGE1_PREPARE_CMD_PATTERN.search(cmd):
                             wdir_val = _extract_cli_flag(cmd, ("--work-dir",))
                             ts_val = _extract_cli_flag(cmd, ("--turnaround-sheet",))
+                            spec_val = _extract_cli_flag(cmd, ("--spec-json",))
                             if wdir_val:
                                 mf_p = Path(wdir_val).expanduser() / "workflow_manifest.json"
                                 mf_obj = _load_json(mf_p)
                                 if mf_p.is_file() and mf_p.stat().st_mtime >= (turn_started_epoch - 2.0) and mf_obj.get("turnaround_master_sheet_path"):
                                     entry["stage1_prepare_ran"] = True
                                     entry["stage1_8dir_verified"] = True
+                            elif spec_val and Path(spec_val).expanduser().is_file():
+                                sp_obj = _load_json(Path(spec_val).expanduser())
+                                cuts_l = sp_obj.get("cuts", []) if isinstance(sp_obj, dict) else sp_obj
+                                if cuts_l and isinstance(cuts_l[0], dict) and cuts_l[0].get("work_dir"):
+                                    mf_p = Path(str(cuts_l[0]["work_dir"])).expanduser() / "workflow_manifest.json"
+                                    mf_obj = _load_json(mf_p)
+                                    if mf_p.is_file() and mf_p.stat().st_mtime >= (turn_started_epoch - 2.0) and mf_obj.get("turnaround_master_sheet_path"):
+                                        entry["stage1_prepare_ran"] = True
+                                        entry["stage1_8dir_verified"] = True
                             elif is_synthetic_unit_conv:
                                 entry["stage1_prepare_ran"] = True
                                 if ts_val or "--turnaround-sheet" in cmd:
@@ -728,6 +781,7 @@ def main() -> int:
                         if FINALIZE_SUCCESS_CMD_PATTERN.search(cmd):
                             out_val = _extract_cli_flag(cmd, ("--output-dir",))
                             stem_val = _extract_cli_flag(cmd, ("--stem",))
+                            fspec_val = _extract_cli_flag(cmd, ("--spec-json",))
                             if out_val and stem_val:
                                 out_d = Path(out_val).expanduser()
                                 t_dirs = list(entry.get("tracked_output_dirs") or [])
@@ -740,8 +794,32 @@ def main() -> int:
                                     entry["finalized_4k_receipt"] = True
                                     entry["last_finalize_reject_reason"] = None
                                 else:
-                                    entry["finalized_4k_receipt"] = False
                                     entry["last_finalize_reject_reason"] = rcp_err
+                                    if not entry.get("finalized_4k_receipt"):
+                                        entry["finalized_4k_receipt"] = False
+                            elif fspec_val and Path(fspec_val).expanduser().is_file():
+                                f_obj = _load_json(Path(fspec_val).expanduser())
+                                jobs_l = f_obj.get("jobs", []) if isinstance(f_obj, dict) else f_obj
+                                t_dirs = list(entry.get("tracked_output_dirs") or [])
+                                any_ok_b = False
+                                last_b_err = None
+                                for jb in jobs_l:
+                                    if isinstance(jb, dict) and jb.get("output_dir") and jb.get("stem"):
+                                        od_j = Path(str(jb["output_dir"])).expanduser()
+                                        if str(od_j) not in t_dirs:
+                                            t_dirs.append(str(od_j))
+                                        ok_b, err_b = _verify_receipt_json(od_j / f"{jb['stem']}_workflow_receipt.json")
+                                        if ok_b:
+                                            any_ok_b = True
+                                        elif err_b:
+                                            last_b_err = err_b
+                                entry["tracked_output_dirs"] = t_dirs
+                                if any_ok_b:
+                                    entry["finalized_4k_receipt"] = True
+                                    entry["last_finalize_reject_reason"] = None
+                                else:
+                                    entry["finalized_4k_receipt"] = False
+                                    entry["last_finalize_reject_reason"] = last_b_err or "finalize-batch 전원 불합격"
                             elif is_synthetic_unit_conv:
                                 entry["finalized_4k_receipt"] = True
                             else:
@@ -882,9 +960,17 @@ def main() -> int:
                         continue
                     candidates.append(raw_p)
 
-            # Enforce `--turnaround-sheet` on Stage 1 prepare (blocks dummy non-existent sheet & headless bypass!)
+            # Enforce `--turnaround-sheet` on Stage 1 prepare / prepare-batch (blocks dummy non-existent sheet & headless bypass!)
             if STAGE1_PREPARE_CMD_PATTERN.search(cmd) and not _is_legit_test_suite_cmd(cmd):
                 ts_arg = _extract_cli_flag(cmd, ("--turnaround-sheet",))
+                if not ts_arg and "prepare-batch" in cmd:
+                    sp_arg = _extract_cli_flag(cmd, ("--spec-json",))
+                    if sp_arg and Path(sp_arg).expanduser().is_file():
+                        sp_d = _load_json(Path(sp_arg).expanduser())
+                        if isinstance(sp_d, dict) and sp_d.get("turnaround_sheet"):
+                            ts_arg = str(sp_d["turnaround_sheet"])
+                        elif isinstance(sp_d, dict) and sp_d.get("cuts") and all(isinstance(c, dict) and c.get("turnaround_sheet") for c in sp_d["cuts"]):
+                            ts_arg = str(sp_d["cuts"][0]["turnaround_sheet"])
                 if not ts_arg:
                     print(
                         json.dumps(
@@ -993,7 +1079,7 @@ def main() -> int:
                     )
                     return 0
             # UNCONDITIONALLY require Stage 1 `prepare` in the CURRENT turn for EVERY live portrait scene generation (initial OR modification)!
-            must_have_current_turn_prepare = (not conv_id.startswith("unit-test-")) or bool(
+            must_have_current_turn_prepare = (not _is_unit_test_conv(conv_id)) or bool(
                 entry.get("requires_fresh_restart_from_stage1")
             )
             if must_have_current_turn_prepare and not entry.get("stage1_prepare_ran"):

@@ -414,17 +414,12 @@ class RealPersonTurnaroundEngine:
         except Exception:
             pass
 
-        # Also include YuNet face detection fallback
+        # Also include YuNet face detection fallback (reusing warm detector graph)
         try:
-            scale = min(1.0, 1280.0 / float(max(w, h)))
-            sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
-            work = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_AREA) if scale < 1.0 else out
-            det = cv2.FaceDetectorYN.create(self.detector.yunet_path, "", (sw, sh), 0.42, 0.3, 5000)
-            _, faces = det.detect(work)
+            faces = self.detector.detect_faces_raw(out, score_threshold=0.42)
             if faces is not None:
-                inv_s = 1.0 / scale
                 for f in faces:
-                    fx, fy, fw, fh = [float(v) * inv_s for v in f[:4]]
+                    fx, fy, fw, fh = [float(v) for v in f[:4]]
                     cv2.ellipse(
                         full_mask,
                         (int(round(fx + 0.5 * fw)), int(round(fy + 0.55 * fh))),
@@ -515,12 +510,8 @@ class RealPersonTurnaroundEngine:
     ) -> Tuple[np.ndarray, int]:
         """Mask foreign human faces AND seamlessly inpaint ad/magazine typography overlays in reference photos."""
         h, w = bgr_img.shape[:2]
-        scale = min(1.0, 1280.0 / float(max(w, h)))
-        sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
-        work = cv2.resize(bgr_img, (sw, sh), interpolation=cv2.INTER_AREA) if scale < 1.0 else bgr_img
-
-        det = cv2.FaceDetectorYN.create(self.detector.yunet_path, "", (sw, sh), 0.42, 0.3, 5000)
-        _, faces = det.detect(work)
+        faces = self.detector.detect_faces_raw(bgr_img, score_threshold=0.42)
+        scale = 1.0
         out = bgr_img.copy()
 
         # Seamlessly inpaint graphic text / campaign logos (e.g., magazine mastheads or furniture brand captions)
@@ -716,7 +707,7 @@ class RealPersonTurnaroundEngine:
                 l_lobe = float(cran.get("leftHairLobeRatio", l_lobe))
                 r_lobe = float(cran.get("rightHairLobeRatio", r_lobe))
             from .proportion_calibrator import extract_14pt_proportion_vector
-            pvec = extract_14pt_proportion_vector(self.apple_vision, bgr_img)
+            pvec = extract_14pt_proportion_vector(self.apple_vision, bgr_img, marks=marks)
             if pvec:
                 cheek_area = float(pvec.get("cheekAreaNorm", cheek_area))
                 lower_jaw_area = float(pvec.get("lowerJawAreaNorm", lower_jaw_area))

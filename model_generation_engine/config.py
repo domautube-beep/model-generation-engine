@@ -254,22 +254,70 @@ class EngineConfig:
             )
 
     def resolve_model_path(self, filename: str) -> Path:
-        """Locate a binary or ONNX/NCNN model file in the Google Drive Vault or local directories."""
+        """Locate a binary or ONNX/NCNN model file and stage CloudStorage FUSE assets onto local NVMe SSD."""
+        cache_key = (str(self.vault_dir or ""), filename)
+        cached = _MODEL_PATH_CACHE.get(cache_key)
+        if cached is not None and cached.exists():
+            return cached
+
         candidates = []
-        if self.vault_dir:
-            candidates.append(self.vault_dir / "models" / filename)
+        local_repo_cand = Path(__file__).resolve().parent.parent / "models" / filename
+        candidates.append(local_repo_cand)
         for env_key in ("REELPROFILE_MODELS_DIR", "MODEL_ENGINE_MODELS_DIR", "PORTRAIT_ENGINE_MODELS_DIR"):
             env_models = os.environ.get(env_key)
             if env_models:
                 candidates.append(Path(env_models) / filename)
-        candidates.append(Path(__file__).resolve().parent.parent / "models" / filename)
+        if self.vault_dir:
+            candidates.append(self.vault_dir / "models" / filename)
 
         for cand in candidates:
             if cand.exists():
-                return cand
+                resolved = _stage_model_to_local_ssd(cand)
+                _MODEL_PATH_CACHE[cache_key] = resolved
+                return resolved
         raise FileNotFoundError(
             f"Required model/binary '{filename}' not found. Checked: {[str(c) for c in candidates]}"
         )
+
+
+_MODEL_PATH_CACHE: dict[tuple[str, str], Path] = {}
+
+
+def _stage_model_to_local_ssd(src_path: Path) -> Path:
+    """Mirror heavy ONNX/NCNN weights & Mach-O binaries from CloudStorage FUSE to local NVMe SSD cache once."""
+    src_str = str(src_path)
+    if "CloudStorage" not in src_str and "GoogleDrive" not in src_str:
+        return src_path
+    try:
+        cache_dir = Path.home() / ".cache" / "model_generation_engine" / "models"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        def _sync_one(sp: Path) -> Path:
+            dst = cache_dir / sp.name
+            st = sp.stat()
+            if dst.is_file() and dst.stat().st_size == st.st_size:
+                if os.access(sp, os.X_OK) and not os.access(dst, os.X_OK):
+                    dst.chmod(dst.stat().st_mode | 0o111)
+                return dst
+            import shutil
+
+            tmp = cache_dir / f".{sp.name}.{os.getpid()}.tmp"
+            shutil.copy2(sp, tmp)
+            if os.access(sp, os.X_OK) or sp.name in ("upscayl-bin", "realesrgan-ncnn-vulkan"):
+                tmp.chmod(tmp.stat().st_mode | 0o755)
+            os.replace(tmp, dst)
+            return dst
+
+        staged_main = _sync_one(src_path)
+        if src_path.name in ("upscayl-bin", "realesrgan-ncnn-vulkan"):
+            for stem in ("ultramix-balanced-4x", "high-fidelity-4x", "digital-art-4x", "4xNomos8kSC"):
+                for ext in (".param", ".bin"):
+                    wp = src_path.parent / f"{stem}{ext}"
+                    if wp.is_file():
+                        _sync_one(wp)
+        return staged_main
+    except Exception:
+        return src_path
 
 
 # Backward-compatible alias

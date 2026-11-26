@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import struct
+import threading
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
+
+
+def fast_bgr_digest(bgr_img: np.ndarray) -> str:
+    """Fast collision-resistant blake2b content fingerprint (<1ms on 4K, <0.2ms on 1K)."""
+    h, w = bgr_img.shape[:2]
+    c = bgr_img.shape[2] if bgr_img.ndim == 3 else 1
+    hasher = hashlib.blake2b(digest_size=16)
+    hasher.update(struct.pack("<III", h, w, c))
+    if bgr_img.nbytes <= 6_000_000:
+        hasher.update(np.ascontiguousarray(bgr_img))
+    else:
+        hasher.update(np.ascontiguousarray(bgr_img[::2, ::2]))
+    return hasher.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -70,6 +86,10 @@ class FaceDetectionResult:
         return float(np.clip(np.dot(nose - eye_mid, ux) / dist, -0.6, 0.6))
 
 
+_YUNET_NET_CACHE: Dict[Tuple[str, float, float], Tuple[threading.Lock, object]] = {}
+_YUNET_DETECT_CACHE: Dict[Tuple[str, float, float, str], FaceDetectionResult] = {}
+
+
 class DynamicFaceDetector:
     """Zero-hardcoding neural face, 3D pose, and adaptive skin tone detector powered by OpenCV YuNet."""
 
@@ -79,12 +99,47 @@ class DynamicFaceDetector:
         self.yunet_path = str(yunet_onnx_path)
         self.score_threshold = score_threshold
         self.nms_threshold = nms_threshold
+        net_key = (self.yunet_path, float(score_threshold), float(nms_threshold))
+        cached_net = _YUNET_NET_CACHE.get(net_key)
+        if cached_net is None:
+            lk = threading.Lock()
+            net = cv2.FaceDetectorYN.create(
+                self.yunet_path, "", (320, 320), self.score_threshold, self.nms_threshold, 5000
+            )
+            cached_net = (lk, net)
+            _YUNET_NET_CACHE[net_key] = cached_net
+        self._lock, self._detector = cached_net
+
+    def detect_faces_raw(self, bgr_img: np.ndarray, score_threshold: Optional[float] = None) -> Optional[np.ndarray]:
+        """Fast multi-face detection reusing the warm YuNet graph without reloading ONNX from disk."""
+        h, w = bgr_img.shape[:2]
+        scale = min(1.0, 1280.0 / float(max(w, h)))
+        sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
+        work = cv2.resize(bgr_img, (sw, sh), interpolation=cv2.INTER_AREA) if scale < 1.0 else bgr_img
+        eff_thr = float(self.score_threshold if score_threshold is None else score_threshold)
+        with self._lock:
+            self._detector.setScoreThreshold(eff_thr)
+            self._detector.setInputSize((sw, sh))
+            _, faces = self._detector.detect(work)
+            self._detector.setScoreThreshold(self.score_threshold)
+        if faces is None or len(faces) == 0:
+            return None
+        out = faces.copy()
+        if scale < 1.0:
+            inv_s = 1.0 / scale
+            out[:, :14] *= inv_s
+        return out
 
     def detect(self, bgr_img: np.ndarray) -> FaceDetectionResult:
         """Detect the primary subject face and 5 canonical landmarks on an arbitrary image."""
         if bgr_img is None or bgr_img.ndim != 3:
             raise ValueError("Input must be a valid 3-channel BGR image.")
         h, w = bgr_img.shape[:2]
+        cache_key = (self.yunet_path, float(self.score_threshold), float(self.nms_threshold), fast_bgr_digest(bgr_img))
+        hit = _YUNET_DETECT_CACHE.get(cache_key)
+        if hit is not None:
+            return hit
+
         faces = None
         used_scale = 1.0
         # YuNet's anchor strides [8, 16, 32] are calibrated for ~640..1280px images; running raw 5K (5040px)
@@ -102,10 +157,9 @@ class DynamicFaceDetector:
                 sw, sh = max(16, int(round(w * scale))), max(16, int(round(h * scale)))
                 work_img = cv2.resize(bgr_img, (sw, sh), interpolation=cv2.INTER_AREA)
 
-            detector = cv2.FaceDetectorYN.create(
-                self.yunet_path, "", (sw, sh), self.score_threshold, self.nms_threshold, 5000
-            )
-            _, cand = detector.detect(work_img)
+            with self._lock:
+                self._detector.setInputSize((sw, sh))
+                _, cand = self._detector.detect(work_img)
             if cand is not None and len(cand) > 0:
                 faces = cand
                 used_scale = scale
@@ -135,7 +189,11 @@ class DynamicFaceDetector:
             )
             * inv_s
         )
-        return FaceDetectionResult(bbox=bbox, landmarks_5pt=pts5, confidence=float(best[14]))
+        res = FaceDetectionResult(bbox=bbox, landmarks_5pt=pts5, confidence=float(best[14]))
+        if len(_YUNET_DETECT_CACHE) > 512:
+            _YUNET_DETECT_CACHE.clear()
+        _YUNET_DETECT_CACHE[cache_key] = res
+        return res
 
     @staticmethod
     def sample_adaptive_skin_profile(

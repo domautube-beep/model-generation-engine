@@ -177,6 +177,51 @@ class FreshOriginEditorialWorkflow:
         self.facelock_studio = FaceLockedOutpaintStudio(
             self.pipeline.detector, self.pipeline.apple_vision, self.relighter
         )
+        self._bp_mem_cache: Dict[str, Tuple[AnatomicalBlueprint, Optional[object]]] = {}
+        self._verified_8dir_mem_cache: Dict[Tuple[str, str], str] = {}
+        self._ocular_crop_bytes_cache: Dict[str, bytes] = {}
+
+    def _get_cached_gen0_blueprint_and_organ(
+        self, gen0_p: Path, ref_bgr: np.ndarray
+    ) -> Tuple[str, AnatomicalBlueprint, Optional[object]]:
+        """Extract or load cached 25-metric AnatomicalBlueprint + OrganAndDepthProfile keyed by Gen-0 SHA-256."""
+        gen0_sha = _sha256_file(gen0_p)
+        hit = self._bp_mem_cache.get(gen0_sha)
+        if hit is not None:
+            return gen0_sha, hit[0], hit[1]
+
+        cache_dir = Path.home() / ".cache" / "model_generation_engine" / "blueprint_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        disk_f = cache_dir / f"bp_v110_{gen0_sha[:28]}.json"
+        if disk_f.is_file():
+            try:
+                from .ocular_anatomy import OcularAnatomyProfile
+                from .organ_depth_anatomy import OrganAndDepthProfile
+
+                raw = json.loads(disk_f.read_text(encoding="utf-8"))
+                bp_d = dict(raw["blueprint"])
+                oc_d = bp_d.pop("ocular_profile", None)
+                bp_d["ocular_profile"] = OcularAnatomyProfile(**oc_d) if isinstance(oc_d, dict) else None
+                bp = AnatomicalBlueprint(**bp_d)
+                op_d = raw.get("organ_profile")
+                op = OrganAndDepthProfile(**op_d) if isinstance(op_d, dict) else None
+                self._bp_mem_cache[gen0_sha] = (bp, op)
+                return gen0_sha, bp, op
+            except Exception:
+                pass
+
+        bp = self.pipeline.turnaround.extract_anatomical_blueprint(ref_bgr)
+        op = self.organ_depth.extract_profile(ref_bgr)
+        self._bp_mem_cache[gen0_sha] = (bp, op)
+        try:
+            payload = {
+                "blueprint": asdict(bp),
+                "organ_profile": asdict(op) if op is not None else None,
+            }
+            disk_f.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+        return gen0_sha, bp, op
 
     def prepare_origin_bundle(
         self,
@@ -231,8 +276,7 @@ class FreshOriginEditorialWorkflow:
         if ref_bgr is None:
             raise ValueError(f"Cannot decode Gen-0 image: {gen0_p}")
 
-        blueprint: AnatomicalBlueprint = self.pipeline.turnaround.extract_anatomical_blueprint(ref_bgr)
-        organ_profile = self.organ_depth.extract_profile(ref_bgr)
+        gen0_sha, blueprint, organ_profile = self._get_cached_gen0_blueprint_and_organ(gen0_p, ref_bgr)
         clause_25pt = blueprint.to_3d_invariance_clause()
         organ_depth_clause = organ_profile.to_dynamic_organ_depth_clause() if organ_profile is not None else ""
         natural_id_clause = organ_profile.to_natural_identity_only_clause(clean_studio=no_film_grain) if organ_profile is not None else ""
@@ -302,20 +346,28 @@ class FreshOriginEditorialWorkflow:
                 raise FileNotFoundError(
                     f"[8-Dir Bank Verification Failed] --turnaround-sheet file does not exist: {raw_turn_p}"
                 )
-            if _sha256_file(raw_turn_p) == _sha256_file(gen0_p):
+            turn_sha = _sha256_file(raw_turn_p)
+            if turn_sha == gen0_sha:
                 raise RuntimeError(
                     "[8-Dir Bank Verification Failed] --turnaround-sheet cannot point to Gen-0 itself; must be a verified 8-direction bank!"
                 )
-            distinct_views = set()
-            for probe_yaw in (-90.0, -45.0, -22.5, 22.5, 45.0, 90.0):
-                iv = self.pipeline.turnaround.resolve_nearest_individual_8dir_portrait(raw_turn_p, probe_yaw)
-                if iv is not None and iv[0].is_file() and _sha256_file(iv[0].resolve()) != _sha256_file(gen0_p):
-                    distinct_views.add(_sha256_file(iv[0].resolve()))
-            if len(distinct_views) < 4:
-                raise RuntimeError(
-                    f"[8-Dir Bank Verification Failed] '{raw_turn_p.name}' lacks verified distinct 1-Hop 8-direction portraits (found {len(distinct_views)} < 4)!"
-                )
-            turnaround_master_sheet_meta = str(raw_turn_p)
+            bank_ck = (gen0_sha, turn_sha)
+            if bank_ck in self._verified_8dir_mem_cache:
+                turnaround_master_sheet_meta = self._verified_8dir_mem_cache[bank_ck]
+            else:
+                distinct_views = set()
+                for probe_yaw in (-90.0, -45.0, -22.5, 22.5, 45.0, 90.0):
+                    iv = self.pipeline.turnaround.resolve_nearest_individual_8dir_portrait(raw_turn_p, probe_yaw)
+                    if iv is not None and iv[0].is_file():
+                        iv_sha = _sha256_file(iv[0].resolve())
+                        if iv_sha != gen0_sha:
+                            distinct_views.add(iv_sha)
+                if len(distinct_views) < 4:
+                    raise RuntimeError(
+                        f"[8-Dir Bank Verification Failed] '{raw_turn_p.name}' lacks verified distinct 1-Hop 8-direction portraits (found {len(distinct_views)} < 4)!"
+                    )
+                turnaround_master_sheet_meta = str(raw_turn_p)
+                self._verified_8dir_mem_cache[bank_ck] = turnaround_master_sheet_meta
 
         if design_mode == "pure_character_sheet" and turnaround_8dir_sheet_path is not None and Path(turnaround_8dir_sheet_path).exists():
             # Character-Sheet Angle-Matched Pure 1-Pass Mode (ZERO clean-plate hole composite, ZERO post face-masking!):
@@ -472,8 +524,13 @@ class FreshOriginEditorialWorkflow:
             )
             if attach_ocular_detail_anchor and turnaround_p is None and not lowres_or_smoothed_gen0:
                 ocular_anchor_p = wdir / "gen0_optical_ocular_detail_anchor.jpg"
-                self.pipeline.turnaround.prepare_pure_gen0_ocular_detail_anchor(gen0_p, ocular_anchor_p)
-                self.origin_guard.register_approved_origin(ocular_anchor_p, kind="gen0_optical_crop", depth=0)
+                cached_oc_bytes = self._ocular_crop_bytes_cache.get(gen0_sha)
+                if cached_oc_bytes is not None:
+                    ocular_anchor_p.write_bytes(cached_oc_bytes)
+                else:
+                    self.pipeline.turnaround.prepare_pure_gen0_ocular_detail_anchor(gen0_p, ocular_anchor_p)
+                    self._ocular_crop_bytes_cache[gen0_sha] = ocular_anchor_p.read_bytes()
+                    self.origin_guard.register_approved_origin(ocular_anchor_p, kind="gen0_optical_crop", depth=0)
                 ordered_refs.append(
                     {
                         "slot": f"Image {len(ordered_refs) + 1}",
@@ -832,33 +889,40 @@ class FreshOriginEditorialWorkflow:
         return manifest
 
     def _estimate_multisegment_head_error_pct(self, bgr: np.ndarray, dst_face) -> float:
-        """SizeKorea 8th multi-segment anthropometric head-size consistency error (%) across trunk, humerus, femur, and hand."""
+        """SizeKorea 8th multi-segment anthropometric head-size consistency error (%) on full-body shots."""
         from PIL import Image
 
         h, w = bgr.shape[:2]
+        # Skip Vision body_joints subprocess on half-body/portrait shots where hips/knees are outside frame
+        if float(dst_face.bbox[3]) / float(max(1, h)) >= 0.22:
+            return 0.0
         actual_head_h = float(dst_face.bbox[3]) * 1.42
         try:
             pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-            joints = self.pipeline.apple_vision.body_joints(pil) or {}
+            bj = self.pipeline.apple_vision.body_and_hand_points(pil) or {}
         except Exception:
             return 0.0
-        if not joints:
+        bodies = bj.get("bodies") or []
+        if not bodies:
+            return 0.0
+        jmap = {
+            str(j["name"]): np.array([float(j["x"]), float(j["y"])], dtype=np.float32)
+            for j in bodies[0]
+            if float(j.get("conf", 0.0)) >= 0.55
+            and 0.04 * w <= float(j["x"]) <= 0.96 * w
+            and 0.04 * h <= float(j["y"]) <= 0.94 * h
+        }
+        if "root" not in jmap:
             return 0.0
 
-        def _pt(name: str) -> Optional[np.ndarray]:
-            j = joints.get(name)
-            if not j or float(j.get("confidence", 0.0)) < 0.28:
-                return None
-            return np.array([float(j["x"]) * w, (1.0 - float(j["y"])) * h], dtype=np.float32)
-
         ests: List[float] = []
-        neck, root = _pt("neck_1_joint"), _pt("root")
+        neck, root = jmap.get("neck_1_joint"), jmap.get("root")
         if neck is not None and root is not None:
             d_tr = float(np.linalg.norm(root - neck))
             if d_tr > 30.0:
                 ests.append(d_tr / 1.80)
         for side in ("left", "right"):
-            sh, el, wr = _pt(f"{side}_shoulder_1_joint"), _pt(f"{side}_forearm_joint"), _pt(f"{side}_hand_joint")
+            sh, el, wr = jmap.get(f"{side}_shoulder_1_joint"), jmap.get(f"{side}_forearm_joint"), jmap.get(f"{side}_hand_joint")
             if sh is not None and el is not None:
                 d_hum = float(np.linalg.norm(el - sh))
                 if d_hum > 20.0:
@@ -867,17 +931,36 @@ class FreshOriginEditorialWorkflow:
                 d_fa = float(np.linalg.norm(wr - el))
                 if d_fa > 18.0:
                     ests.append(d_fa / 1.02)
-            hip, kn = _pt(f"{side}_upLeg_joint"), _pt(f"{side}_leg_joint")
+            hip, kn = jmap.get(f"{side}_upLeg_joint"), jmap.get(f"{side}_leg_joint")
             if hip is not None and kn is not None:
                 d_fem = float(np.linalg.norm(kn - hip))
                 if d_fem > 25.0:
                     ests.append(d_fem / 1.86)
-        if not ests:
+        if len(ests) < 2:
             return 0.0
         expected_head_h = float(np.median(ests))
         if expected_head_h <= 10.0:
             return 0.0
         return round((actual_head_h - expected_head_h) / expected_head_h * 100.0, 1)
+
+    def _estimate_fast_yaw_deg(self, bgr: np.ndarray) -> float:
+        """Sub-millisecond (cached) signed yaw estimator without full 25-metric cranial/mask extraction."""
+        from PIL import Image
+
+        try:
+            pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            marks = self.pipeline.apple_vision.landmarks(pil)
+            sh = self.pipeline.apple_vision.compute_face_shape(marks)
+            if sh is not None and "turn" in sh:
+                return float(np.clip(float(sh["turn"]) * 95.0, -90.0, 90.0))
+        except Exception:
+            pass
+        face = self.pipeline.detector.detect(bgr)
+        le, re, nose, _, _ = face.landmarks_5pt
+        d_left = float(np.linalg.norm(nose - le))
+        d_right = float(np.linalg.norm(nose - re))
+        signed_asym = (d_left - d_right) / max(1.0, d_left + d_right)
+        return float(np.clip(signed_asym * 135.0, -90.0, 90.0))
 
     def _resolve_angle_matched_ref_bgr(
         self,
@@ -890,10 +973,8 @@ class FreshOriginEditorialWorkflow:
         if turnaround_sheet_path is None or not Path(turnaround_sheet_path).exists():
             return default_ref_p, default_ref_bgr
         try:
-            ref_bp = self.pipeline.turnaround.extract_anatomical_blueprint(default_ref_bgr)
-            cand_bp = self.pipeline.turnaround.extract_anatomical_blueprint(cand_bgr)
-            ref_yaw = float(ref_bp.source_signed_yaw_deg)
-            cand_yaw = float(cand_bp.source_signed_yaw_deg)
+            ref_yaw = self._estimate_fast_yaw_deg(default_ref_bgr)
+            cand_yaw = self._estimate_fast_yaw_deg(cand_bgr)
             if abs(cand_yaw - ref_yaw) < 8.0:
                 return default_ref_p, default_ref_bgr
             indiv = self.pipeline.turnaround.resolve_nearest_individual_8dir_portrait(
@@ -916,13 +997,16 @@ class FreshOriginEditorialWorkflow:
         min_created_epoch: float = 0.0,
         turnaround_sheet_path: Optional[Path] = None,
     ) -> Dict[str, object]:
-        """Stage 4: Score all K fresh candidates natively (`0px` warp, `0%` pasting) across SFace + Contour IoU + Multi-Segment Anthropometry + 25 Metrics."""
+        """Stage 4: Score all K fresh candidates natively (`0px` warp, `0%` pasting) across SFace + 10-Gate Pre-Check + 25 Metrics."""
+        from PIL import Image
+
         gen0_p = Path(gen0_portrait_path).resolve()
         base_ref_bgr = cv2.imread(str(gen0_p))
         if base_ref_bgr is None:
             raise FileNotFoundError(f"Cannot read Gen-0 portrait: {gen0_p}")
         base_ref_face = self.pipeline.detector.detect(base_ref_bgr)
-        base_ref_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, base_ref_bgr)
+        base_ref_marks = self.pipeline.apple_vision.landmarks(Image.fromarray(cv2.cvtColor(base_ref_bgr, cv2.COLOR_BGR2RGB)))
+        base_ref_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, base_ref_bgr, marks=base_ref_marks)
         if base_ref_vec is None:
             raise RuntimeError("Failed to extract 18-metric craniofacial vector from Gen-0.")
 
@@ -942,30 +1026,36 @@ class FreshOriginEditorialWorkflow:
             _matched_p, ref_bgr = self._resolve_angle_matched_ref_bgr(
                 gen0_p, base_ref_bgr, bgr, turnaround_sheet_path=turnaround_sheet_path
             )
-            ref_face = self.pipeline.detector.detect(ref_bgr) if ref_bgr is not base_ref_bgr else base_ref_face
-            ref_vec = (
-                (extract_14pt_proportion_vector(self.pipeline.apple_vision, ref_bgr) or base_ref_vec)
-                if ref_bgr is not base_ref_bgr
-                else base_ref_vec
-            )
+            if ref_bgr is not base_ref_bgr:
+                ref_face = self.pipeline.detector.detect(ref_bgr)
+                ref_marks = self.pipeline.apple_vision.landmarks(Image.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)))
+                ref_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, ref_bgr, marks=ref_marks) or base_ref_vec
+            else:
+                ref_face = base_ref_face
+                ref_marks = base_ref_marks
+                ref_vec = base_ref_vec
+
             dst_face = self.pipeline.detector.detect(bgr)
+            cand_marks = self.pipeline.apple_vision.landmarks(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
             sface_angle = float(self.pipeline.auditor.measure_identity_similarity(ref_bgr, bgr, ref_face, dst_face))
             sface_gen0 = float(self.pipeline.auditor.measure_identity_similarity(base_ref_bgr, bgr, base_ref_face, dst_face))
             sface_sim = max(sface_angle, sface_gen0) if sface_gen0 >= 0.58 else sface_gen0
-            c_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, bgr, full_canvas_bgr=bgr)
+            c_vec = extract_14pt_proportion_vector(self.pipeline.apple_vision, bgr, full_canvas_bgr=bgr, marks=cand_marks)
             if c_vec is None:
                 continue
             cmp18 = compare_14pt_proportions(ref_vec, c_vec)
             diffs = cmp18["diffsPct"]
-            oc_cmp = self.ocular.compare(ref_bgr, bgr)
+            oc_cmp = self.ocular.compare(ref_bgr, bgr, ref_marks=ref_marks, cand_marks=cand_marks)
             oc_d = oc_cmp.get("diffs") or {}
-            ex_cmp = self.exaggeration_guard.audit(ref_bgr, bgr)
+            ex_cmp = self.exaggeration_guard.audit(ref_bgr, bgr, ref_marks=ref_marks, cand_marks=cand_marks)
             ex_idx = float(ex_cmp.get("exaggerationIndex", 0.0))
             sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(ref_bgr, bgr, output_overlay_path=None)
+            je_cmp = self.exaggeration_guard.measure_jaw_to_ear_neck_and_eye_audit(ref_bgr, bgr)
             c_iou = float(sil_cmp.get("contourIoU", 0.90))
             od_cmp = self.organ_depth.compare(ref_bgr, bgr)
             od_drift = float(od_cmp.get("organDepthDrift", 0.0))
             ms_err_pct = self._estimate_multisegment_head_error_pct(bgr, dst_face)
+            skin_m = self.pipeline.auditor.skin_processor.measure_metrics(bgr, dst_face)
 
             ca_diff = float(diffs.get("cheekAreaNorm", 0.0))
             lja_diff = float(diffs.get("lowerJawAreaNorm", 0.0))
@@ -981,6 +1071,10 @@ class FreshOriginEditorialWorkflow:
             issues: List[str] = []
             if sface_sim < self.pipeline.config.min_identity_cosine_sim:
                 issues.append(f"SFace {sface_sim:.3f} < {self.pipeline.config.min_identity_cosine_sim:.3f}")
+            if sface_gen0 < 0.58:
+                issues.append(f"순수 Gen-0 SFace {sface_gen0:.3f} < 0.580")
+            if skin_m.specular_glare_ratio > self.pipeline.config.max_specular_glare_ratio:
+                issues.append(f"피부 번들거림 {skin_m.specular_glare_ratio:.3f} > {self.pipeline.config.max_specular_glare_ratio:.3f}")
             if abs(ca_diff) > self.pipeline.config.max_cheek_area_diff_pct:
                 issues.append(f"볼면적 {ca_diff:+.1f}%")
             if abs(lja_diff) > self.pipeline.config.max_cheek_area_diff_pct + 1.5:
@@ -999,6 +1093,10 @@ class FreshOriginEditorialWorkflow:
                 issues.extend(str(x) for x in oc_cmp.get("issues", []))
             if not ex_cmp.get("passed", True):
                 issues.extend(str(x) for x in ex_cmp.get("issues", []))
+            if not sil_cmp.get("passed", True):
+                issues.extend(str(x) for x in sil_cmp.get("issues", []))
+            if not je_cmp.get("passed", True):
+                issues.extend(str(x) for x in je_cmp.get("issues", []))
             if not od_cmp.get("passed", True):
                 issues.extend(str(x) for x in od_cmp.get("issues", []))
 
@@ -1125,13 +1223,116 @@ class FreshOriginEditorialWorkflow:
         raw_fw, raw_fh = round(float(raw_face_det.bbox[2]), 1), round(float(raw_face_det.bbox[3]), 1)
         raw_iod_px = round(float(raw_face_det.inter_ocular_distance), 1)
 
-        # 1. Tone-Locked True 4K Super-Resolution (`v1.0.6` canonical default):
-        #    - Native 4K inputs: 100.0% lossless 0.0px passthrough.
-        #    - Sub-4K inputs: Upscayl 4x True Super-Resolution with 100.0% CIE LAB low-frequency & chromaticity lock (`delta_L ~ 0, delta_ab = 0`).
         acuity_meta: Dict[str, object] = {"applied": False}
         tonelock_sr_meta: Dict[str, object] = {"applied": False}
         zero_post_paste = design_mode in ("zero_touch_4k", "pure_character_sheet", "design_b_rerender")
         pure_zero_mask = zero_post_paste
+
+        # 0. Fast Pre-Upscale 10-Gate Cutoff (<0.25s): immediately reject clearly defective sub-4K candidates
+        #    BEFORE spending ~18s on 4x Upscayl GPU/CPU super-resolution!
+        if (not is_native_4k_raw) and zero_post_paste:
+            rfx, rfy, rfw, rfh = raw_face_det.bbox
+            rmx1, rmy1 = max(0, int(rfx - rfw * 0.65)), max(0, int(rfy - rfh * 0.55))
+            rmx2, rmy2 = min(r_sw, int(rfx + rfw * 1.65)), min(r_sh, int(rfy + rfh * 1.55))
+            raw_macro_bgr = raw_bgr[rmy1:rmy2, rmx1:rmx2].copy()
+            pre_angle_p, pre_ref_bgr = self._resolve_angle_matched_ref_bgr(
+                gen0_p, ref_bgr, raw_macro_bgr, turnaround_sheet_path=turnaround_sheet_path
+            )
+            pre_ref_face = self.pipeline.detector.detect(pre_ref_bgr)
+            pure_gen0_face_pre = self.pipeline.detector.detect(pure_gen0_bgr)
+            sface_pre_pure = float(
+                self.pipeline.auditor.measure_identity_similarity(pure_gen0_bgr, raw_bgr, pure_gen0_face_pre, raw_face_det)
+            )
+            sface_pre_angle = float(
+                self.pipeline.auditor.measure_identity_similarity(pre_ref_bgr, raw_bgr, pre_ref_face, raw_face_det)
+            )
+            anat_ok_pre, anat_msg_pre = self.pipeline.auditor.validate_anatomical_geometry(raw_face_det)
+            from PIL import Image as _PILImage
+            pre_ref_marks = self.pipeline.apple_vision.landmarks(_PILImage.fromarray(cv2.cvtColor(pre_ref_bgr, cv2.COLOR_BGR2RGB)))
+            raw_mac_marks = self.pipeline.apple_vision.landmarks(_PILImage.fromarray(cv2.cvtColor(raw_macro_bgr, cv2.COLOR_BGR2RGB)))
+            oc_pre = self.ocular.compare(pre_ref_bgr, raw_macro_bgr, ref_marks=pre_ref_marks, cand_marks=raw_mac_marks)
+            ex_pre = self.exaggeration_guard.audit(pre_ref_bgr, raw_macro_bgr, ref_marks=pre_ref_marks, cand_marks=raw_mac_marks)
+            sil_pre = self.exaggeration_guard.measure_pupil_aligned_silhouette(pre_ref_bgr, raw_macro_bgr, output_overlay_path=None)
+
+            pre_reasons: List[str] = []
+            if not anat_ok_pre:
+                pre_reasons.append(anat_msg_pre)
+            if sface_pre_pure < 0.55:
+                pre_reasons.append(f"순수 Gen-0 SFace 심각 미달 ({sface_pre_pure:.3f} < 0.550)")
+            yaw_d_pre = abs(float(pre_ref_face.yaw_asymmetry_ratio) - float(raw_face_det.yaw_asymmetry_ratio))
+            tilt_d_pre = abs(float(raw_face_det.eye_tilt_degrees) - float(pre_ref_face.eye_tilt_degrees))
+            if yaw_d_pre <= 0.16 and tilt_d_pre < 8.0 and sface_pre_angle < 0.625:
+                pre_reasons.append(f"얼굴 정체성(SFace={sface_pre_angle:.3f}) 미달")
+            if not sil_pre.get("valid", False) or float(sil_pre.get("contourIoU", 0.0)) < 0.905 or float(sil_pre.get("maxContourPointErrPx", 999.0)) > 13.0:
+                pre_reasons.append(
+                    f"1:1 외곽선 사전 컷오프 (IoU={sil_pre.get('contourIoU')}, MaxErr={sil_pre.get('maxContourPointErrPx')}px)"
+                )
+            oc_d_pre = oc_pre.get("diffs") or {}
+            if not oc_pre.get("valid", False) or float(oc_d_pre.get("irisWidthDiffPct", 0.0)) > 22.5 or float(oc_d_pre.get("scleraDiffPct", 0.0)) < -16.8:
+                pre_reasons.append(f"눈매·홍채·흰자 사전 컷오프 ({'; '.join(str(x) for x in oc_pre.get('issues', []))})")
+            ex_d_pre = ex_pre.get("diffs") or {}
+            if not ex_pre.get("valid", False) or abs(float(ex_d_pre.get("eyeWidthPct", 0.0))) > 12.2 or float(ex_d_pre.get("lipHeightPct", 0.0)) > 22.5:
+                pre_reasons.append(f"얼굴 과장 사전 컷오프 ({'; '.join(str(x) for x in ex_pre.get('issues', []))})")
+
+            if pre_reasons:
+                cv2.imwrite(str(out_macro), raw_macro_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+                eye_pre_saved = self.ocular.save_400pct_eye_comparison_strip(pre_ref_bgr, raw_macro_bgr, str(out_eye_cmp))
+                sil_pre_ov = self.exaggeration_guard.measure_pupil_aligned_silhouette(
+                    pre_ref_bgr, raw_macro_bgr, output_overlay_path=str(out_sil_ov)
+                )
+                pre_msg = "; ".join(pre_reasons)
+                pre_rcp = {
+                    "project_name": CANONICAL_PROJECT_NAME,
+                    "short_alias": SHORT_PROJECT_NAME,
+                    "workflow_version": check_version_integrity().canonical_version,
+                    "design_mode": design_mode,
+                    "stage": "FINALIZED_10GATES_FAILED",
+                    "pre_upscale_fast_rejected": True,
+                    "timestamp": time.time(),
+                    "passed_10gates": False,
+                    "hero_4k_sha256": None,
+                    "face_laplacian_variance": 0.0,
+                    "sface_pure_gen0": round(sface_pre_pure, 4),
+                    "sface_similarity": round(sface_pre_angle, 4),
+                    "angle_matched_reference_path": str(pre_angle_p),
+                    "upscale_mode": upscale_mode,
+                    "upscayl_model": "skipped_by_pre_gate_cutoff",
+                    "resolution": [r_sw, r_sh],
+                    "raw_pre_upscale_canvas": [r_sw, r_sh],
+                    "raw_pre_upscale_face_px": [raw_fw, raw_fh],
+                    "raw_pre_upscale_iod_px": raw_iod_px,
+                    "audit_message": pre_msg,
+                    "silhouette_1to1": {
+                        "passed": sil_pre_ov.get("passed"),
+                        "contourIoU": sil_pre_ov.get("contourIoU"),
+                        "maxContourPointErrPx": sil_pre_ov.get("maxContourPointErrPx"),
+                        "meanContourPointErrPx": sil_pre_ov.get("meanContourPointErrPx"),
+                        "width5LevelDiffPct": sil_pre_ov.get("width5LevelDiffPct"),
+                        "issues": sil_pre_ov.get("issues"),
+                    },
+                    "exaggeration_audit": ex_pre,
+                    "ocular_summary": {
+                        "passed": oc_pre.get("passed"),
+                        "eyelidEdgeNcc": oc_pre.get("eyelidEdgeNcc"),
+                        "ocularDriftScore": oc_pre.get("ocularDriftScore"),
+                        "diffs": oc_pre.get("diffs"),
+                        "issues": oc_pre.get("issues"),
+                    },
+                    "deliverables": {
+                        "hero_4k": None,
+                        "closeup": None,
+                        "macro": str(out_macro),
+                        "eye_compare_400pct": eye_pre_saved,
+                        "silhouette_overlay": sil_pre_ov.get("overlayPath"),
+                    },
+                    "vault_synced": [],
+                }
+                receipt_path_pre.write_text(json.dumps(pre_rcp, ensure_ascii=False, indent=2), encoding="utf-8")
+                raise RuntimeError(f"10-Gate Pre-Upscale Fast Cutoff REJECTED candidate (<0.3s): {pre_msg}")
+
+        # 1. Tone-Locked True 4K Super-Resolution (`v1.0.6` canonical default):
+        #    - Native 4K inputs: 100.0% lossless 0.0px passthrough.
+        #    - Sub-4K inputs: Upscayl 4x True Super-Resolution with 100.0% CIE LAB low-frequency & chromaticity lock (`delta_L ~ 0, delta_ab = 0`).
         up_bgr, tonelock_sr_meta = self.pipeline.upscaler.upscale_tonelocked_true_4k(
             raw_bgr, target_min_height=4800, model_name=upscayl_model_name
         )
@@ -1277,30 +1478,35 @@ class FreshOriginEditorialWorkflow:
 
         # Full 10-Gate Quality Audit using immutable canonical production EngineConfig (immune to caller config weakening!)
         from .config import CanvasSpec as _CS, EngineConfig as _EC
+        from .quality_gate import QualityGateAuditor as _QGA
+        from PIL import Image as _PILImg4K
         cfg_4k = _EC(
             vault_dir=self.pipeline.config.vault_dir,
             canvas=_CS(target_width=uw, target_height=uh),
         )
-        auditor_4k = ModelGenerationPipeline(cfg_4k).auditor
+        auditor_4k = _QGA(cfg_4k, self.pipeline.detector)
         report = auditor_4k.audit(up_bgr, crop_box, seam_l1_diff=0.0, reference_face_bgr=ref_bgr)
 
         # Also enforce direct pure Gen-0 SFace floor (>= 0.58 even under 3/4 yaw) so 8-dir reference NEVER dilutes Gen-0 identity!
         pure_gen0_face = self.pipeline.detector.detect(pure_gen0_bgr)
+        roi_4k_view = up_bgr[vy1:vy2, vx1:vx2]
         sface_pure_gen0 = round(
-            float(auditor_4k.measure_identity_similarity(pure_gen0_bgr, up_bgr[vy1:vy2, vx1:vx2], pure_gen0_face, self.pipeline.detector.detect(up_bgr[vy1:vy2, vx1:vx2]))),
+            float(auditor_4k.measure_identity_similarity(pure_gen0_bgr, roi_4k_view, pure_gen0_face, self.pipeline.detector.detect(roi_4k_view))),
             4,
         )
 
         # Save diagnostic macro / eye / silhouette strips first; ONLY write deliverable `*_4k.jpg` if all 10 gates PASS!
-        cv2.imwrite(str(out_closeup), up_bgr[vy1:vy2, vx1:vx2], [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+        cv2.imwrite(str(out_closeup), roi_4k_view, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
         cv2.imwrite(str(out_macro), macro_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
 
+        ref_marks_4k = self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)))
+        macro_marks_4k = self.pipeline.apple_vision.landmarks(_PILImg4K.fromarray(cv2.cvtColor(macro_bgr, cv2.COLOR_BGR2RGB)))
         eye_strip_saved = self.ocular.save_400pct_eye_comparison_strip(ref_bgr, macro_bgr, str(out_eye_cmp))
-        oc_cmp = self.ocular.compare(ref_bgr, macro_bgr)
+        oc_cmp = self.ocular.compare(ref_bgr, macro_bgr, ref_marks=ref_marks_4k, cand_marks=macro_marks_4k)
         sil_cmp = self.exaggeration_guard.measure_pupil_aligned_silhouette(
             ref_bgr, macro_bgr, output_overlay_path=str(out_sil_ov)
         )
-        ex_cmp = self.exaggeration_guard.audit(ref_bgr, macro_bgr)
+        ex_cmp = self.exaggeration_guard.audit(ref_bgr, macro_bgr, ref_marks=ref_marks_4k, cand_marks=macro_marks_4k)
         od_cmp = self.organ_depth.compare(pure_gen0_bgr, macro_bgr)
 
         all_passed = bool(

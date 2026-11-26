@@ -9,9 +9,13 @@ from PIL import Image
 
 from .apple_vision import AppleVisionAnalyzer
 from .config import EngineConfig
-from .detector import DynamicFaceDetector
+from .detector import DynamicFaceDetector, fast_bgr_digest
 from .proportion_calibrator import extract_14pt_proportion_vector
 from .skin_processor import MatteSkinProcessor
+
+_SFACE_MODEL_CACHE: dict[str, tuple[object, ort.InferenceSession]] = {}
+_GLOBAL_REF_BUNDLE_CACHE: dict[str, tuple] = {}
+_GLOBAL_SFACE_VEC_CACHE: dict[str, np.ndarray] = {}
 
 
 @dataclass(frozen=True)
@@ -46,32 +50,41 @@ class QualityGateAuditor:
         self.apple_vision = AppleVisionAnalyzer(bin_dir=bin_dir)
         self._sface_rec = None
         self._sface_sess = None
-        self._ref_cache: dict = {}
-        sface_path = config.resolve_model_path("sface.onnx")
-        self._sface_rec = cv2.FaceRecognizerSF.create(str(sface_path), "")
-        opts = ort.SessionOptions()
-        opts.log_severity_level = 3
-        self._sface_sess = ort.InferenceSession(
-            str(sface_path), sess_options=opts, providers=["CPUExecutionProvider"]
-        )
+        self._ref_cache = _GLOBAL_REF_BUNDLE_CACHE
+        sface_path = str(config.resolve_model_path("sface.onnx"))
+        cached_sf = _SFACE_MODEL_CACHE.get(sface_path)
+        if cached_sf is None:
+            rec = cv2.FaceRecognizerSF.create(sface_path, "")
+            opts = ort.SessionOptions()
+            opts.log_severity_level = 3
+            sess = ort.InferenceSession(
+                sface_path, sess_options=opts, providers=["CPUExecutionProvider"]
+            )
+            cached_sf = (rec, sess)
+            _SFACE_MODEL_CACHE[sface_path] = cached_sf
+        self._sface_rec, self._sface_sess = cached_sf
 
     def _extract_sface_vec(self, img: np.ndarray, f) -> Optional[np.ndarray]:
         if self._sface_rec is None or self._sface_sess is None:
             return None
+        vkey = f"{fast_bgr_digest(img)}_{f.bbox[0]:.1f}_{f.bbox[1]:.1f}_{f.bbox[2]:.1f}"
+        hit = _GLOBAL_SFACE_VEC_CACHE.get(vkey)
+        if hit is not None:
+            return hit
         box15 = np.array(
             list(f.bbox) + f.landmarks_5pt.ravel().tolist() + [f.confidence], dtype=np.float32
         )
         aligned = self._sface_rec.alignCrop(img, box15)
         blob = aligned.transpose(2, 0, 1)[None, ...].astype(np.float32)
         vec = self._sface_sess.run(None, {self._sface_sess.get_inputs()[0].name: blob})[0][0]
-        return vec / (float(np.linalg.norm(vec)) + 1e-8)
+        normed = vec / (float(np.linalg.norm(vec)) + 1e-8)
+        if len(_GLOBAL_SFACE_VEC_CACHE) > 512:
+            _GLOBAL_SFACE_VEC_CACHE.clear()
+        _GLOBAL_SFACE_VEC_CACHE[vkey] = normed
+        return normed
 
     def _get_cached_reference_bundle(self, ref_bgr: np.ndarray) -> Tuple[object, Optional[np.ndarray], Optional[dict], Optional[dict]]:
-        import hashlib
-
-        h_key = hashlib.blake2b(
-            ref_bgr.ravel()[:8192].tobytes() + str(ref_bgr.shape).encode("ascii"), digest_size=12
-        ).hexdigest()
+        h_key = fast_bgr_digest(ref_bgr)
         cached = self._ref_cache.get(h_key)
         if cached is not None:
             return cached
@@ -88,7 +101,7 @@ class QualityGateAuditor:
             ref_sh = None
             ref_cran = None
         bundle = (ref_face, ref_vec, ref_sh, ref_cran)
-        if len(self._ref_cache) > 64:
+        if len(self._ref_cache) > 128:
             self._ref_cache.clear()
         self._ref_cache[h_key] = bundle
         return bundle
@@ -174,6 +187,7 @@ class QualityGateAuditor:
         crop_box_5k: Tuple[int, int, int, int],
         seam_l1_diff: float,
         reference_face_bgr: Optional[np.ndarray] = None,
+        expected_canvas_size: Optional[Tuple[int, int]] = None,
     ) -> QualityReport:
         """Verify resolution, sharpness, seam continuity, landmark symmetry, zero plastic gloss, and natural skin texture."""
         if canvas_5k_bgr is None or canvas_5k_bgr.ndim != 3:
@@ -192,8 +206,11 @@ class QualityGateAuditor:
             )
 
         h, w = canvas_5k_bgr.shape[:2]
-        exp_w = self.config.canvas.target_width
-        exp_h = self.config.canvas.target_height
+        exp_w, exp_h = (
+            expected_canvas_size
+            if expected_canvas_size is not None
+            else (self.config.canvas.target_width, self.config.canvas.target_height)
+        )
         if (w, h) != (exp_w, exp_h):
             return QualityReport(
                 passed=False,
@@ -315,9 +332,12 @@ class QualityGateAuditor:
                     f"Face identity similarity ({id_sim:.3f}) below min ({eff_min_sim:.3f}) — face drifted from reference"
                 )
             try:
+                dst_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
+                dst_marks = self.apple_vision.landmarks(dst_pil)
+                ref_pil_for_marks = Image.fromarray(cv2.cvtColor(reference_face_bgr, cv2.COLOR_BGR2RGB))
+                ref_marks = self.apple_vision.landmarks(ref_pil_for_marks)
                 if ref_sh and bool(ref_sh.get("auditable", ref_sh.get("frontal"))):
-                    dst_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
-                    dst_sh = self.apple_vision.compute_face_shape(self.apple_vision.landmarks(dst_pil))
+                    dst_sh = self.apple_vision.compute_face_shape(dst_marks)
                 else:
                     dst_sh = None
                 eff_shape_lim = self.config.max_face_shape_diff_pct + (8.0 if tilt_diff >= 8.0 else 0.0)
@@ -345,8 +365,8 @@ class QualityGateAuditor:
                         failures.append(str(iss))
 
                 if yaw_diff <= 0.22 and tilt_diff < 8.0:
-                    ref_p18 = extract_14pt_proportion_vector(self.apple_vision, reference_face_bgr)
-                    dst_p18 = extract_14pt_proportion_vector(self.apple_vision, patch)
+                    ref_p18 = extract_14pt_proportion_vector(self.apple_vision, reference_face_bgr, marks=ref_marks)
+                    dst_p18 = extract_14pt_proportion_vector(self.apple_vision, patch, marks=dst_marks)
                     if ref_p18 and dst_p18:
                         ca_diff = (float(dst_p18["cheekAreaNorm"]) / max(0.5, float(ref_p18["cheekAreaNorm"])) - 1.0) * 100.0
                         lja_diff = (float(dst_p18["lowerJawAreaNorm"]) / max(0.2, float(ref_p18["lowerJawAreaNorm"])) - 1.0) * 100.0
@@ -362,7 +382,9 @@ class QualityGateAuditor:
 
                     # Gate 10b: 7-Metric Ocular Anatomy Audit (`눈매 · 쌍꺼풀 높이 · 흰자 노출 · 홍채 비율 · 눈꼬리`)
                     from .ocular_anatomy import OcularAnatomyAnalyzer
-                    oc_cmp = OcularAnatomyAnalyzer(self.apple_vision).compare(reference_face_bgr, patch)
+                    oc_cmp = OcularAnatomyAnalyzer(self.apple_vision).compare(
+                        reference_face_bgr, patch, ref_marks=ref_marks, cand_marks=dst_marks
+                    )
                     if oc_cmp.get("valid"):
                         oc_d = oc_cmp["diffs"]
                         shape_note = (
@@ -378,7 +400,7 @@ class QualityGateAuditor:
                     # Gate 10c: 7-Axis Anti-Exaggeration Face Guard (`눈·눈썹·코·입술·채도·윤곽 과장 전면 차단`)
                     from .face_exaggeration_guard import FaceExaggerationGuard
                     feg = FaceExaggerationGuard(self.apple_vision)
-                    ex_rep = feg.audit(reference_face_bgr, patch)
+                    ex_rep = feg.audit(reference_face_bgr, patch, ref_marks=ref_marks, cand_marks=dst_marks)
                     if ex_rep.get("valid"):
                         shape_note = f"{shape_note} · 과장지수 {ex_rep['exaggerationIndex']:.1f}".strip(" ·")
                         if getattr(self.config, "enforce_ocular_gate", True) and not ex_rep.get("passed", False):

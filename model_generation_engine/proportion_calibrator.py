@@ -32,21 +32,27 @@ def extract_14pt_proportion_vector(
     vision: AppleVisionAnalyzer,
     bgr_img: np.ndarray,
     full_canvas_bgr: Optional[np.ndarray] = None,
+    marks: Optional[Dict[str, List[List[float]]]] = None,
 ) -> Optional[Dict[str, float]]:
     """Extract all 18 scale-invariant facial, 17-pt jawline-angle, cheek-area, cranial-dome, and skeletal head-size ratios."""
     rgb = Image.fromarray(cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB))
-    marks = vision.landmarks(rgb)
+    marks = marks if marks is not None else vision.landmarks(rgb)
     if not marks or not marks.get("contour"):
         return None
     sh = vision.compute_face_shape(marks)
     if not sh:
         return None
     cran = vision.compute_cranial_and_scale_profile(rgb, marks=marks) or {}
+    same_canvas = (
+        full_canvas_bgr is None
+        or full_canvas_bgr is bgr_img
+        or (full_canvas_bgr.shape == bgr_img.shape and int(full_canvas_bgr[0, 0, 0]) == int(bgr_img[0, 0, 0]))
+    )
     full_cran = (
         vision.compute_cranial_and_scale_profile(
             Image.fromarray(cv2.cvtColor(full_canvas_bgr, cv2.COLOR_BGR2RGB))
         )
-        if full_canvas_bgr is not None
+        if not same_canvas
         else cran
     ) or cran
 

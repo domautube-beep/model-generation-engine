@@ -813,17 +813,31 @@ def main() -> int:
         ctx = _open_context(pw, args.profile_dir, headed=args.headed, downloads_dir=downloads_dir)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            last_configured_mode: Optional[Tuple[str, str, int]] = None
+            known_uploaded_names: set[str] = set()
             for j_idx, job in enumerate(jobs):
+                if j_idx > 0:
+                    # Natural human-like pacing between batch cuts to prevent FLOW_UNUSUAL_ACTIVITY_TOAST
+                    time.sleep(1.8)
                 if pinned_project_url:
-                    page.goto(pinned_project_url, wait_until="domcontentloaded", timeout=60000)
-                    time.sleep(3.2)
+                    cur_norm = _normalize_project_root_url(page.url)
+                    if cur_norm == pinned_project_url and "/edit/" in page.url:
+                        try:
+                            page.keyboard.press("Escape")
+                            time.sleep(0.9)
+                        except Exception:
+                            pass
+                    if page.url.rstrip("/") != pinned_project_url.rstrip("/"):
+                        page.goto(pinned_project_url, wait_until="domcontentloaded", timeout=60000)
+                        time.sleep(2.4)
+                        last_configured_mode = None
                     block = _check_auth_or_bot_block(page)
                     if block:
                         print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
                         return 3
                 else:
                     page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=60000)
-                    time.sleep(3.2)
+                    time.sleep(2.8)
                     block = _check_auth_or_bot_block(page)
                     if block:
                         print(json.dumps({"status": "blocked", "reason": block, "url": page.url}, ensure_ascii=False))
@@ -836,11 +850,27 @@ def main() -> int:
                     pinned_project_url = _normalize_project_root_url(page.url)
                     if pinned_project_url and primary_gen0 is not None:
                         _save_subject_project_url(primary_gen0, pinned_project_url)
+                    last_configured_mode = None
 
-                cfg_notes = _configure_image_mode(page, job["model"], job["aspect"], job["count"])
+                req_mode = (str(job["model"]), str(job["aspect"]), int(job["count"]))
+                if last_configured_mode != req_mode:
+                    cfg_notes = _configure_image_mode(page, job["model"], job["aspect"], job["count"])
+                    last_configured_mode = req_mode
+                else:
+                    cfg_notes = ["reused_warm_mode"]
+
+                all_already_uploaded = all(Path(p).name in known_uploaded_names for p in job["images"])
+                if _count_prompt_bar_chips(page) > 0 and pinned_project_url:
+                    # Ensure clean prompt bar with zero leftover chips from prior cut
+                    page.goto(pinned_project_url, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(2.2)
+                    cfg_notes = _configure_image_mode(page, job["model"], job["aspect"], job["count"])
+                    last_configured_mode = req_mode
                 uploaded_n = _upload_and_attach_images(page, job["images"])
-                # Let any newly uploaded asset tiles settle on the project grid BEFORE snapshotting `before_srcs`!
-                time.sleep(3.5)
+                for p_up in job["images"]:
+                    known_uploaded_names.add(Path(p_up).name)
+                # Only need long settle wait when brand-new media tiles were uploaded to the project grid
+                time.sleep(1.0 if all_already_uploaded else 2.8)
                 before_srcs = {src for _, src, _, _ in _snapshot_result_images(page)}
 
                 box = page.locator("[role='textbox'][contenteditable='true']").first

@@ -139,6 +139,10 @@ class Mandatory8DirBankVerifier:
         return normalized
 
 
+_LEDGER_MEM_CACHE: Dict[str, Tuple[int, int, Dict[str, object]]] = {}
+_SIG16_MEM_CACHE: Dict[str, Optional[list[int]]] = {}
+
+
 class OriginOnlyOneShotGuard:
     """Cryptographic SHA-256 + Lineage Depth + Single-Shot Guard enforcing Zero Multi-Hop Chaining & Mandatory 8-Dir."""
 
@@ -164,8 +168,16 @@ class OriginOnlyOneShotGuard:
 
     def _load(self) -> Dict[str, object]:
         self._ensure_ledger()
+        key = str(self.ledger_path)
         try:
-            return json.loads(self.ledger_path.read_text(encoding="utf-8"))
+            st = self.ledger_path.stat()
+            sig = (int(st.st_mtime_ns), int(st.st_size))
+            hit = _LEDGER_MEM_CACHE.get(key)
+            if hit is not None and hit[0] == sig[0] and hit[1] == sig[1]:
+                return hit[2]
+            parsed = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+            _LEDGER_MEM_CACHE[key] = (sig[0], sig[1], parsed)
+            return parsed
         except Exception:
             return {
                 "approved_origins_sha256": {},
@@ -177,7 +189,12 @@ class OriginOnlyOneShotGuard:
 
     def _save(self, data: Dict[str, object]) -> None:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        self.ledger_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.ledger_path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        try:
+            st = self.ledger_path.stat()
+            _LEDGER_MEM_CACHE[str(self.ledger_path)] = (int(st.st_mtime_ns), int(st.st_size), data)
+        except Exception:
+            pass
 
     def register_approved_origin(self, path: Path, kind: str = "raw_asset", depth: int = 0) -> str:
         """Whitelist a pure Gen-0 raw asset (`depth=0`) or a 1-Hop 8-direction face anchor (`kind='8dir_face'`, `depth=1`)."""
@@ -253,28 +270,64 @@ class OriginOnlyOneShotGuard:
         approved_8dir: Dict[str, dict],
         max_mad: float = 5.2,
     ) -> Optional[str]:
-        """Detect re-compressed / renamed / re-uploaded generated images via 16x16 visual L1 MAD <= 5.2."""
+        """Detect re-compressed / renamed / re-uploaded generated images via vectorized 16x16 visual L1 MAD <= 5.2."""
+        import numpy as np
+
         digest = sha256_file(cand_path)
         if digest in approved_orig or digest in approved_8dir:
             return None
-        cand_sig = compute_visual_16x16_sig(cand_path)
-        if not cand_sig:
+        if digest in _SIG16_MEM_CACHE:
+            cand_sig = _SIG16_MEM_CACHE[digest]
+        else:
+            cand_sig = compute_visual_16x16_sig(cand_path)
+            _SIG16_MEM_CACHE[digest] = cand_sig
+        if not cand_sig or len(cand_sig) != 256:
             return None
-        orig_sigs = [
-            v.get("sig16") for v in approved_orig.values() if isinstance(v, dict) and isinstance(v.get("sig16"), list)
+
+        c_vec = np.asarray(cand_sig, dtype=np.int16)
+        orig_vecs = [
+            np.asarray(v["sig16"], dtype=np.int16)
+            for v in approved_orig.values()
+            if isinstance(v, dict) and isinstance(v.get("sig16"), list) and len(v["sig16"]) == 256
         ]
+        orig_mat = np.stack(orig_vecs, axis=0) if orig_vecs else None
+
+        f_vecs = []
+        f_labels = []
         for f_sha, f_info in forbidden_hashes.items():
             if f_sha in approved_orig or f_sha in approved_8dir or not isinstance(f_info, dict):
                 continue
             f_sig = f_info.get("sig16")
-            if not isinstance(f_sig, list) and f_info.get("path") and Path(str(f_info["path"])).is_file():
-                f_sig = compute_visual_16x16_sig(Path(str(f_info["path"])))
-            mad = visual_sig_mad(cand_sig, f_sig)
-            if mad <= max_mad:
-                # Never misflag if cand is closer to an approved Gen-0 original (e.g. unit test copying Gen-0 as synthetic cand)
-                if any(visual_sig_mad(cand_sig, osig) <= mad + 0.5 for osig in orig_sigs):
-                    continue
-                return f"{f_info.get('path', f_sha[:12])} (시각 지문 MAD={mad:.2f})"
+            if not (isinstance(f_sig, list) and len(f_sig) == 256):
+                if f_sha in _SIG16_MEM_CACHE:
+                    f_sig = _SIG16_MEM_CACHE[f_sha]
+                else:
+                    p_str = str(f_info.get("path") or "")
+                    # Never block synchronously decoding legacy CloudStorage/GoogleDrive archive files without sig16
+                    if p_str and "CloudStorage" not in p_str and "GoogleDrive" not in p_str and Path(p_str).is_file():
+                        f_sig = compute_visual_16x16_sig(Path(p_str))
+                    else:
+                        f_sig = None
+                    _SIG16_MEM_CACHE[f_sha] = f_sig
+                    if isinstance(f_sig, list) and len(f_sig) == 256:
+                        f_info["sig16"] = f_sig
+            if isinstance(f_sig, list) and len(f_sig) == 256:
+                f_vecs.append(f_sig)
+                f_labels.append(str(f_info.get("path") or f_sha[:12]))
+
+        if not f_vecs:
+            return None
+        f_mat = np.asarray(f_vecs, dtype=np.int16)
+        mads = np.mean(np.abs(f_mat - c_vec[None, :]), axis=1)
+        hits = np.where(mads <= max_mad)[0]
+        if len(hits) == 0:
+            return None
+        min_orig_mad = float(np.min(np.mean(np.abs(orig_mat - c_vec[None, :]), axis=1))) if orig_mat is not None else 999.0
+        for idx_h in hits:
+            mad_val = float(mads[int(idx_h)])
+            if min_orig_mad <= mad_val + 0.5:
+                continue
+            return f"{f_labels[int(idx_h)]} (시각 지문 MAD={mad_val:.2f})"
         return None
 
     def verify_turnaround_1hop_inputs(self, reference_image_paths: Iterable[Path], job_id: Optional[str] = None) -> None:

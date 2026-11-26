@@ -1900,7 +1900,8 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
         r_collage_deny = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/google_flow_ultra_cli.py --images /tmp/.user_uploaded/gen0.jpg /tmp/s03_master_8angle_turnaround_sheet.jpg --output /tmp/editorial.png --prompt 'red dress'"}}})
         self.assertEqual(r_collage_deny["decision"], "deny")
 
-        # 5) Step-2 scene WITH Gen-0 + verified single-face 8-dir portrait -> MUST ALLOW!
+        # 5) Step-2 scene WITH Stage-1 prepare + Gen-0 + verified single-face 8-dir portrait -> MUST ALLOW!
+        _call("post_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/run_fresh_origin_workflow.py prepare --turnaround-sheet /tmp/s03_master_8angle_turnaround_sheet.jpg"}}})
         r_step2_ok = _call("pre_tool", {"toolCall": {"name": "run_command", "args": {"CommandLine": "python3 scripts/google_flow_ultra_cli.py --images /tmp/.user_uploaded/gen0.jpg /tmp/s03_8dir_06_right_45.png --output /tmp/editorial.png --prompt 'red dress'"}}})
         self.assertEqual(r_step2_ok["decision"], "allow")
 
@@ -2679,6 +2680,129 @@ class TestUniversalModelGenerationEngine(unittest.TestCase):
             st = json.loads(st_p.read_text(encoding="utf-8"))
             st.pop(conv_id, None)
             st_p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_43_v110_high_speed_batch_cache_and_zero_quality_loss(self) -> None:
+        """Verify v1.1.0 speed overhaul: 2-tier Vision/Blueprint cache, <0.5s Pre-Upscale Fast Cutoff, prepare-batch & finalize-batch, and 0% quality relaxation."""
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        import cv2
+        import numpy as np
+        from model_generation_engine.fresh_origin_workflow import FreshOriginEditorialWorkflow
+        from model_generation_engine.identity_turnaround import TURNAROUND_8_VIEWS
+        from model_generation_engine.pipeline import ModelGenerationPipeline
+
+        pipe = ModelGenerationPipeline()
+        wf = FreshOriginEditorialWorkflow(pipe)
+        raw_ref = cv2.imread(str(self.ref_face))
+
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            orig_dir = td_p / "originals"
+            bank_dir = td_p / "8dir_bank"
+            orig_dir.mkdir(parents=True, exist_ok=True)
+            bank_dir.mkdir(parents=True, exist_ok=True)
+            gen0_p = orig_dir / "subj_gen0.jpg"
+            cv2.imwrite(str(gen0_p), raw_ref, [int(cv2.IMWRITE_JPEG_QUALITY), 97])
+
+            # Build synthetic distinct 8-dir bank files + master sheet for prepare-batch verification
+            for idx, vk in enumerate(TURNAROUND_8_VIEWS, start=1):
+                mod = np.clip(raw_ref.astype(np.int16) + idx, 0, 255).astype(np.uint8)
+                cv2.imwrite(str(bank_dir / f"s99_8dir_{idx:02d}_{vk}.jpg"), mod)
+            sheet_p = bank_dir / "s99_master_8angle_turnaround_sheet.jpg"
+            cv2.imwrite(str(sheet_p), np.clip(raw_ref.astype(np.int16) + 12, 0, 255).astype(np.uint8))
+
+            # 1. Verify `prepare-batch` prepares 4 distinct cuts in a single warm CLI invocation cleanly & fast
+            cli_py = Path(__file__).resolve().parent.parent / "scripts" / "run_fresh_origin_workflow.py"
+            prep_spec = {
+                "gen0": str(gen0_p),
+                "turnaround_sheet": str(sheet_p),
+                "design_mode": "zero_touch_4k",
+                "aspect": "3:4",
+                "best_of": 1,
+                "no_film_grain": True,
+                "cuts": [
+                    {"work_dir": str(td_p / f"cut_{k}"), "scene": f"Minimal daylight lounge cut {k}", "outfit": f"Tailored knit look {k}"}
+                    for k in range(1, 5)
+                ],
+            }
+            prep_spec_p = td_p / "prep_batch.json"
+            prep_spec_p.write_text(json.dumps(prep_spec, ensure_ascii=False), encoding="utf-8")
+
+            t_pb0 = time.perf_counter()
+            pb_proc = subprocess.run(
+                [sys.executable, str(cli_py), "prepare-batch", "--spec-json", str(prep_spec_p)],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            pb_elapsed = time.perf_counter() - t_pb0
+            pb_out = json.loads(pb_proc.stdout)
+            self.assertEqual(pb_out["count"], 4)
+            # Preparing 4 cuts in 1 process with Blueprint+Vision cache must be dramatically faster than 4x7s=28s!
+            self.assertLess(pb_elapsed, 8.0)
+
+            # 2. Verify Pre-Upscale Fast Cutoff rejects a distorted 1K candidate in <1.5s WITHOUT running 18s 4x Upscayl!
+            bg_med = np.median(raw_ref[:20, :20].reshape(-1, 3), axis=0).astype(np.uint8)
+            good_1k = np.broadcast_to(bg_med, (1200, 896, 3)).copy()
+            rh, rw = raw_ref.shape[:2]
+            ox, oy = (896 - rw) // 2, (1200 - rh) // 2
+            good_1k[oy : oy + rh, ox : ox + rw] = raw_ref
+            good_1k_p = td_p / "good_1k.jpg"
+            cv2.imwrite(str(good_1k_p), good_1k, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+
+            # Create a horizontally bloated (+26% cheek/jaw stretch) 1K candidate that must trigger Pre-Upscale Fast Cutoff
+            wide_face = cv2.resize(raw_ref, (min(880, int(round(rw * 1.26))), rh), interpolation=cv2.INTER_LINEAR)
+            bad_1k = np.broadcast_to(bg_med, (1200, 896, 3)).copy()
+            bx = (896 - wide_face.shape[1]) // 2
+            bad_1k[oy : oy + rh, bx : bx + wide_face.shape[1]] = wide_face
+            bad_1k_p = td_p / "bad_bloated_1k.jpg"
+            cv2.imwrite(str(bad_1k_p), bad_1k, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+
+            t_fc0 = time.perf_counter()
+            with self.assertRaises(RuntimeError):
+                wf.finalize_native_winner_4k(
+                    gen0_portrait_path=gen0_p,
+                    winner_candidate_path=bad_1k_p,
+                    output_dir=td_p / "fast_fail_out",
+                    output_stem="bloated_cut",
+                    sync_to_vault=False,
+                )
+            fc_elapsed = time.perf_counter() - t_fc0
+            self.assertLess(fc_elapsed, 2.5, f"Pre-upscale fast cutoff took {fc_elapsed:.2f}s (expected <2.5s, skipping Upscayl!)")
+            self.assertFalse((td_p / "fast_fail_out" / "bloated_cut_4k.jpg").exists())
+            fc_rcp = json.loads((td_p / "fast_fail_out" / "bloated_cut_workflow_receipt.json").read_text(encoding="utf-8"))
+            self.assertTrue(fc_rcp.get("pre_upscale_fast_rejected"))
+            self.assertFalse(fc_rcp["passed_10gates"])
+
+            # 3. Verify `rank-and-finalize` automatically skips `bad_1k_p` and finalizes `good_1k_p` in True 4K passing all 10 gates!
+            rf_proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(cli_py),
+                    "rank-and-finalize",
+                    "--manifest",
+                    str(td_p / "cut_1" / "workflow_manifest.json"),
+                    "--candidates",
+                    str(bad_1k_p),
+                    str(good_1k_p),
+                    "--output-dir",
+                    str(td_p / "rf_out"),
+                    "--stem",
+                    "cut1_winner",
+                    "--no-vault-sync",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            rf_rcp = json.loads(rf_proc.stdout)
+            self.assertTrue(rf_rcp["passed_10gates"])
+            self.assertEqual(Path(rf_rcp["selected_candidate_path"]).name, "good_1k.jpg")
+            self.assertGreaterEqual(float(rf_rcp["face_laplacian_variance"]), 17.5)
+            self.assertTrue((td_p / "rf_out" / "cut1_winner_4k.jpg").is_file())
 
 
 if __name__ == "__main__":

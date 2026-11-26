@@ -9,19 +9,27 @@ Ported and generalized from AI모델스튜디오 (`studio/vision.py`) into `mode
 
 from __future__ import annotations
 
-from hashlib import sha256
+from hashlib import blake2b, sha256
 from io import BytesIO
 import json
 import math
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
 from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageOps
+
+_VISION_CACHE_LOCK = threading.Lock()
+_MEM_LANDMARKS_CACHE: Dict[str, Optional[Dict[str, List[List[float]]]]] = {}
+_MEM_PERSON_MASK_CACHE: Dict[str, Optional[bytes]] = {}
+_MEM_TEXT_BOXES_CACHE: Dict[str, List[Dict[str, object]]] = {}
+_MEM_BODY_JOINTS_CACHE: Dict[str, Dict[str, object]] = {}
+_BIN_PATH_CACHE: Dict[Tuple[str, str], Path] = {}
 
 
 class AppleVisionError(RuntimeError):
@@ -39,19 +47,48 @@ class AppleVisionAnalyzer:
             bin_dir = local_ssd_cache
         self.bin_dir = Path(bin_dir)
         self.bin_dir.mkdir(parents=True, exist_ok=True)
+        self.disk_cache_dir = Path.home() / ".cache" / "model_generation_engine" / "vision_cache"
+        self.disk_cache_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _image_fingerprint(raw_or_pil: bytes | Image.Image) -> str:
+        """Compute fast (<0.8ms) collision-free blake2b digest for PIL Image or raw encoded bytes."""
+        h = blake2b(digest_size=16)
+        if isinstance(raw_or_pil, bytes):
+            h.update(b"raw:")
+            h.update(raw_or_pil)
+            return h.hexdigest()
+        im = ImageOps.exif_transpose(raw_or_pil).convert("RGB")
+        w, ht = im.size
+        h.update(struct.pack("<II", w, ht))
+        if w * ht <= 1_600_000:
+            h.update(im.tobytes())
+        else:
+            # Sub-millisecond dense 2-tier fingerprint (global 384x384 + center 256x256)
+            h.update(im.resize((384, 384), Image.Resampling.NEAREST).tobytes())
+            cw, ch = max(8, w // 2), max(8, ht // 2)
+            cx0, cy0 = (w - cw) // 2, (ht - ch) // 2
+            h.update(im.crop((cx0, cy0, cx0 + cw, cy0 + ch)).resize((256, 256), Image.Resampling.NEAREST).tobytes())
+        return h.hexdigest()
+
     def _binary_for(self, tool_stem: str) -> Path:
+        bkey = (str(self.tools_dir), tool_stem)
+        cached_exe = _BIN_PATH_CACHE.get(bkey)
+        if cached_exe is not None and cached_exe.exists():
+            return cached_exe
         src = self.tools_dir / f"{tool_stem}.swift"
         if not src.exists():
             raise AppleVisionError(f"Swift Vision source missing: {src}")
         digest = sha256(src.read_bytes()).hexdigest()[:12]
         exe = self.bin_dir / f"{tool_stem}-{digest}"
         if exe.exists() and os.access(exe, os.X_OK):
+            _BIN_PATH_CACHE[bkey] = exe
             return exe
 
         with self._lock:
             if exe.exists() and os.access(exe, os.X_OK):
+                _BIN_PATH_CACHE[bkey] = exe
                 return exe
             swiftc = shutil.which("swiftc")
             if not swiftc:
@@ -67,6 +104,7 @@ class AppleVisionAnalyzer:
                 tmp_exe.unlink(missing_ok=True)
                 raise AppleVisionError(f"Failed to compile {src.name}: {done.stderr or done.stdout}")
             os.replace(tmp_exe, exe)
+            _BIN_PATH_CACHE[bkey] = exe
             return exe
 
     @staticmethod
@@ -78,8 +116,23 @@ class AppleVisionAnalyzer:
                 ImageOps.exif_transpose(im).convert("RGB").save(dst, "JPEG", quality=98, subsampling=0)
 
     def landmarks(self, raw_or_pil: bytes | Image.Image) -> Optional[Dict[str, List[List[float]]]]:
-        """Return {'contour', 'leftPupil', 'rightPupil', 'leftEye', 'rightEye', 'nose'} or None if no face."""
+        """Return {'contour', 'leftPupil', 'rightPupil', 'leftEye', 'rightEye', 'nose'} or None if no face (2-tier cached)."""
         exe = self._binary_for("landmarks")
+        ckey = f"{exe.name}_{self._image_fingerprint(raw_or_pil)}"
+        with _VISION_CACHE_LOCK:
+            if ckey in _MEM_LANDMARKS_CACHE:
+                return _MEM_LANDMARKS_CACHE[ckey]
+        disk_f = self.disk_cache_dir / f"lm_{ckey}.json"
+        if disk_f.is_file():
+            try:
+                val = json.loads(disk_f.read_text(encoding="utf-8"))
+                out_cached = val if (isinstance(val, dict) and val.get("contour")) else None
+                with _VISION_CACHE_LOCK:
+                    _MEM_LANDMARKS_CACHE[ckey] = out_cached
+                return out_cached
+            except Exception:
+                pass
+
         with tempfile.TemporaryDirectory() as tmp:
             img_path = Path(tmp) / "img.jpg"
             self._write_rgb_fast(raw_or_pil, img_path)
@@ -87,7 +140,16 @@ class AppleVisionAnalyzer:
             if done.returncode != 0:
                 raise AppleVisionError(f"landmarks failed (code {done.returncode}): {done.stderr}")
             data = json.loads(done.stdout)
-            return data if data.get("contour") else None
+            res = data if data.get("contour") else None
+        try:
+            disk_f.write_text(json.dumps(res or {}, separators=(",", ":")), encoding="utf-8")
+        except Exception:
+            pass
+        with _VISION_CACHE_LOCK:
+            if len(_MEM_LANDMARKS_CACHE) > 1024:
+                _MEM_LANDMARKS_CACHE.clear()
+            _MEM_LANDMARKS_CACHE[ckey] = res
+        return res
 
     def extract_key_points(self, raw_or_pil: bytes | Image.Image) -> Optional[Dict[str, object]]:
         """Extract canonical pupil midpoint, chin bottom, jaw contour, and face width (`face_detail.points`)."""
@@ -110,23 +172,76 @@ class AppleVisionAnalyzer:
         }
 
     def person_mask(self, raw_or_pil: bytes | Image.Image) -> Optional[Image.Image]:
-        """Return an L-mode person segmentation mask (255 = person, 0 = background) at image resolution."""
+        """Return an L-mode person segmentation mask (255 = person, 0 = background) at image resolution (2-tier cached)."""
         exe = self._binary_for("person_mask")
+        ckey = f"{exe.name}_{self._image_fingerprint(raw_or_pil)}"
+        with _VISION_CACHE_LOCK:
+            if ckey in _MEM_PERSON_MASK_CACHE:
+                png_b = _MEM_PERSON_MASK_CACHE[ckey]
+                if png_b is None:
+                    return None
+                with Image.open(BytesIO(png_b)) as m:
+                    return m.convert("L").copy()
+        disk_png = self.disk_cache_dir / f"pm_{ckey}.png"
+        disk_none = self.disk_cache_dir / f"pm_{ckey}.none"
+        if disk_none.is_file():
+            with _VISION_CACHE_LOCK:
+                _MEM_PERSON_MASK_CACHE[ckey] = None
+            return None
+        if disk_png.is_file():
+            try:
+                png_b = disk_png.read_bytes()
+                with Image.open(BytesIO(png_b)) as m:
+                    im_l = m.convert("L").copy()
+                with _VISION_CACHE_LOCK:
+                    _MEM_PERSON_MASK_CACHE[ckey] = png_b
+                return im_l
+            except Exception:
+                pass
+
         with tempfile.TemporaryDirectory() as tmp:
             img_path = Path(tmp) / "img.jpg"
             out_path = Path(tmp) / "mask.png"
             self._write_rgb_fast(raw_or_pil, img_path)
             done = subprocess.run([str(exe), str(img_path), str(out_path)], capture_output=True, text=True, timeout=60)
             if done.returncode == 3 or not out_path.exists():
+                try:
+                    disk_none.write_text("0", encoding="utf-8")
+                except Exception:
+                    pass
+                with _VISION_CACHE_LOCK:
+                    _MEM_PERSON_MASK_CACHE[ckey] = None
                 return None
             if done.returncode != 0:
                 raise AppleVisionError(f"person_mask failed (code {done.returncode}): {done.stderr}")
-            with Image.open(out_path) as m:
+            png_bytes = out_path.read_bytes()
+            try:
+                shutil.copy2(out_path, disk_png)
+            except Exception:
+                pass
+            with _VISION_CACHE_LOCK:
+                if len(_MEM_PERSON_MASK_CACHE) > 256:
+                    _MEM_PERSON_MASK_CACHE.clear()
+                _MEM_PERSON_MASK_CACHE[ckey] = png_bytes
+            with Image.open(BytesIO(png_bytes)) as m:
                 return m.convert("L").copy()
 
     def text_boxes(self, raw_or_pil: bytes | Image.Image) -> List[Dict[str, object]]:
         """Detect graphic typography/brand overlay bounding boxes (normalized top-left x, y, w, h) via macOS Vision."""
         exe = self._binary_for("text_boxes")
+        ckey = f"{exe.name}_{self._image_fingerprint(raw_or_pil)}"
+        with _VISION_CACHE_LOCK:
+            if ckey in _MEM_TEXT_BOXES_CACHE:
+                return list(_MEM_TEXT_BOXES_CACHE[ckey])
+        disk_f = self.disk_cache_dir / f"tb_{ckey}.json"
+        if disk_f.is_file():
+            try:
+                boxes = list(json.loads(disk_f.read_text(encoding="utf-8")))
+                with _VISION_CACHE_LOCK:
+                    _MEM_TEXT_BOXES_CACHE[ckey] = boxes
+                return list(boxes)
+            except Exception:
+                pass
         with tempfile.TemporaryDirectory() as tmp:
             img_path = Path(tmp) / "img.jpg"
             self._write_rgb_fast(raw_or_pil, img_path)
@@ -134,18 +249,48 @@ class AppleVisionAnalyzer:
             if done.returncode != 0:
                 return []
             data = json.loads(done.stdout)
-            return list(data.get("boxes") or [])
+            boxes = list(data.get("boxes") or [])
+        try:
+            disk_f.write_text(json.dumps(boxes, separators=(",", ":")), encoding="utf-8")
+        except Exception:
+            pass
+        with _VISION_CACHE_LOCK:
+            _MEM_TEXT_BOXES_CACHE[ckey] = boxes
+        return list(boxes)
 
     def body_and_hand_points(self, raw_or_pil: bytes | Image.Image) -> Dict[str, object]:
-        """Extract full human skeletal joints + 21-point hand joints in pixel coordinates via macOS Vision."""
+        """Extract full human skeletal joints + 21-point hand joints in pixel coordinates via macOS Vision (2-tier cached)."""
         exe = self._binary_for("body_joints")
+        ckey = f"{exe.name}_{self._image_fingerprint(raw_or_pil)}"
+        with _VISION_CACHE_LOCK:
+            if ckey in _MEM_BODY_JOINTS_CACHE:
+                return _MEM_BODY_JOINTS_CACHE[ckey]
+        disk_f = self.disk_cache_dir / f"bj_{ckey}.json"
+        if disk_f.is_file():
+            try:
+                bj = json.loads(disk_f.read_text(encoding="utf-8"))
+                with _VISION_CACHE_LOCK:
+                    _MEM_BODY_JOINTS_CACHE[ckey] = bj
+                return bj
+            except Exception:
+                pass
         with tempfile.TemporaryDirectory() as tmp:
             img_path = Path(tmp) / "img.jpg"
             self._write_rgb_fast(raw_or_pil, img_path)
             done = subprocess.run([str(exe), str(img_path)], capture_output=True, text=True, timeout=60)
             if done.returncode != 0:
-                return {"bodies": [], "hands": []}
-            return json.loads(done.stdout)
+                res_bj: Dict[str, object] = {"bodies": [], "hands": []}
+            else:
+                res_bj = json.loads(done.stdout)
+        try:
+            disk_f.write_text(json.dumps(res_bj, separators=(",", ":")), encoding="utf-8")
+        except Exception:
+            pass
+        with _VISION_CACHE_LOCK:
+            if len(_MEM_BODY_JOINTS_CACHE) > 512:
+                _MEM_BODY_JOINTS_CACHE.clear()
+            _MEM_BODY_JOINTS_CACHE[ckey] = res_bj
+        return res_bj
 
     @staticmethod
     def compute_face_shape(marks: Optional[Dict[str, List[List[float]]]]) -> Optional[Dict[str, object]]:

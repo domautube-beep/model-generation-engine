@@ -155,9 +155,40 @@ def load_version_ledger(repo_root: Optional[Path] = None) -> Dict[str, Any]:
     return json.loads(ledger_path.read_text(encoding="utf-8"))
 
 
+_INTEGRITY_MEMO: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], int, int, "VersionIntegrityReport"]] = {}
+
+
+def _stat_signature(root: Path) -> Tuple[Tuple[Tuple[str, int, int], ...], int, int]:
+    entries: List[Tuple[str, int, int]] = []
+    seen = set()
+    for pattern in TRACKED_CODE_GLOBS:
+        for p in sorted(root.glob(pattern)):
+            if not p.is_file() or "__pycache__" in p.parts or p.name.startswith("."):
+                continue
+            rel_posix = p.relative_to(root).as_posix()
+            if rel_posix not in seen:
+                seen.add(rel_posix)
+                st = p.stat()
+                entries.append((rel_posix, int(st.st_mtime_ns), int(st.st_size)))
+    entries.sort(key=lambda t: t[0])
+    vj = root / "VERSION.json"
+    pp = root / "pyproject.toml"
+    vj_ns = int(vj.stat().st_mtime_ns) if vj.is_file() else 0
+    pp_ns = int(pp.stat().st_mtime_ns) if pp.is_file() else 0
+    return tuple(entries), vj_ns, pp_ns
+
+
 def check_version_integrity(repo_root: Optional[Path] = None) -> VersionIntegrityReport:
     """Verify canonical `>= 1.0.0` version sync, `< 1.0.0` historical archive bounds, and zero unbumped code edits."""
     root = get_repo_root(repo_root)
+    root_key = str(root)
+    try:
+        sig = _stat_signature(root)
+        memo = _INTEGRITY_MEMO.get(root_key)
+        if memo is not None and memo[:3] == sig:
+            return memo[3]
+    except Exception:
+        sig = None
     issues: List[str] = []
     ledger = load_version_ledger(root)
 
@@ -220,7 +251,7 @@ def check_version_integrity(repo_root: Optional[Path] = None) -> VersionIntegrit
             "`python3 scripts/version_ctl.py bump --part patch --summary \"...\"` to record the upgrade."
         )
 
-    return VersionIntegrityReport(
+    rep = VersionIntegrityReport(
         passed=(len(issues) == 0),
         project_name=proj_name or CANONICAL_PROJECT_NAME,
         short_alias=short_alias,
@@ -236,6 +267,9 @@ def check_version_integrity(repo_root: Optional[Path] = None) -> VersionIntegrit
         pre_v1_history_valid=pre_v1_valid,
         issues=issues,
     )
+    if sig is not None:
+        _INTEGRITY_MEMO[root_key] = (sig[0], sig[1], sig[2], rep)
+    return rep
 
 
 def _write_version_strings(root: Path, new_ver: str) -> None:
