@@ -18,6 +18,8 @@
   - **Step 4~6**: 초소형(`18.9KB`)·증명사진 보정 원본 자동 감지(`skin_norm_laplacian < 24.0`) 기반 **디에어브러싱 실사 모공 복원(`생-031`/`생-032`)** + 무그레인 순수 광학 `Lanczos-4` 4K 마스터링 + 400% 눈매·윤곽 육안 검수 디폴트화
   - `version_guard.py` + `scripts/version_ctl.py` + `hooks/pre-commit-version-check.py` 자동 버전체크 체계 탑재
 <!-- POST_V1_UPGRADES -->
+- **`v1.1.4`** (`2026-11-26`): v1.1.4: Prevent negative crease_prom_diff monolid smoothing from false-alarming as prominent outline double eyelid while preserving strict double-eyelid distortion gate
+
 - **`v1.1.3`** (`2026-11-26`): v1.1.3: Red-Team verified 100% hard-block on 1K fallback, --headless, prompt-gaming, closeup cheat, Gate 11 <=50% occupancy, Gate 12 sclera speckle/iris crush, Gate 13 skin L/ab mottle
 
 - **`v1.1.2`** (`2026-11-26`): v1.1.2: Hard-block 1K fallback, --headless Flow, prompt-gaming zoom/catchlight/sclera, unauthorized closeup, Gate 11 <=50% occupancy, Gate 12 sclera speckle/iris crush, Gate 13 L/ab mottle

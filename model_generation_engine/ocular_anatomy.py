@@ -48,9 +48,9 @@ class OcularAnatomyProfile:
 
     def crease_category(self) -> str:
         """Classify eyelid crease strictly from measured supratarsal ridge height (`avg_crease_gap_ratio`) & prominence."""
-        if self.avg_crease_gap_ratio <= 0.36 or self.crease_prominence < 0.24:
+        if self.avg_crease_gap_ratio <= 0.36 or self.crease_prominence < 0.32:
             return "tight_inline_or_monolid"
-        if self.avg_crease_gap_ratio <= 0.60:
+        if self.avg_crease_gap_ratio <= 0.60 or self.crease_prominence < 0.42:
             return "subtle_inline_double"
         return "prominent_outline_double"
 
@@ -434,7 +434,11 @@ class OcularAnatomyAnalyzer:
             and ((crease_gap_diff > 0.15 and crease_prom_diff > 0.18) or (c_prof.avg_crease_gap_ratio > 0.42 and crease_prom_diff > 0.32))
         ):
             issues.append(f"쌍꺼풀 라인 과장(두꺼운 아치 선 생성, gap {crease_gap_diff:+.2f}, prom {crease_prom_diff:+.2f})")
-        if r_prof.crease_category() == "tight_inline_or_monolid" and c_prof.crease_category() == "prominent_outline_double":
+        if (
+            r_prof.crease_category() == "tight_inline_or_monolid"
+            and c_prof.crease_category() == "prominent_outline_double"
+            and crease_prom_diff > 0.06
+        ):
             issues.append("원본 속쌍/얇은 인라인 눈매가 두꺼운 겉쌍 아치로 변형됨")
         # Gate 12a: Sclera speckle / GAN-JPEG blotchiness hard gate on 4K eyes (`raw_eye_width_px >= 50px`)
         if c_prof.raw_eye_width_px >= 50.0 and c_prof.sclera_speckle_p85 > 10.6 and c_prof.sclera_speckle_p85 > (r_prof.sclera_speckle_p85 + 2.5):

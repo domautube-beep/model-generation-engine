@@ -15,10 +15,10 @@
     "profile",
     "model-generation-engine"
   ],
-  "canonical_version": "1.1.3",
-  "canonical_label": "릴프로필 v1.1.3",
+  "canonical_version": "1.1.4",
+  "canonical_label": "릴프로필 v1.1.4",
   "baseline_established_at": "2026-11-24T19:08:00+09:00",
-  "updated_at": "2026-11-26T15:27:33+09:00",
+  "updated_at": "2026-11-26T16:45:02+09:00",
   "version_policy": {
     "baseline_version": "1.0.0",
     "pre_v1_history_range": "< 1.0.0 (0.1.0 ~ 0.9.5)",
@@ -276,14 +276,23 @@
       "timestamp": "2026-11-26T15:27:33+09:00",
       "summary": "v1.1.3: Red-Team verified 100% hard-block on 1K fallback, --headless, prompt-gaming, closeup cheat, Gate 11 <=50% occupancy, Gate 12 sclera speckle/iris crush, Gate 13 skin L/ab mottle",
       "changed_files": []
+    },
+    {
+      "version": "1.1.4",
+      "date": "2026-11-26",
+      "timestamp": "2026-11-26T16:45:02+09:00",
+      "summary": "v1.1.4: Prevent negative crease_prom_diff monolid smoothing from false-alarming as prominent outline double eyelid while preserving strict double-eyelid distortion gate",
+      "changed_files": [
+        "model_generation_engine/ocular_anatomy.py"
+      ]
     }
   ],
-  "code_tree_sha256": "747c72b677944d8f4659b0044cfb19e406a1d91c401021931b9e37db20e00bd2",
+  "code_tree_sha256": "35a4958bf67891e9570b2a923e6375dede6d50b5c4cad34150cbd6b9de232448",
   "file_hashes": {
     "hooks/enforce_1origin_1gen_hook.py": "6d496c0d38f4e69c0268bf0a3e8e998344655d9bdd547af194bb8d4f19fbf24a",
     "hooks/pre-commit-version-check.py": "b4be1b36fd23940c602f4d781d58dea519d19b930c9a4f6122b51809b09b4d1c",
     "launch_studio.py": "8a9e04ed5b4a94ccf76a67ca0409355fea7aff80bb2ccd2d5e795916846d7e63",
-    "model_generation_engine/__init__.py": "9928a1642adf8172b803efac2b17ad7975b2ff2c55ce9e8cddd64fcedf7adde4",
+    "model_generation_engine/__init__.py": "81383fe89b715a3d2a3863ab81f853bef3d92d2d2bf36346753c557311c2dd45",
     "model_generation_engine/apple_vision.py": "0505b00704e795ed4ffbdad9fc93dc081613b91a34ea5550199981a4fd89ca37",
     "model_generation_engine/cli.py": "931978664d9761061d1d0bf9f8f9b0659f09ddf161e0595900b94ab1531b73cc",
     "model_generation_engine/compositor.py": "71f8e59974c977a002d169d69574ca784aa15ccd960803d3e22c3a18eef1aa3b",
@@ -295,7 +304,7 @@
     "model_generation_engine/headless_mesh_composer.py": "3f1716942306ed1e45b62190801751eb359935fdd4321bf5c6f70faea2d58773",
     "model_generation_engine/identity_turnaround.py": "f42998672c1f8eb88b015ba7ab5354ce8be393fef2681422ad2e6f229ae8187f",
     "model_generation_engine/multi_asset_composer.py": "e768cb951b4d4636e1030e3b52a89d91cfede98f985f7b8fe5c1c588cdb8abf7",
-    "model_generation_engine/ocular_anatomy.py": "24c160a50f28c51ac2e5fa4a159a3ccdc2c859fec121a7f51e17ccf179c0884a",
+    "model_generation_engine/ocular_anatomy.py": "0ea39bc474016056d32e93e0e658063b437bbdc39c025462000026325c6231f1",
     "model_generation_engine/organ_depth_anatomy.py": "96145ee59a48bebb6045fa76c28c7f82cd2b6ebf4102314b263d5efcd5ae8a2b",
     "model_generation_engine/origin_guard.py": "4b09c99fc4196071e007d11c2a483c71d517cd33ea3de87ecdb40b5a74f9ccb8",
     "model_generation_engine/pipeline.py": "dc4f3e0bce48483d3a48b5ca3bb2a1030f227bb3e3c77154a1e971ab2f1889dd",
